@@ -672,7 +672,17 @@ fn parse_chained_comparison(
     })
 }
 
-fn parse_expression_list_entry(tokens: &mut Tokens) -> Result<ExpressionListEntry, String> {
+pub fn parse_expression_list_entry(nodes: &[Node]) -> Result<ExpressionListEntry, String> {
+    let tokens = flatten(nodes)?;
+    let mut tokens = Tokens::new(&tokens, Token::EndOfInput);
+    let entry = parse_expression_list_entry_from_tokens(&mut tokens)?;
+    tokens.expect(Token::EndOfInput)?;
+    Ok(entry)
+}
+
+fn parse_expression_list_entry_from_tokens(
+    tokens: &mut Tokens,
+) -> Result<ExpressionListEntry, String> {
     let expression = parse_expression(tokens, 0)?;
 
     if get_comparison_op(tokens.peek()).is_none() {
@@ -2048,7 +2058,7 @@ mod tests {
         ];
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
         assert_eq!(
-            parse_expression_list_entry(&mut tokens),
+            parse_expression_list_entry_from_tokens(&mut tokens),
             Ok(Ele::Assignment {
                 name: "c".into(),
                 value: Bop {
@@ -2084,7 +2094,7 @@ mod tests {
         ];
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
         assert_eq!(
-            parse_expression_list_entry(&mut tokens),
+            parse_expression_list_entry_from_tokens(&mut tokens),
             Ok(Ele::FunctionDeclaration {
                 name: "f_4".into(),
                 parameters: vec!["x".into(), "y".into()],
@@ -2125,7 +2135,7 @@ mod tests {
         ];
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
         assert_eq!(
-            parse_expression_list_entry(&mut tokens),
+            parse_expression_list_entry_from_tokens(&mut tokens),
             Ok(Ele::Relation(ChainedComparison {
                 operands: vec![
                     CallMull {
@@ -2171,7 +2181,7 @@ mod tests {
         ];
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
         assert_eq!(
-            parse_expression_list_entry(&mut tokens),
+            parse_expression_list_entry_from_tokens(&mut tokens),
             Ok(Ele::Expression(Bop {
                 operation: Add,
                 left: bx(CallMull {

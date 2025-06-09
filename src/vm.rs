@@ -88,14 +88,14 @@ pub enum Value {
 }
 
 impl Value {
-    fn number(self) -> f64 {
+    pub fn number(self) -> f64 {
         match self {
             Value::Number(v) => v,
             _ => panic!("value is not a number: {self:?}"),
         }
     }
 
-    fn list(self) -> Rc<RefCell<Vec<f64>>> {
+    pub fn list(self) -> Rc<RefCell<Vec<f64>>> {
         match self {
             Value::List(v) => v,
             _ => panic!("value is not a list: {self:?}"),

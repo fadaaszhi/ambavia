@@ -1,10 +1,5 @@
 use ambavia::{
-    ast_parser::parse_nodes_into_expression,
-    compiler::{compile_expression, Names},
-    instruction_builder::InstructionBuilder,
-    latex_parser::parse_latex,
-    latex_tree_flattener::Token,
-    vm::{self, Vm},
+    ast_parser::parse_nodes_into_expression, compiler::{compile_expression, Names}, instruction_builder::InstructionBuilder, latex_parser::parse_latex, latex_tree_flattener::Token, resolver::resolve_names, vm::{self, Vm}
 };
 use rstest::rstest;
 

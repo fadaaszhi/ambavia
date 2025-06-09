@@ -5,4 +5,5 @@ pub mod instruction_builder;
 pub mod latex_parser;
 pub mod latex_tree;
 pub mod latex_tree_flattener;
+pub mod resolver;
 pub mod vm;

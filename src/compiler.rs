@@ -1,29 +1,29 @@
 use std::collections::HashMap;
 
 use crate::{
-    ast::{BinaryOperator, ChainedComparison, ComparisonOperator, Expression, UnaryOperator},
     instruction_builder::{BaseType, InstructionBuilder, Type, Value},
-    vm::Instruction::*,
+    resolver::{Assignment, BinaryOperator, ComparisonOperator, Expression, UnaryOperator},
+    vm::Instruction::{self, *},
 };
 
 #[derive(Debug, Default)]
 pub struct Names {
-    map: HashMap<String, Type>,
+    map: HashMap<usize, Type>,
 }
 
 impl Names {
-    fn create(&mut self, name: &str, typ: Type) -> Result<(), String> {
-        if self.map.contains_key(name) {
+    fn create(&mut self, name: usize, typ: Type) -> Result<(), String> {
+        if self.map.contains_key(&name) {
             return Err(format!("variable '{name}' is already defined"));
         }
 
-        self.map.insert(name.into(), typ);
+        self.map.insert(name, typ);
         Ok(())
     }
 
-    fn get(&self, name: &str) -> Result<Type, String> {
+    fn get(&self, name: usize) -> Result<Type, String> {
         self.map
-            .get(name)
+            .get(&name)
             .copied()
             .ok_or_else(|| format!("variable '{name}' is not defined"))
     }
@@ -32,13 +32,13 @@ impl Names {
 pub fn compile_expression(
     expression: &Expression,
     builder: &mut InstructionBuilder,
-    names: &mut Names,
+    names: &Names,
 ) -> Result<Value, String> {
     match expression {
         Expression::Number(x) => Ok(builder.load_const(*x)),
         Expression::Identifier(name) => {
-            let ty = names.get(name)?;
-            let value = builder.load(name);
+            let ty = names.get(*name)?;
+            let value = builder.load(*name);
             assert_eq!(value.ty(), ty);
             Ok(value)
         }
@@ -432,12 +432,10 @@ pub fn compile_expression(
 
             Ok(result)
         }
-        Expression::CallOrMultiply { .. } => todo!(),
-        Expression::Call { .. } => todo!(),
-        Expression::ChainedComparison(ChainedComparison {
+        Expression::ChainedComparison {
             operands,
             operators,
-        }) => {
+        } => {
             let ([left, right], [operator]) = (&operands[..], &operators[..]) else {
                 todo!()
             };
@@ -655,9 +653,36 @@ pub fn compile_expression(
             }
         }
         Expression::SumProd { .. } => todo!(),
-        Expression::With { .. } => todo!(),
         Expression::For { .. } => todo!(),
     }
+}
+
+pub fn compile_assignments(
+    assignments: &[Assignment],
+    assignment_indices: &[Option<Result<usize, String>>],
+) -> Result<(Vec<Instruction>, Vec<Option<Result<(Type, usize), String>>>), String> {
+    let mut names = Names::default();
+    let mut builder = InstructionBuilder::default();
+
+    for Assignment { name, value } in assignments {
+        let value = compile_expression(value, &mut builder, &names)?;
+        names.create(*name, value.ty())?;
+        builder.store(*name, value);
+    }
+
+    let vars = builder.defined_vars();
+    let program = builder.finish();
+    Ok((
+        program,
+        assignment_indices
+            .iter()
+            .map(|i| match i {
+                Some(Ok(index)) => Some(Ok(vars.get(index).unwrap().clone())),
+                Some(Err(error)) => Some(Err(error.clone())),
+                None => None,
+            })
+            .collect(),
+    ))
 }
 
 #[cfg(test)]
@@ -698,7 +723,7 @@ mod tests {
     fn create_empty_variable(
         names: &mut Names,
         builder: &mut InstructionBuilder,
-        name: &str,
+        name: usize,
         ty: Type,
     ) {
         names.create(name, ty).unwrap();
@@ -720,47 +745,43 @@ mod tests {
     #[test]
     fn identifiers() {
         assert_eq!(
-            compile_expression(
-                &E::Identifier("a".into()),
-                &mut Ib::default(),
-                &mut Names::default()
-            ),
+            compile_expression(&E::Identifier(0), &mut Ib::default(), &mut Names::default()),
             Err("variable 'a' is not defined".to_string())
         );
 
         let mut names = Names::default();
         let mut b = Ib::default();
-        create_empty_variable(&mut names, &mut b, "a", Type::Number);
-        assert_eq!(names.get("a"), Ok(Type::Number));
+        create_empty_variable(&mut names, &mut b, 0, Type::Number);
+        assert_eq!(names.get(0), Ok(Type::Number));
 
         assert_type(
-            compile_expression(&E::Identifier("a".into()), &mut b, &mut names),
+            compile_expression(&E::Identifier(0), &mut b, &mut names),
             Type::Number,
         );
 
-        create_empty_variable(&mut names, &mut b, "b", Type::Point);
-        assert_eq!(names.get("b"), Ok(Type::Point));
+        create_empty_variable(&mut names, &mut b, 1, Type::Point);
+        assert_eq!(names.get(1), Ok(Type::Point));
         assert_type(
-            compile_expression(&E::Identifier("b".into()), &mut b, &mut names),
+            compile_expression(&E::Identifier(1), &mut b, &mut names),
             Type::Point,
         );
 
-        create_empty_variable(&mut names, &mut b, "c", Type::PointList);
-        assert_eq!(names.get("c"), Ok(Type::PointList));
+        create_empty_variable(&mut names, &mut b, 2, Type::PointList);
+        assert_eq!(names.get(2), Ok(Type::PointList));
         assert_type(
-            compile_expression(&E::Identifier("c".into()), &mut b, &mut names),
+            compile_expression(&E::Identifier(2), &mut b, &mut names),
             Type::PointList,
         );
 
-        create_empty_variable(&mut names, &mut b, "d", Type::NumberList);
-        assert_eq!(names.get("d"), Ok(Type::NumberList));
+        create_empty_variable(&mut names, &mut b, 3, Type::NumberList);
+        assert_eq!(names.get(3), Ok(Type::NumberList));
         assert_type(
-            compile_expression(&E::Identifier("d".into()), &mut b, &mut names),
+            compile_expression(&E::Identifier(3), &mut b, &mut names),
             Type::NumberList,
         );
 
         assert_type(
-            compile_expression(&E::Identifier("b".into()), &mut b, &mut names),
+            compile_expression(&E::Identifier(1), &mut b, &mut names),
             Type::Point,
         );
         assert_eq!(
@@ -807,12 +828,12 @@ mod tests {
 
         let mut names = Names::default();
         let mut b = Ib::default();
-        create_empty_variable(&mut names, &mut b, "p", Type::PointList);
+        create_empty_variable(&mut names, &mut b, 0, Type::PointList);
         assert_eq!(
             compile_expression(
                 &E::BinaryOperation {
                     operation: Bo::Point,
-                    left: bx(E::Identifier("p".into())),
+                    left: bx(E::Identifier(0)),
                     right: bx(E::Number(2.0))
                 },
                 &mut b,
@@ -823,12 +844,12 @@ mod tests {
 
         let mut names = Names::default();
         let mut b = Ib::default();
-        create_empty_variable(&mut names, &mut b, "a", Type::NumberList);
+        create_empty_variable(&mut names, &mut b, 1, Type::NumberList);
         assert_type(
             compile_expression(
                 &E::BinaryOperation {
                     operation: Bo::Point,
-                    left: bx(E::Identifier("a".into())),
+                    left: bx(E::Identifier(1)),
                     right: bx(E::Number(5.0)),
                 },
                 &mut b,
@@ -876,7 +897,7 @@ mod tests {
                 &E::BinaryOperation {
                     operation: Bo::Point,
                     left: bx(E::Number(5.0)),
-                    right: bx(E::Identifier("a".into())),
+                    right: bx(E::Identifier(1)),
                 },
                 &mut b,
                 &mut names,
@@ -915,13 +936,13 @@ mod tests {
             Pop(2),  //  [x,5,...]
         ]);
 
-        create_empty_variable(&mut names, &mut b, "b", Type::NumberList);
+        create_empty_variable(&mut names, &mut b, 2, Type::NumberList);
         assert_type(
             compile_expression(
                 &E::BinaryOperation {
                     operation: Bo::Point,
-                    left: bx(E::Identifier("a".into())),
-                    right: bx(E::Identifier("b".into())),
+                    left: bx(E::Identifier(1)),
+                    right: bx(E::Identifier(2)),
                 },
                 &mut b,
                 &mut names,
@@ -972,18 +993,18 @@ mod tests {
         let make_names_and_builder = || {
             let mut n = Names::default();
             let mut b = Ib::default();
-            create_empty_variable(&mut n, &mut b, "n", Type::Number);
-            create_empty_variable(&mut n, &mut b, "nl", Type::NumberList);
-            create_empty_variable(&mut n, &mut b, "p", Type::Point);
-            create_empty_variable(&mut n, &mut b, "pl", Type::PointList);
-            create_empty_variable(&mut n, &mut b, "el", Type::EmptyList);
+            create_empty_variable(&mut n, &mut b, 0, Type::Number);
+            create_empty_variable(&mut n, &mut b, 1, Type::NumberList);
+            create_empty_variable(&mut n, &mut b, 2, Type::Point);
+            create_empty_variable(&mut n, &mut b, 3, Type::PointList);
+            create_empty_variable(&mut n, &mut b, 4, Type::EmptyList);
             (n, b)
         };
-        let number = || bx(E::Identifier("n".into()));
-        let number_list = || bx(E::Identifier("nl".into()));
-        let point = || bx(E::Identifier("p".into()));
-        let _point_list = || bx(E::Identifier("pl".into()));
-        let empty_list = || bx(E::Identifier("el".into()));
+        let number = || bx(E::Identifier(0));
+        let number_list = || bx(E::Identifier(1));
+        let point = || bx(E::Identifier(2));
+        let _point_list = || bx(E::Identifier(3));
+        let empty_list = || bx(E::Identifier(4));
 
         let (mut n, mut b) = make_names_and_builder();
         assert_type(

@@ -78,6 +78,7 @@ fn main() {
         b = 5a
         c = 2b
         c
+        d = []
     "
     .trim();
 
@@ -148,7 +149,7 @@ fn main() {
                         )
                     }
                     Type::Bool | Type::BoolList => unreachable!(),
-                    Type::EmptyList => todo!(),
+                    Type::EmptyList => "[]".into(),
                 };
             }
         }

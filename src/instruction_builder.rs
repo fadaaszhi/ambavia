@@ -843,7 +843,7 @@ mod tests {
         let old_a = ib.load_store(0, d);
         assert_eq!(
             ib.defined_vars(),
-            HashMap::from([(1, (Type::Point, 0)), (1, (Type::Point, 2))])
+            HashMap::from([(0, (Type::Point, 0)), (1, (Type::Point, 2))])
         );
         ib.undefine(0);
         assert_eq!(ib.defined_vars(), HashMap::from([(1, (Type::Point, 2))]));
@@ -852,7 +852,7 @@ mod tests {
         ib.store(0, l);
         assert_eq!(
             ib.defined_vars(),
-            HashMap::from([(1, (Type::PointList, 0)), (1, (Type::Point, 2))])
+            HashMap::from([(0, (Type::PointList, 0)), (1, (Type::Point, 2))])
         );
         assert_eq!(
             ib.finish(),

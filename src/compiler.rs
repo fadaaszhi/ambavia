@@ -746,7 +746,7 @@ mod tests {
     fn identifiers() {
         assert_eq!(
             compile_expression(&E::Identifier(0), &mut Ib::default(), &mut Names::default()),
-            Err("variable 'a' is not defined".to_string())
+            Err("variable '0' is not defined".to_string())
         );
 
         let mut names = Names::default();

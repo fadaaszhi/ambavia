@@ -58,7 +58,7 @@ pub struct Body {
 #[derive(Debug, PartialEq, Clone, Copy)]
 enum Dependency {
     Assignment(usize),
-    Unsubstituted,
+    NotDynamic,
 }
 
 type Dependencies<'a> = HashMap<&'a str, Dependency>;
@@ -78,7 +78,7 @@ trait Merge {
 impl<'a> Merge for Dependencies<'a> {
     fn merge(&mut self, other: Self) {
         for (name, dep) in &other {
-            let d = self.entry(name).or_insert(Dependency::Unsubstituted);
+            let d = self.entry(name).or_insert(Dependency::NotDynamic);
 
             if let Dependency::Assignment(id) = dep {
                 if let Dependency::Assignment(i) = d {
@@ -97,8 +97,8 @@ struct Resolver<'a> {
     globals: HashMap<&'a str, Result<&'a ExpressionListEntry, String>>,
     assignments: Vec<Assignment>,
     id_counter: usize,
-    substitutions: HashMap<&'a str, Vec<usize>>,
-    derived: HashMap<&'a str, Vec<(usize, Dependencies<'a>)>>,
+    dynamic_scope: HashMap<&'a str, Vec<usize>>,
+    global_scope: HashMap<&'a str, Vec<(usize, Dependencies<'a>)>>,
 }
 
 impl<'a> Resolver<'a> {
@@ -123,8 +123,8 @@ impl<'a> Resolver<'a> {
             globals,
             assignments: vec![],
             id_counter: 0,
-            substitutions: HashMap::new(),
-            derived: HashMap::new(),
+            dynamic_scope: HashMap::new(),
+            global_scope: HashMap::new(),
         }
     }
 
@@ -135,31 +135,31 @@ impl<'a> Resolver<'a> {
         id
     }
 
-    fn has_substitution(&self, name: &str) -> bool {
-        self.substitutions
+    fn is_dynamic(&self, name: &str) -> bool {
+        self.dynamic_scope
             .get(name)
             .map(|v| !v.is_empty())
             .unwrap_or_default()
     }
 
     fn resolve_variable(&mut self, name: &'a str) -> Result<(usize, Dependencies<'a>), String> {
-        if let Some(id) = self.substitutions.get(name).and_then(|v| v.last()) {
+        if let Some(id) = self.dynamic_scope.get(name).and_then(|v| v.last()) {
             let mut deps = Dependencies::new();
             deps.insert(name, Dependency::Assignment(*id));
             return Ok((*id, deps));
         }
 
-        if let Some((id, deps)) = self.derived.get(name).and_then(|v| v.last()) {
+        if let Some((id, deps)) = self.global_scope.get(name).and_then(|v| v.last()) {
             if deps.iter().all(|(n, d)| match d {
                 Dependency::Assignment(i) => {
-                    self.substitutions
+                    self.dynamic_scope
                         .get(n)
                         .and_then(|v| v.last())
                         .cloned()
-                        .unwrap_or_else(|| self.derived.get(n).unwrap().last().unwrap().0)
+                        .unwrap_or_else(|| self.global_scope.get(n).unwrap().last().unwrap().0)
                         == *i
                 }
-                Dependency::Unsubstituted => !self.has_substitution(n),
+                Dependency::NotDynamic => !self.is_dynamic(n),
             }) {
                 let mut deps = deps.clone();
                 deps.insert(name, Dependency::Assignment(*id));
@@ -177,7 +177,7 @@ impl<'a> Resolver<'a> {
             ExpressionListEntry::Assignment { value, .. } => {
                 let (value, mut deps) = self.resolve_expression(value)?;
                 let id = self.create_assignment(value);
-                self.derived
+                self.global_scope
                     .entry(name)
                     .or_default()
                     .push((id, deps.clone()));
@@ -251,17 +251,17 @@ impl<'a> Resolver<'a> {
             let (value, d) = self.resolve_expression(value)?;
             argument_deps.merge(d);
             let id = self.create_assignment(value);
-            self.substitutions.entry(name).or_default().push(id);
+            self.dynamic_scope.entry(name).or_default().push(id);
             seen.insert(name.as_str(), id);
         }
 
-        // Don't unwrap yet because we want to clean up self.substitutions. But
+        // Don't unwrap yet because we want to clean up self.dynamic_scope. But
         // maybe it's actually okay to leave it messy and it can cleaned up once
         // at the end of each expression list entry?
         let body = self.resolve_expression(body);
 
         for (name, id) in &seen {
-            let popped = self.substitutions.get_mut(name).unwrap().pop();
+            let popped = self.dynamic_scope.get_mut(name).unwrap().pop();
             assert_eq!(popped, Some(*id))
         }
 
@@ -274,15 +274,15 @@ impl<'a> Resolver<'a> {
         }
 
         for (name, dep) in &mut body_deps {
-            if self.has_substitution(name) {
+            if self.is_dynamic(name) {
                 continue;
             }
 
-            if *dep == Dependency::Unsubstituted {
+            if *dep == Dependency::NotDynamic {
                 continue;
             }
 
-            let v = self.derived.get_mut(name).unwrap();
+            let v = self.global_scope.get_mut(name).unwrap();
             let d = &v.last().unwrap().1;
 
             for (n, i) in &seen {
@@ -293,7 +293,7 @@ impl<'a> Resolver<'a> {
 
             if seen.iter().any(|(n, _)| d.contains_key(n)) {
                 v.pop();
-                *dep = Dependency::Unsubstituted;
+                *dep = Dependency::NotDynamic;
             }
         }
 
@@ -446,18 +446,18 @@ impl<'a> Resolver<'a> {
                     let (value, d) = self.resolve_expression(value)?;
                     substitution_deps.merge(d);
                     let id = self.create_assignment(value);
-                    self.substitutions.entry(name).or_default().push(id);
+                    self.dynamic_scope.entry(name).or_default().push(id);
                     seen.insert(name.as_str(), id);
                 }
 
                 // Don't unwrap yet because we want to clean up
-                // self.substitutions. But maybe it's actually okay to leave it
+                // self.dynamic_scope. But maybe it's actually okay to leave it
                 // messy and it can cleaned up once at the end of each
                 // expression list entry?
                 let body = self.resolve_expression(body);
 
                 for (name, id) in &seen {
-                    let popped = self.substitutions.get_mut(name).unwrap().pop();
+                    let popped = self.dynamic_scope.get_mut(name).unwrap().pop();
                     assert_eq!(popped, Some(*id))
                 }
 
@@ -470,15 +470,15 @@ impl<'a> Resolver<'a> {
                 }
 
                 for (name, dep) in &mut body_deps {
-                    if self.has_substitution(name) {
+                    if self.is_dynamic(name) {
                         continue;
                     }
 
-                    if *dep == Dependency::Unsubstituted {
+                    if *dep == Dependency::NotDynamic {
                         continue;
                     }
 
-                    let v = self.derived.get_mut(name).unwrap();
+                    let v = self.global_scope.get_mut(name).unwrap();
                     let d = &v.last().unwrap().1;
 
                     for (n, i) in &seen {
@@ -489,7 +489,7 @@ impl<'a> Resolver<'a> {
 
                     if seen.iter().any(|(n, _)| d.contains_key(n)) {
                         v.pop();
-                        *dep = Dependency::Unsubstituted;
+                        *dep = Dependency::NotDynamic;
                     }
                 }
 
@@ -511,7 +511,7 @@ pub fn resolve_names(
             // we could add in asserts here to check things like no substitutions or derived is all length 1 or 0
             ExpressionListEntry::Assignment { name, value } => {
                 if let Some((id, _)) = resolver
-                    .derived
+                    .global_scope
                     .get(name.as_str())
                     .inspect(|v| assert!(v.len() <= 1))
                     .and_then(|v| v.last())
@@ -524,7 +524,7 @@ pub fn resolve_names(
 
                             if resolver.globals.get(name.as_str()).unwrap().is_ok() {
                                 resolver
-                                    .derived
+                                    .global_scope
                                     .entry(name)
                                     .or_default()
                                     .push((id, deps.clone()));

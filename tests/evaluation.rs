@@ -33,6 +33,7 @@ impl PartialEq for Value {
                         .zip(r.iter())
                         .all(|((lx, ly), (rx, ry))| eq(lx, rx) && eq(ly, ry))
             }
+            (Self::EmptyList, Self::EmptyList) => true,
             _ => false,
         }
     }

@@ -664,10 +664,10 @@ pub fn compile_assignments(
     let mut names = Names::default();
     let mut builder = InstructionBuilder::default();
 
-    for Assignment { name, value } in assignments {
+    for Assignment { id, value } in assignments {
         let value = compile_expression(value, &mut builder, &names)?;
-        names.create(*name, value.ty())?;
-        builder.store(*name, value);
+        names.create(*id, value.ty())?;
+        builder.store(*id, value);
     }
 
     let vars = builder.defined_vars();

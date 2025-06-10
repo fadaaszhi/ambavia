@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::ast::{self, ExpressionListEntry};
 pub use crate::ast::{BinaryOperator, ComparisonOperator, SumProdKind, UnaryOperator};
@@ -45,7 +45,7 @@ pub enum Expression {
 
 #[derive(Debug, PartialEq)]
 pub struct Assignment {
-    pub name: usize,
+    pub id: usize,
     pub value: Expression,
 }
 
@@ -55,28 +55,50 @@ pub struct Body {
     pub value: Box<Expression>,
 }
 
-#[derive(Clone)]
-struct Scoped<T> {
-    value: T,
-    depends: usize,
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum Dependency {
+    Assignment(usize),
+    Unsubstituted,
 }
 
-fn scoped<T>(value: T, depends: usize) -> Scoped<T> {
-    Scoped { value, depends }
+type Dependencies<'a> = HashMap<&'a str, Dependency>;
+
+trait Merge {
+    fn merge(&mut self, other: Self);
+
+    fn merged(mut self, other: Self) -> Self
+    where
+        Self: Sized,
+    {
+        self.merge(other);
+        self
+    }
 }
 
-#[derive(Default)]
-struct Scope<'a> {
-    definitions: HashMap<&'a str, usize>,
-    derived: HashMap<&'a str, Scoped<usize>>,
+impl<'a> Merge for Dependencies<'a> {
+    fn merge(&mut self, other: Self) {
+        for (name, dep) in &other {
+            let d = self.entry(name).or_insert(Dependency::Unsubstituted);
+
+            if let Dependency::Assignment(id) = dep {
+                if let Dependency::Assignment(i) = d {
+                    assert_eq!(i, id);
+                }
+
+                *d = *dep;
+            }
+        }
+
+        self.extend(other);
+    }
 }
 
 struct Resolver<'a> {
     globals: HashMap<&'a str, Result<&'a ExpressionListEntry, String>>,
     assignments: Vec<Assignment>,
-    next_name: usize,
-    scopes: Vec<Scope<'a>>,
-    currently_resolving: HashSet<&'a str>,
+    id_counter: usize,
+    substitutions: HashMap<&'a str, Vec<usize>>,
+    derived: HashMap<&'a str, Vec<(usize, Dependencies<'a>)>>,
 }
 
 impl<'a> Resolver<'a> {
@@ -100,30 +122,48 @@ impl<'a> Resolver<'a> {
         Self {
             globals,
             assignments: vec![],
-            next_name: 0,
-            scopes: vec![Scope::default()],
-            currently_resolving: HashSet::new(),
+            id_counter: 0,
+            substitutions: HashMap::new(),
+            derived: HashMap::new(),
         }
     }
 
-    fn next_name(&mut self) -> usize {
-        let next_name = self.next_name;
-        self.next_name += 1;
-        next_name
+    fn next_id(&mut self) -> usize {
+        let next_id = self.id_counter;
+        self.id_counter += 1;
+        next_id
     }
 
-    fn calculate_variable(&mut self, name: &'a str) -> Result<Scoped<usize>, String> {
-        for (i, scope) in self.scopes.iter().enumerate().rev() {
-            if let Some(&index) = scope.definitions.get(name) {
-                return Ok(Scoped {
-                    value: index,
-                    depends: i,
-                });
+    fn has_substitution(&self, name: &str) -> bool {
+        self.substitutions
+            .get(name)
+            .map(|v| !v.is_empty())
+            .unwrap_or_default()
+    }
+
+    fn resolve_variable(&mut self, name: &'a str) -> Result<(usize, Dependencies<'a>), String> {
+        if let Some(id) = self.substitutions.get(name).and_then(|v| v.last()) {
+            let mut deps = Dependencies::new();
+            deps.insert(name, Dependency::Assignment(*id));
+            return Ok((*id, deps));
+        }
+
+        if let Some((id, deps)) = self.derived.get(name).and_then(|v| v.last()) {
+            if deps.iter().all(|(n, d)| match d {
+                Dependency::Assignment(i) => {
+                    self.substitutions
+                        .get(n)
+                        .and_then(|v| v.last())
+                        .cloned()
+                        .unwrap_or_else(|| self.derived.get(n).unwrap().last().unwrap().0)
+                        == *i
+                }
+                Dependency::Unsubstituted => !self.has_substitution(n),
+            }) {
+                let mut deps = deps.clone();
+                deps.insert(name, Dependency::Assignment(*id));
+                return Ok((*id, deps));
             }
-        }
-
-        if let Some(x) = self.scopes.last().unwrap().derived.get(name) {
-            return Ok(x.clone());
         }
 
         let entry = self
@@ -134,38 +174,15 @@ impl<'a> Resolver<'a> {
 
         match entry {
             ExpressionListEntry::Assignment { value, .. } => {
-                if self.currently_resolving.contains(name) {
-                    let mut names = self.currently_resolving.iter().cloned().collect::<Vec<_>>();
-                    names.sort();
-                    let last = names.pop().unwrap();
-
-                    return Err(if names.len() > 0 {
-                        let joined = names.join("', '");
-                        format!("'{joined}' and '{last}' can't be defined in terms of each other")
-                    } else {
-                        format!("'{last}' can't be defined in terms of itself")
-                    });
-                }
-                self.currently_resolving.insert(name);
-                let value = self.resolve_expression(value);
-                self.currently_resolving.remove(name);
-                let value = value?;
-                let result = if let Some(result) = self.scopes[value.depends].derived.get(name) {
-                    result.clone()
-                } else {
-                    let index = self.next_name();
-                    self.assignments.push(Assignment {
-                        name: index,
-                        value: value.value,
-                    });
-                    scoped(index, value.depends)
-                };
-
-                for i in result.depends..self.scopes.len() {
-                    self.scopes[i].derived.insert(name, result.clone());
-                }
-
-                Ok(result)
+                let (value, mut deps) = self.resolve_expression(value)?;
+                let id = self.next_id();
+                self.assignments.push(Assignment { id, value });
+                self.derived
+                    .entry(name)
+                    .or_default()
+                    .push((id, deps.clone()));
+                deps.insert(name, Dependency::Assignment(id));
+                Ok((id, deps))
             }
             ExpressionListEntry::FunctionDeclaration { .. } => {
                 Err(format!("'{name}' is a function, try using parentheses"))
@@ -177,24 +194,24 @@ impl<'a> Resolver<'a> {
     fn resolve_expressions(
         &mut self,
         es: &'a [ast::Expression],
-    ) -> Result<Scoped<Vec<Expression>>, String> {
+    ) -> Result<(Vec<Expression>, Dependencies<'a>), String> {
         let mut result = vec![];
-        let mut depends = 0;
+        let mut deps = Dependencies::new();
 
         for e in es {
-            let e = self.resolve_expression(e)?;
-            result.push(e.value);
-            depends = depends.max(e.depends);
+            let (e, d) = self.resolve_expression(e)?;
+            result.push(e);
+            deps.merge(d);
         }
 
-        Ok(scoped(result, depends))
+        Ok((result, deps))
     }
 
     fn resolve_call(
         &mut self,
         callee: &'a str,
         args: &'a [ast::Expression],
-    ) -> Result<Scoped<Expression>, String> {
+    ) -> Result<(Expression, Dependencies<'a>), String> {
         let Some(entry) = self.globals.get(callee) else {
             return Err(format!("'{callee}' is not defined"));
         };
@@ -221,69 +238,105 @@ impl<'a> Resolver<'a> {
             ));
         }
 
-        let mut scope = Scope::default();
-        let mut depends = 0;
+        let mut seen = HashMap::new();
+        let mut argument_deps = Dependencies::new();
 
         for (name, value) in parameters.iter().zip(args) {
-            if scope.definitions.contains_key(name.as_str()) {
+            if seen.contains_key(name.as_str()) {
                 return Err(format!(
                     "cannot use '{name}' for multiple parameters of this function"
                 ));
             }
 
-            let value = self.resolve_expression(value)?;
-            depends = depends.max(value.depends);
-            let index = self.next_name();
-            self.assignments.push(Assignment {
-                name: index,
-                value: value.value,
-            });
-            scope.definitions.insert(name, index);
+            let (value, d) = self.resolve_expression(value)?;
+            argument_deps.merge(d);
+            let id = self.next_id();
+            self.assignments.push(Assignment { id, value });
+            self.substitutions.entry(name).or_default().push(id);
+            seen.insert(name.as_str(), id);
         }
 
-        // i think depends might need to be a (bit)set or something
-        self.scopes.push(scope);
+        // Don't unwrap yet because we want to clean up self.substitutions. But
+        // maybe it's actually okay to leave it messy and it can cleaned up once
+        // at the end of each expression list entry?
         let body = self.resolve_expression(body);
-        self.scopes.pop();
-        let body = body?;
-        depends = depends.max(body.depends.min(self.scopes.len() - 1));
 
-        Ok(scoped(body.value, depends))
+        for (name, id) in &seen {
+            let popped = self.substitutions.get_mut(name).unwrap().pop();
+            assert_eq!(popped, Some(*id))
+        }
+
+        let (body, mut body_deps) = body?;
+
+        for (name, id) in &seen {
+            if let Some(dep) = body_deps.remove(name) {
+                assert_eq!(dep, Dependency::Assignment(*id));
+            }
+        }
+
+        for (name, dep) in &mut body_deps {
+            if self.has_substitution(name) {
+                continue;
+            }
+
+            if *dep == Dependency::Unsubstituted {
+                continue;
+            }
+
+            let v = self.derived.get_mut(name).unwrap();
+            let d = &v.last().unwrap().1;
+
+            for (n, i) in &seen {
+                if let Some(x) = d.get(n) {
+                    assert_eq!(*x, Dependency::Assignment(*i));
+                }
+            }
+
+            if seen.iter().any(|(n, _)| d.contains_key(n)) {
+                v.pop();
+                *dep = Dependency::Unsubstituted;
+            }
+        }
+
+        Ok((body, argument_deps.merged(body_deps)))
     }
 
-    fn resolve_expression(&mut self, e: &'a ast::Expression) -> Result<Scoped<Expression>, String> {
+    fn resolve_expression(
+        &mut self,
+        e: &'a ast::Expression,
+    ) -> Result<(Expression, Dependencies<'a>), String> {
         match e {
-            ast::Expression::Number(value) => Ok(scoped(Expression::Number(*value), 0)),
+            ast::Expression::Number(value) => Ok((Expression::Number(*value), Dependencies::new())),
             ast::Expression::Identifier(name) => {
-                let name = self.calculate_variable(name)?;
-                Ok(scoped(Expression::Identifier(name.value), name.depends))
+                let (id, d) = self.resolve_variable(name)?;
+                Ok((Expression::Identifier(id), d))
             }
             ast::Expression::List(list) => {
-                let list = self.resolve_expressions(list)?;
-                Ok(scoped(Expression::List(list.value), list.depends))
+                let (list, d) = self.resolve_expressions(list)?;
+                Ok((Expression::List(list), d))
             }
             ast::Expression::ListRange {
                 before_ellipsis,
                 after_ellipsis,
             } => {
-                let before_ellipsis = self.resolve_expressions(before_ellipsis)?;
-                let after_ellipsis = self.resolve_expressions(after_ellipsis)?;
-                Ok(scoped(
+                let (before_ellipsis, d0) = self.resolve_expressions(before_ellipsis)?;
+                let (after_ellipsis, d1) = self.resolve_expressions(after_ellipsis)?;
+                Ok((
                     Expression::ListRange {
-                        before_ellipsis: before_ellipsis.value,
-                        after_ellipsis: after_ellipsis.value,
+                        before_ellipsis,
+                        after_ellipsis,
                     },
-                    before_ellipsis.depends.max(after_ellipsis.depends),
+                    d0.merged(d1),
                 ))
             }
             ast::Expression::UnaryOperation { operation, arg } => {
-                let arg = self.resolve_expression(&arg)?;
-                Ok(scoped(
+                let (arg, d) = self.resolve_expression(&arg)?;
+                Ok((
                     Expression::UnaryOperation {
                         operation: *operation,
-                        arg: Box::new(arg.value),
+                        arg: Box::new(arg),
                     },
-                    arg.depends,
+                    d,
                 ))
             }
             ast::Expression::BinaryOperation {
@@ -291,15 +344,15 @@ impl<'a> Resolver<'a> {
                 left,
                 right,
             } => {
-                let left = self.resolve_expression(&left)?;
-                let right = self.resolve_expression(&right)?;
-                Ok(scoped(
+                let (left, d0) = self.resolve_expression(&left)?;
+                let (right, d1) = self.resolve_expression(&right)?;
+                Ok((
                     Expression::BinaryOperation {
                         operation: *operation,
-                        left: Box::new(left.value),
-                        right: Box::new(right.value),
+                        left: Box::new(left),
+                        right: Box::new(right),
                     },
-                    left.depends.max(right.depends),
+                    d0.merged(d1),
                 ))
             }
             ast::Expression::CallOrMultiply { callee, args } => {
@@ -308,28 +361,29 @@ impl<'a> Resolver<'a> {
                 {
                     self.resolve_call(callee, args)
                 } else {
-                    let name = callee;
-                    let callee = self.calculate_variable(callee)?;
-                    let args = self.resolve_expressions(args)?;
-                    let len = args.value.len();
+                    let (left, right) = (callee, args);
+                    let name = left;
+                    let (left, d0) = self.resolve_variable(left)?;
+                    let (right, d1) = self.resolve_expressions(right)?;
+                    let len = right.len();
 
                     if len == 1 || len == 2 {
-                        let mut args_iter = args.value.into_iter();
-                        Ok(scoped(
+                        let mut right_iter = right.into_iter();
+                        Ok((
                             Expression::BinaryOperation {
                                 operation: BinaryOperator::Mul,
-                                left: Box::new(Expression::Identifier(callee.value)),
+                                left: Box::new(Expression::Identifier(left)),
                                 right: Box::new(if len == 1 {
-                                    args_iter.next().unwrap()
+                                    right_iter.next().unwrap()
                                 } else {
                                     Expression::BinaryOperation {
                                         operation: BinaryOperator::Point,
-                                        left: Box::new(args_iter.next().unwrap()),
-                                        right: Box::new(args_iter.next().unwrap()),
+                                        left: Box::new(right_iter.next().unwrap()),
+                                        right: Box::new(right_iter.next().unwrap()),
                                     }
                                 }),
                             },
-                            callee.depends.max(args.depends),
+                            d0.merged(d1),
                         ))
                     } else if len == 0 {
                         Err(format!("variable '{name}' can't be used as a function"))
@@ -343,13 +397,13 @@ impl<'a> Resolver<'a> {
                 operands,
                 operators,
             }) => {
-                let operands = self.resolve_expressions(operands)?;
-                Ok(scoped(
+                let (operands, d) = self.resolve_expressions(operands)?;
+                Ok((
                     Expression::ChainedComparison {
-                        operands: operands.value,
+                        operands,
                         operators: operators.clone(),
                     },
-                    operands.depends,
+                    d,
                 ))
             }
             ast::Expression::Piecewise {
@@ -357,22 +411,22 @@ impl<'a> Resolver<'a> {
                 consequent,
                 alternate,
             } => {
-                let test = self.resolve_expression(&test)?;
-                let consequent = self.resolve_expression(&consequent)?;
-                let mut depends = test.depends.max(consequent.depends);
-                Ok(scoped(
+                let (test, d0) = self.resolve_expression(&test)?;
+                let (consequent, d1) = self.resolve_expression(&consequent)?;
+                let mut d = d0.merged(d1);
+                Ok((
                     Expression::Piecewise {
-                        test: Box::new(test.value),
-                        consequent: Box::new(consequent.value),
+                        test: Box::new(test),
+                        consequent: Box::new(consequent),
                         alternate: if let Some(e) = alternate {
-                            let alternate = self.resolve_expression(&e)?;
-                            depends = depends.max(alternate.depends);
-                            Some(Box::new(alternate.value))
+                            let (alternate, d2) = self.resolve_expression(&e)?;
+                            d.merge(d2);
+                            Some(Box::new(alternate))
                         } else {
                             None
                         },
                     },
-                    depends,
+                    d,
                 ))
             }
             ast::Expression::SumProd { .. } => todo!(),
@@ -380,34 +434,68 @@ impl<'a> Resolver<'a> {
                 body,
                 substitutions,
             } => {
-                let mut scope = Scope::default();
-                let mut depends = 0;
+                let mut seen = HashMap::new();
+                let mut substitution_deps = Dependencies::new();
 
                 for (name, value) in substitutions {
-                    if scope.definitions.contains_key(name.as_str()) {
+                    if seen.contains_key(name.as_str()) {
                         return Err(format!(
                             "a 'with' expression cannot make multiple substitutions for '{name}'"
                         ));
                     }
 
-                    let value = self.resolve_expression(value)?;
-                    depends = depends.max(value.depends);
-                    let index = self.next_name();
-                    self.assignments.push(Assignment {
-                        name: index,
-                        value: value.value,
-                    });
-                    scope.definitions.insert(name, index);
+                    let (value, d) = self.resolve_expression(value)?;
+                    substitution_deps.merge(d);
+                    let id = self.next_id();
+                    self.assignments.push(Assignment { id, value });
+                    self.substitutions.entry(name).or_default().push(id);
+                    seen.insert(name.as_str(), id);
                 }
 
-                // i think depends might need to be a (bit)set or something
-                self.scopes.push(scope);
+                // Don't unwrap yet because we want to clean up
+                // self.substitutions. But maybe it's actually okay to leave it
+                // messy and it can cleaned up once at the end of each
+                // expression list entry?
                 let body = self.resolve_expression(body);
-                self.scopes.pop();
-                let body = body?;
-                depends = depends.max(body.depends.min(self.scopes.len() - 1));
 
-                Ok(scoped(body.value, depends))
+                for (name, id) in &seen {
+                    let popped = self.substitutions.get_mut(name).unwrap().pop();
+                    assert_eq!(popped, Some(*id))
+                }
+
+                let (body, mut body_deps) = body?;
+
+                for (name, id) in &seen {
+                    if let Some(dep) = body_deps.remove(name) {
+                        assert_eq!(dep, Dependency::Assignment(*id));
+                    }
+                }
+
+                for (name, dep) in &mut body_deps {
+                    if self.has_substitution(name) {
+                        continue;
+                    }
+
+                    if *dep == Dependency::Unsubstituted {
+                        continue;
+                    }
+
+                    let v = self.derived.get_mut(name).unwrap();
+                    let d = &v.last().unwrap().1;
+
+                    for (n, i) in &seen {
+                        if let Some(x) = d.get(n) {
+                            assert_eq!(*x, Dependency::Assignment(*i));
+                        }
+                    }
+
+                    if seen.iter().any(|(n, _)| d.contains_key(n)) {
+                        v.pop();
+                        *dep = Dependency::Unsubstituted;
+                    }
+                }
+
+                Ok((body, substitution_deps.merged(body_deps)))
             }
             ast::Expression::For { .. } => todo!(),
         }
@@ -422,23 +510,30 @@ pub fn resolve_names(
     let assignment_indices: Vec<_> = list
         .iter()
         .map(|e| match e {
+            // we could add in asserts here to check things like no substitutions or derived is all length 1 or 0
             ExpressionListEntry::Assignment { name, value } => {
-                if let Some(index) = resolver.scopes[0].derived.get(name.as_str()) {
-                    Some(Ok(index.value))
+                if let Some((id, _)) = resolver
+                    .derived
+                    .get(name.as_str())
+                    .inspect(|v| assert!(v.len() <= 1))
+                    .and_then(|v| v.last())
+                {
+                    Some(Ok(*id))
                 } else {
                     match resolver.resolve_expression(value) {
-                        Ok(value) => {
-                            let index = resolver.next_name();
-                            resolver.assignments.push(Assignment {
-                                name: index,
-                                value: value.value,
-                            });
+                        Ok((value, deps)) => {
+                            let id = resolver.next_id();
+                            resolver.assignments.push(Assignment { id, value });
 
                             if resolver.globals.get(name.as_str()).unwrap().is_ok() {
-                                resolver.scopes[0].derived.insert(name, scoped(index, 0));
+                                resolver
+                                    .derived
+                                    .entry(name)
+                                    .or_default()
+                                    .push((id, deps.clone()));
                             }
 
-                            Some(Ok(index))
+                            Some(Ok(id))
                         }
                         Err(error) => Some(Err(error)),
                     }
@@ -448,13 +543,10 @@ pub fn resolve_names(
             ExpressionListEntry::Relation(..) => todo!(),
             ExpressionListEntry::Expression(expression) => {
                 Some(match resolver.resolve_expression(expression) {
-                    Ok(value) => {
-                        let index = resolver.next_name();
-                        resolver.assignments.push(Assignment {
-                            name: index,
-                            value: value.value,
-                        });
-                        Ok(index)
+                    Ok((value, _)) => {
+                        let id = resolver.next_id();
+                        resolver.assignments.push(Assignment { id, value });
+                        Ok(id)
                     }
                     Err(error) => Err(error),
                 })
@@ -509,11 +601,11 @@ mod tests {
             (
                 vec![
                     Assignment {
-                        name: 0,
+                        id: 0,
                         value: Expression::Number(5.0),
                     },
                     Assignment {
-                        name: 1,
+                        id: 1,
                         value: Expression::BinaryOperation {
                             operation: BinaryOperator::Add,
                             left: bx(Expression::Number(1.0)),
@@ -542,11 +634,11 @@ mod tests {
             (
                 vec![
                     Assignment {
-                        name: 0,
+                        id: 0,
                         value: Expression::Number(1.0),
                     },
                     Assignment {
-                        name: 1,
+                        id: 1,
                         value: Expression::Identifier(0),
                     },
                 ],
@@ -575,11 +667,11 @@ mod tests {
             (
                 vec![
                     Assignment {
-                        name: 0,
+                        id: 0,
                         value: Expression::Number(1.0),
                     },
                     Assignment {
-                        name: 1,
+                        id: 1,
                         value: Expression::Number(2.0),
                     },
                 ],
@@ -594,6 +686,7 @@ mod tests {
 
     #[test]
     fn circular_error() {
+        panic!("this currrently fails by stack overflow");
         assert_eq!(
             resolve_names(&[
                 ElAssign {
@@ -623,14 +716,17 @@ mod tests {
     fn dependencies() {
         assert_eq!(
             resolve_names(&[
+                // c = 1
                 ElAssign {
                     name: "c".into(),
                     value: ANum(1.0),
                 },
+                // b = c
                 ElAssign {
                     name: "b".into(),
                     value: AId("c".into()),
                 },
+                // a = b with c = 2
                 ElAssign {
                     name: "a".into(),
                     value: AWith {
@@ -638,14 +734,17 @@ mod tests {
                         substitutions: vec![("c".into(), ANum(2.0))],
                     },
                 },
+                // a with b = 3
                 ElExpr(AWith {
                     body: bx(AId("a".into())),
                     substitutions: vec![("b".into(), ANum(3.0))],
                 }),
+                // b with c = 4
                 ElExpr(AWith {
                     body: bx(AId("b".into())),
                     substitutions: vec![("c".into(), ANum(4.0))],
                 }),
+                // a with c = 5
                 ElExpr(AWith {
                     body: bx(AId("a".into())),
                     substitutions: vec![("c".into(), ANum(5.0))],
@@ -655,88 +754,73 @@ mod tests {
                 vec![
                     // c = 1
                     Assignment {
-                        name: 0,
+                        id: 0,
                         value: Expression::Number(1.0),
                     },
                     // b = c
                     Assignment {
-                        name: 1,
+                        id: 1,
                         value: Expression::Identifier(0),
                     },
                     // with c = 2
                     Assignment {
-                        name: 2,
+                        id: 2,
                         value: Expression::Number(2.0),
                     },
                     // b = c
                     Assignment {
-                        name: 3,
+                        id: 3,
                         value: Expression::Identifier(2),
                     },
                     // a = b
                     Assignment {
-                        name: 4,
+                        id: 4,
                         value: Expression::Identifier(3),
                     },
                     // with b = 3
                     Assignment {
-                        name: 5,
+                        id: 5,
                         value: Expression::Number(3.0),
                     },
                     // with c = 2
                     Assignment {
-                        name: 6,
+                        id: 6,
                         value: Expression::Number(2.0),
                     },
                     // a = b
                     Assignment {
-                        name: 7,
+                        id: 7,
                         value: Expression::Identifier(5),
                     },
                     // a
                     Assignment {
-                        name: 8,
+                        id: 8,
                         value: Expression::Identifier(7),
                     },
                     // with c = 4
                     Assignment {
-                        name: 9,
+                        id: 9,
                         value: Expression::Number(4.0),
                     },
                     // b = c
                     Assignment {
-                        name: 10,
+                        id: 10,
                         value: Expression::Identifier(9),
                     },
                     // b
                     Assignment {
-                        name: 11,
+                        id: 11,
                         value: Expression::Identifier(10),
                     },
                     // with c = 5
                     Assignment {
-                        name: 12,
+                        id: 12,
                         value: Expression::Number(5.0),
-                    },
-                    // with c = 2
-                    Assignment {
-                        name: 13,
-                        value: Expression::Number(2.0),
-                    },
-                    // b = c
-                    Assignment {
-                        name: 14,
-                        value: Expression::Identifier(13),
-                    },
-                    // a = b
-                    Assignment {
-                        name: 15,
-                        value: Expression::Identifier(14),
                     },
                     // a
                     Assignment {
-                        name: 16,
-                        value: Expression::Identifier(15),
+                        id: 13,
+                        value: Expression::Identifier(4),
                     },
                 ],
                 vec![
@@ -745,7 +829,7 @@ mod tests {
                     Some(Ok(4)),
                     Some(Ok(8)),
                     Some(Ok(11)),
-                    Some(Ok(16)),
+                    Some(Ok(13)),
                 ],
             ),
         );
@@ -776,7 +860,7 @@ mod tests {
             ]),
             (
                 vec![Assignment {
-                    name: 0,
+                    id: 0,
                     value: Expression::Number(1.0),
                 }],
                 vec![
@@ -814,11 +898,11 @@ mod tests {
             (
                 vec![
                     Assignment {
-                        name: 0,
+                        id: 0,
                         value: Expression::Number(1.0),
                     },
                     Assignment {
-                        name: 1,
+                        id: 1,
                         value: Expression::BinaryOperation {
                             operation: BinaryOperator::Mul,
                             left: bx(Expression::Identifier(0)),
@@ -826,7 +910,7 @@ mod tests {
                         },
                     },
                     Assignment {
-                        name: 2,
+                        id: 2,
                         value: Expression::BinaryOperation {
                             operation: BinaryOperator::Mul,
                             left: bx(Expression::Identifier(0)),
@@ -896,62 +980,62 @@ mod tests {
                 vec![
                     // a3 = 5
                     Assignment {
-                        name: 0,
+                        id: 0,
                         value: Expression::Number(5.0),
                     },
                     // c = a3
                     Assignment {
-                        name: 1,
+                        id: 1,
                         value: Expression::Identifier(0),
                     },
                     // with a1 = 6
                     Assignment {
-                        name: 2,
+                        id: 2,
                         value: Expression::Number(6.0),
                     },
                     // with a2 = 7
                     Assignment {
-                        name: 3,
+                        id: 3,
                         value: Expression::Number(7.0),
                     },
                     // a1 = 1
                     Assignment {
-                        name: 4,
+                        id: 4,
                         value: Expression::Number(1.0),
                     },
                     // a2 = 2
                     Assignment {
-                        name: 5,
+                        id: 5,
                         value: Expression::Number(2.0),
                     },
                     // a3 = 3
                     Assignment {
-                        name: 6,
+                        id: 6,
                         value: Expression::Number(3.0),
                     },
                     // a4 = 4
                     Assignment {
-                        name: 7,
+                        id: 7,
                         value: Expression::Number(4.0),
                     },
                     // b = a2
                     Assignment {
-                        name: 8,
+                        id: 8,
                         value: Expression::Identifier(5),
                     },
                     // c = a3
                     Assignment {
-                        name: 9,
+                        id: 9,
                         value: Expression::Identifier(6),
                     },
                     // d = a4
                     Assignment {
-                        name: 10,
+                        id: 10,
                         value: Expression::Identifier(7),
                     },
                     // [a1, b, c, d]
                     Assignment {
-                        name: 11,
+                        id: 11,
                         value: Expression::List(vec![
                             Expression::Identifier(4),
                             Expression::Identifier(8),
@@ -1106,22 +1190,22 @@ mod tests {
                 vec![
                     // b = 2
                     Assignment {
-                        name: 0,
+                        id: 0,
                         value: Expression::Number(2.0)
                     },
                     // a = 1
                     Assignment {
-                        name: 1,
+                        id: 1,
                         value: Expression::Number(1.0)
                     },
                     // c = 3
                     Assignment {
-                        name: 2,
+                        id: 2,
                         value: Expression::Number(3.0)
                     },
                     // a
                     Assignment {
-                        name: 3,
+                        id: 3,
                         value: Expression::Identifier(1)
                     }
                 ],

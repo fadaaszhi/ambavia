@@ -1009,6 +1009,7 @@ mod tests {
     // fn function_v1_10() {
     //     assert_eq!(
     //         resolve_names(&[
+    //             // f(a1, a2, a3, a4) = [a1, b, c, d]
     //             ElFunction {
     //                 name: "f".into(),
     //                 parameters: vec!["a1".into(), "a2".into(), "a3".into(), "a4".into()],
@@ -1019,24 +1020,29 @@ mod tests {
     //                     AId("d".into()),
     //                 ]),
     //             },
+    //             // b = a2
     //             ElAssign {
     //                 name: "b".into(),
     //                 value: AId("a2".into()),
     //             },
+    //             // c = a3
     //             ElAssign {
     //                 name: "c".into(),
     //                 value: AId("a3".into()),
     //             },
+    //             // a3 = 5
     //             ElAssign {
     //                 name: "a3".into(),
     //                 value: ANum(5.0),
     //             },
+    //             // d = a4
     //             ElAssign {
     //                 name: "d".into(),
     //                 value: AId("a4".into()),
     //             },
+    //             // f(1, 2, 3, 4) with a1 = 6, a2 = 7
     //             ElExpr(AWith {
-    //                 body: bx(ACall {
+    //                 body: bx(ACallMul {
     //                     callee: "f".into(),
     //                     args: vec![ANum(1.0), ANum(2.0), ANum(3.0), ANum(4.0)],
     //                 }),
@@ -1047,57 +1053,57 @@ mod tests {
     //             vec![
     //                 // a3 = 5
     //                 Assignment {
-    //                     name: 0,
+    //                     id: 0,
     //                     value: Expression::Number(5.0),
     //                 },
     //                 // c = a3
     //                 Assignment {
-    //                     name: 1,
+    //                     id: 1,
     //                     value: Expression::Identifier(0),
     //                 },
     //                 // with a1 = 6
     //                 Assignment {
-    //                     name: 2,
+    //                     id: 2,
     //                     value: Expression::Number(6.0),
     //                 },
     //                 // with a2 = 7
     //                 Assignment {
-    //                     name: 3,
+    //                     id: 3,
     //                     value: Expression::Number(7.0),
     //                 },
     //                 // a1 = 1
     //                 Assignment {
-    //                     name: 4,
+    //                     id: 4,
     //                     value: Expression::Number(1.0),
     //                 },
     //                 // a2 = 2
     //                 Assignment {
-    //                     name: 5,
+    //                     id: 5,
     //                     value: Expression::Number(2.0),
     //                 },
     //                 // a3 = 3
     //                 Assignment {
-    //                     name: 6,
+    //                     id: 6,
     //                     value: Expression::Number(3.0),
     //                 },
     //                 // a4 = 4
     //                 Assignment {
-    //                     name: 7,
+    //                     id: 7,
     //                     value: Expression::Number(4.0),
     //                 },
     //                 // b = a2
     //                 Assignment {
-    //                     name: 8,
+    //                     id: 8,
     //                     value: Expression::Identifier(3),
     //                 },
     //                 // d = a4
     //                 Assignment {
-    //                     name: 9,
+    //                     id: 9,
     //                     value: Expression::Identifier(7),
     //                 },
     //                 // [a1, b, c, d]
     //                 Assignment {
-    //                     name: 10,
+    //                     id: 10,
     //                     value: Expression::List(vec![
     //                         Expression::Identifier(4),
     //                         Expression::Identifier(8),

@@ -1126,7 +1126,6 @@ mod tests {
 
     #[test]
     fn efficiency() {
-        // need to fix this ugh
         assert_eq!(
             resolve_names(&[
                 ElAssign {

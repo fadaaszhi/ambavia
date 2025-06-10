@@ -677,7 +677,7 @@ pub fn compile_assignments(
         assignment_indices
             .iter()
             .map(|i| match i {
-                Some(Ok(index)) => Some(Ok(vars.get(index).unwrap().clone())),
+                Some(Ok(index)) => Some(Ok(*vars.get(index).unwrap())),
                 Some(Err(error)) => Some(Err(error.clone())),
                 None => None,
             })

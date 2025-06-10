@@ -128,10 +128,11 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    fn next_id(&mut self) -> usize {
-        let next_id = self.id_counter;
+    fn create_assignment(&mut self, value: Expression) -> usize {
+        let id = self.id_counter;
         self.id_counter += 1;
-        next_id
+        self.assignments.push(Assignment { id, value });
+        id
     }
 
     fn has_substitution(&self, name: &str) -> bool {
@@ -175,8 +176,7 @@ impl<'a> Resolver<'a> {
         match entry {
             ExpressionListEntry::Assignment { value, .. } => {
                 let (value, mut deps) = self.resolve_expression(value)?;
-                let id = self.next_id();
-                self.assignments.push(Assignment { id, value });
+                let id = self.create_assignment(value);
                 self.derived
                     .entry(name)
                     .or_default()
@@ -250,8 +250,7 @@ impl<'a> Resolver<'a> {
 
             let (value, d) = self.resolve_expression(value)?;
             argument_deps.merge(d);
-            let id = self.next_id();
-            self.assignments.push(Assignment { id, value });
+            let id = self.create_assignment(value);
             self.substitutions.entry(name).or_default().push(id);
             seen.insert(name.as_str(), id);
         }
@@ -330,7 +329,7 @@ impl<'a> Resolver<'a> {
                 ))
             }
             ast::Expression::UnaryOperation { operation, arg } => {
-                let (arg, d) = self.resolve_expression(&arg)?;
+                let (arg, d) = self.resolve_expression(arg)?;
                 Ok((
                     Expression::UnaryOperation {
                         operation: *operation,
@@ -344,8 +343,8 @@ impl<'a> Resolver<'a> {
                 left,
                 right,
             } => {
-                let (left, d0) = self.resolve_expression(&left)?;
-                let (right, d1) = self.resolve_expression(&right)?;
+                let (left, d0) = self.resolve_expression(left)?;
+                let (right, d1) = self.resolve_expression(right)?;
                 Ok((
                     Expression::BinaryOperation {
                         operation: *operation,
@@ -411,15 +410,15 @@ impl<'a> Resolver<'a> {
                 consequent,
                 alternate,
             } => {
-                let (test, d0) = self.resolve_expression(&test)?;
-                let (consequent, d1) = self.resolve_expression(&consequent)?;
+                let (test, d0) = self.resolve_expression(test)?;
+                let (consequent, d1) = self.resolve_expression(consequent)?;
                 let mut d = d0.merged(d1);
                 Ok((
                     Expression::Piecewise {
                         test: Box::new(test),
                         consequent: Box::new(consequent),
                         alternate: if let Some(e) = alternate {
-                            let (alternate, d2) = self.resolve_expression(&e)?;
+                            let (alternate, d2) = self.resolve_expression(e)?;
                             d.merge(d2);
                             Some(Box::new(alternate))
                         } else {
@@ -446,8 +445,7 @@ impl<'a> Resolver<'a> {
 
                     let (value, d) = self.resolve_expression(value)?;
                     substitution_deps.merge(d);
-                    let id = self.next_id();
-                    self.assignments.push(Assignment { id, value });
+                    let id = self.create_assignment(value);
                     self.substitutions.entry(name).or_default().push(id);
                     seen.insert(name.as_str(), id);
                 }
@@ -522,8 +520,7 @@ pub fn resolve_names(
                 } else {
                     match resolver.resolve_expression(value) {
                         Ok((value, deps)) => {
-                            let id = resolver.next_id();
-                            resolver.assignments.push(Assignment { id, value });
+                            let id = resolver.create_assignment(value);
 
                             if resolver.globals.get(name.as_str()).unwrap().is_ok() {
                                 resolver
@@ -544,8 +541,7 @@ pub fn resolve_names(
             ExpressionListEntry::Expression(expression) => {
                 Some(match resolver.resolve_expression(expression) {
                     Ok((value, _)) => {
-                        let id = resolver.next_id();
-                        resolver.assignments.push(Assignment { id, value });
+                        let id = resolver.create_assignment(value);
                         Ok(id)
                     }
                     Err(error) => Err(error),

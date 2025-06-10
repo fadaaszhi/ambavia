@@ -271,7 +271,7 @@ impl InstructionBuilder {
         } else {
             let index = self.var_counter;
             self.var_counter += 2;
-            self.vars.insert(name.into(), (Some(ty), index));
+            self.vars.insert(name, (Some(ty), index));
             index
         };
         self.instructions.push(match ty.size() {
@@ -329,7 +329,7 @@ impl InstructionBuilder {
     pub fn defined_vars(&self) -> HashMap<usize, (Type, usize)> {
         self.vars
             .iter()
-            .filter_map(|(k, (t, i))| t.map(|t| (k.clone(), (t, *i))))
+            .filter_map(|(k, (t, i))| t.map(|t| (*k, (t, *i))))
             .collect()
     }
 

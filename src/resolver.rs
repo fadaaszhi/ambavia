@@ -93,12 +93,33 @@ impl<'a> Merge for Dependencies<'a> {
     }
 }
 
+#[derive(Default)]
+struct ScopeMap<'a, T>(HashMap<&'a str, Vec<T>>);
+
+impl<'a, T> ScopeMap<'a, T> {
+    fn get(&self, k: &str) -> Option<&T> {
+        self.0.get(k).and_then(|v| v.last())
+    }
+
+    fn contains_key(&self, k: &str) -> bool {
+        self.0.get(k).map(|v| !v.is_empty()).unwrap_or_default()
+    }
+
+    fn push(&mut self, k: &'a str, v: T) {
+        self.0.entry(k).or_default().push(v);
+    }
+
+    fn pop(&mut self, k: &str) -> Option<T> {
+        self.0.get_mut(k).and_then(|v| v.pop())
+    }
+}
+
 struct Resolver<'a> {
     globals: HashMap<&'a str, Result<&'a ExpressionListEntry, String>>,
     assignments: Vec<Assignment>,
     id_counter: usize,
-    dynamic_scope: HashMap<&'a str, Vec<usize>>,
-    global_scope: HashMap<&'a str, Vec<(usize, Dependencies<'a>)>>,
+    dynamic_scope: ScopeMap<'a, usize>,
+    global_scope: ScopeMap<'a, (usize, Dependencies<'a>)>,
 }
 
 impl<'a> Resolver<'a> {
@@ -123,8 +144,8 @@ impl<'a> Resolver<'a> {
             globals,
             assignments: vec![],
             id_counter: 0,
-            dynamic_scope: HashMap::new(),
-            global_scope: HashMap::new(),
+            dynamic_scope: Default::default(),
+            global_scope: Default::default(),
         }
     }
 
@@ -135,31 +156,23 @@ impl<'a> Resolver<'a> {
         id
     }
 
-    fn is_dynamic(&self, name: &str) -> bool {
-        self.dynamic_scope
-            .get(name)
-            .map(|v| !v.is_empty())
-            .unwrap_or_default()
-    }
-
     fn resolve_variable(&mut self, name: &'a str) -> Result<(usize, Dependencies<'a>), String> {
-        if let Some(id) = self.dynamic_scope.get(name).and_then(|v| v.last()) {
+        if let Some(id) = self.dynamic_scope.get(name) {
             let mut deps = Dependencies::new();
             deps.insert(name, Dependency::Assignment(*id));
             return Ok((*id, deps));
         }
 
-        if let Some((id, deps)) = self.global_scope.get(name).and_then(|v| v.last()) {
+        if let Some((id, deps)) = self.global_scope.get(name) {
             if deps.iter().all(|(n, d)| match d {
                 Dependency::Assignment(i) => {
                     self.dynamic_scope
                         .get(n)
-                        .and_then(|v| v.last())
                         .cloned()
-                        .unwrap_or_else(|| self.global_scope.get(n).unwrap().last().unwrap().0)
+                        .unwrap_or_else(|| self.global_scope.get(n).unwrap().0)
                         == *i
                 }
-                Dependency::NotDynamic => !self.is_dynamic(n),
+                Dependency::NotDynamic => !self.dynamic_scope.contains_key(n),
             }) {
                 let mut deps = deps.clone();
                 deps.insert(name, Dependency::Assignment(*id));
@@ -177,10 +190,7 @@ impl<'a> Resolver<'a> {
             ExpressionListEntry::Assignment { value, .. } => {
                 let (value, mut deps) = self.resolve_expression(value)?;
                 let id = self.create_assignment(value);
-                self.global_scope
-                    .entry(name)
-                    .or_default()
-                    .push((id, deps.clone()));
+                self.global_scope.push(name, (id, deps.clone()));
                 deps.insert(name, Dependency::Assignment(id));
                 Ok((id, deps))
             }
@@ -205,6 +215,71 @@ impl<'a> Resolver<'a> {
         }
 
         Ok((result, deps))
+    }
+
+    fn resolve_dynamic(
+        &mut self,
+        body: &'a ast::Expression,
+        bindings: impl Iterator<Item = (&'a String, &'a ast::Expression)>,
+        error_string: impl FnOnce(&str) -> String,
+    ) -> Result<(Expression, Dependencies<'a>), String> {
+        let mut seen = HashMap::new();
+        let mut binding_deps = Dependencies::new();
+
+        for (name, value) in bindings {
+            if seen.contains_key(name.as_str()) {
+                return Err(error_string(name));
+            }
+
+            let (value, d) = self.resolve_expression(value)?;
+            binding_deps.merge(d);
+            let id = self.create_assignment(value);
+            self.dynamic_scope.push(name, id);
+            seen.insert(name.as_str(), id);
+        }
+
+        // Don't unwrap yet because we want to clean up self.dynamic_scope. But
+        // maybe it's actually okay to leave it messy and it can cleaned up once
+        // at the end of each expression list entry?
+        let body = self.resolve_expression(body);
+
+        for (name, id) in &seen {
+            let popped = self.dynamic_scope.pop(name);
+            assert_eq!(popped, Some(*id))
+        }
+
+        let (body, mut body_deps) = body?;
+
+        for (name, id) in &seen {
+            if let Some(dep) = body_deps.remove(name) {
+                assert_eq!(dep, Dependency::Assignment(*id));
+            }
+        }
+
+        for (name, dep) in &mut body_deps {
+            if self.dynamic_scope.contains_key(name) {
+                continue;
+            }
+
+            if *dep == Dependency::NotDynamic {
+                continue;
+            }
+
+            let d = &self.global_scope.get(name).unwrap().1;
+
+            for (n, i) in &seen {
+                if let Some(x) = d.get(n) {
+                    assert_eq!(*x, Dependency::Assignment(*i));
+                }
+            }
+
+            if seen.iter().any(|(n, _)| d.contains_key(n)) {
+                self.global_scope.pop(name);
+                *dep = Dependency::NotDynamic;
+            }
+        }
+
+        Ok((body, binding_deps.merged(body_deps)))
     }
 
     fn resolve_call(
@@ -238,66 +313,9 @@ impl<'a> Resolver<'a> {
             ));
         }
 
-        let mut seen = HashMap::new();
-        let mut argument_deps = Dependencies::new();
-
-        for (name, value) in parameters.iter().zip(args) {
-            if seen.contains_key(name.as_str()) {
-                return Err(format!(
-                    "cannot use '{name}' for multiple parameters of this function"
-                ));
-            }
-
-            let (value, d) = self.resolve_expression(value)?;
-            argument_deps.merge(d);
-            let id = self.create_assignment(value);
-            self.dynamic_scope.entry(name).or_default().push(id);
-            seen.insert(name.as_str(), id);
-        }
-
-        // Don't unwrap yet because we want to clean up self.dynamic_scope. But
-        // maybe it's actually okay to leave it messy and it can cleaned up once
-        // at the end of each expression list entry?
-        let body = self.resolve_expression(body);
-
-        for (name, id) in &seen {
-            let popped = self.dynamic_scope.get_mut(name).unwrap().pop();
-            assert_eq!(popped, Some(*id))
-        }
-
-        let (body, mut body_deps) = body?;
-
-        for (name, id) in &seen {
-            if let Some(dep) = body_deps.remove(name) {
-                assert_eq!(dep, Dependency::Assignment(*id));
-            }
-        }
-
-        for (name, dep) in &mut body_deps {
-            if self.is_dynamic(name) {
-                continue;
-            }
-
-            if *dep == Dependency::NotDynamic {
-                continue;
-            }
-
-            let v = self.global_scope.get_mut(name).unwrap();
-            let d = &v.last().unwrap().1;
-
-            for (n, i) in &seen {
-                if let Some(x) = d.get(n) {
-                    assert_eq!(*x, Dependency::Assignment(*i));
-                }
-            }
-
-            if seen.iter().any(|(n, _)| d.contains_key(n)) {
-                v.pop();
-                *dep = Dependency::NotDynamic;
-            }
-        }
-
-        Ok((body, argument_deps.merged(body_deps)))
+        self.resolve_dynamic(body, parameters.iter().zip(args.iter()), |name| {
+            format!("cannot use '{name}' for multiple parameters of this function")
+        })
     }
 
     fn resolve_expression(
@@ -432,69 +450,9 @@ impl<'a> Resolver<'a> {
             ast::Expression::With {
                 body,
                 substitutions,
-            } => {
-                let mut seen = HashMap::new();
-                let mut substitution_deps = Dependencies::new();
-
-                for (name, value) in substitutions {
-                    if seen.contains_key(name.as_str()) {
-                        return Err(format!(
-                            "a 'with' expression cannot make multiple substitutions for '{name}'"
-                        ));
-                    }
-
-                    let (value, d) = self.resolve_expression(value)?;
-                    substitution_deps.merge(d);
-                    let id = self.create_assignment(value);
-                    self.dynamic_scope.entry(name).or_default().push(id);
-                    seen.insert(name.as_str(), id);
-                }
-
-                // Don't unwrap yet because we want to clean up
-                // self.dynamic_scope. But maybe it's actually okay to leave it
-                // messy and it can cleaned up once at the end of each
-                // expression list entry?
-                let body = self.resolve_expression(body);
-
-                for (name, id) in &seen {
-                    let popped = self.dynamic_scope.get_mut(name).unwrap().pop();
-                    assert_eq!(popped, Some(*id))
-                }
-
-                let (body, mut body_deps) = body?;
-
-                for (name, id) in &seen {
-                    if let Some(dep) = body_deps.remove(name) {
-                        assert_eq!(dep, Dependency::Assignment(*id));
-                    }
-                }
-
-                for (name, dep) in &mut body_deps {
-                    if self.is_dynamic(name) {
-                        continue;
-                    }
-
-                    if *dep == Dependency::NotDynamic {
-                        continue;
-                    }
-
-                    let v = self.global_scope.get_mut(name).unwrap();
-                    let d = &v.last().unwrap().1;
-
-                    for (n, i) in &seen {
-                        if let Some(x) = d.get(n) {
-                            assert_eq!(*x, Dependency::Assignment(*i));
-                        }
-                    }
-
-                    if seen.iter().any(|(n, _)| d.contains_key(n)) {
-                        v.pop();
-                        *dep = Dependency::NotDynamic;
-                    }
-                }
-
-                Ok((body, substitution_deps.merged(body_deps)))
-            }
+            } => self.resolve_dynamic(body, substitutions.iter().map(|(n, v)| (n, v)), |name| {
+                format!("a 'with' expression cannot make multiple substitutions for '{name}'")
+            }),
             ast::Expression::For { .. } => todo!(),
         }
     }
@@ -507,45 +465,40 @@ pub fn resolve_names(
 
     let assignment_indices: Vec<_> = list
         .iter()
-        .map(|e| match e {
-            // we could add in asserts here to check things like no substitutions or derived is all length 1 or 0
-            ExpressionListEntry::Assignment { name, value } => {
-                if let Some((id, _)) = resolver
-                    .global_scope
-                    .get(name.as_str())
-                    .inspect(|v| assert!(v.len() <= 1))
-                    .and_then(|v| v.last())
-                {
-                    Some(Ok(*id))
-                } else {
-                    match resolver.resolve_expression(value) {
-                        Ok((value, deps)) => {
-                            let id = resolver.create_assignment(value);
+        .map(|e| {
+            assert!(resolver.dynamic_scope.0.iter().all(|(_, v)| v.is_empty()));
+            assert!(resolver.global_scope.0.iter().all(|(_, v)| v.len() <= 1));
 
-                            if resolver.globals.get(name.as_str()).unwrap().is_ok() {
-                                resolver
-                                    .global_scope
-                                    .entry(name)
-                                    .or_default()
-                                    .push((id, deps.clone()));
+            match e {
+                ExpressionListEntry::Assignment { name, value } => {
+                    if let Some((id, _)) = resolver.global_scope.get(name) {
+                        Some(Ok(*id))
+                    } else {
+                        match resolver.resolve_expression(value) {
+                            Ok((value, deps)) => {
+                                let id = resolver.create_assignment(value);
+
+                                if resolver.globals.get(name.as_str()).unwrap().is_ok() {
+                                    resolver.global_scope.push(name, (id, deps));
+                                }
+
+                                Some(Ok(id))
                             }
-
-                            Some(Ok(id))
+                            Err(error) => Some(Err(error)),
                         }
-                        Err(error) => Some(Err(error)),
                     }
                 }
-            }
-            ExpressionListEntry::FunctionDeclaration { .. } => None,
-            ExpressionListEntry::Relation(..) => todo!(),
-            ExpressionListEntry::Expression(expression) => {
-                Some(match resolver.resolve_expression(expression) {
-                    Ok((value, _)) => {
-                        let id = resolver.create_assignment(value);
-                        Ok(id)
-                    }
-                    Err(error) => Err(error),
-                })
+                ExpressionListEntry::FunctionDeclaration { .. } => None,
+                ExpressionListEntry::Relation(..) => todo!(),
+                ExpressionListEntry::Expression(expression) => {
+                    Some(match resolver.resolve_expression(expression) {
+                        Ok((value, _)) => {
+                            let id = resolver.create_assignment(value);
+                            Ok(id)
+                        }
+                        Err(error) => Err(error),
+                    })
+                }
             }
         })
         .collect();

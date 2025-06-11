@@ -74,6 +74,10 @@ impl<'a> Dependencies<'a> {
             map: HashMap::new(),
         }
     }
+
+    fn none() -> Self {
+        Dependencies::with_level(0)
+    }
 }
 
 trait Merge {
@@ -181,7 +185,7 @@ impl<'a> Resolver<'a> {
         id
     }
 
-    fn resolve_variable(&mut self, name: &'a str) -> Result<(usize, Dependencies<'a>), String> {
+    fn resolve_variable(&mut self, name: &'a str) -> (Result<usize, String>, Dependencies<'a>) {
         if let Some((id, deps)) = self
             .dynamic_scope
             .get(name)
@@ -199,27 +203,36 @@ impl<'a> Resolver<'a> {
             }) {
                 let mut deps = deps.clone();
                 deps.map.insert(name, Dependency::Assignment(*id));
-                return Ok((*id, deps));
+                return (Ok(*id), deps);
             }
         }
 
-        let entry = self
+        let entry = match self
             .globals
             .get(name)
-            .ok_or_else(|| format!("'{name}' is not defined"))?
-            .clone()?;
+            .ok_or_else(|| format!("'{name}' is not defined"))
+            .cloned()
+            .and_then(|x| x)
+        {
+            Ok(entry) => entry,
+            Err(err) => return (Err(err), Dependencies::none()),
+        };
 
         match entry {
             ExpressionListEntry::Assignment { value, .. } => {
-                let (value, mut deps) = self.resolve_expression(value)?;
+                let (value, mut deps) = match self.resolve_expression(value) {
+                    (Ok(v), d) => (v, d),
+                    (Err(e), d) => return (Err(e), d),
+                };
                 let id = self.push_assignment(deps.level, value);
                 self.global_scope.push(name, (id, deps.clone()));
                 deps.map.insert(name, Dependency::Assignment(id));
-                Ok((id, deps))
+                (Ok(id), deps)
             }
-            ExpressionListEntry::FunctionDeclaration { .. } => {
-                Err(format!("'{name}' is a function, try using parentheses"))
-            }
+            ExpressionListEntry::FunctionDeclaration { .. } => (
+                Err(format!("'{name}' is a function, try using parentheses")),
+                Dependencies::none(),
+            ),
             _ => unreachable!(),
         }
     }
@@ -227,17 +240,20 @@ impl<'a> Resolver<'a> {
     fn resolve_expressions(
         &mut self,
         es: &'a [ast::Expression],
-    ) -> Result<(Vec<Expression>, Dependencies<'a>), String> {
+    ) -> (Result<Vec<Expression>, String>, Dependencies<'a>) {
         let mut result = vec![];
-        let mut deps = Dependencies::with_level(0);
+        let mut deps = Dependencies::none();
 
         for e in es {
-            let (e, d) = self.resolve_expression(e)?;
-            result.push(e);
+            let (e, d) = self.resolve_expression(e);
             deps.merge(d);
+            match e {
+                Ok(e) => result.push(e),
+                Err(e) => return (Err(e), deps),
+            }
         }
 
-        Ok((result, deps))
+        (Ok(result), deps)
     }
 
     fn resolve_dynamic(
@@ -245,16 +261,19 @@ impl<'a> Resolver<'a> {
         body: &'a ast::Expression,
         bindings: impl Iterator<Item = (&'a String, &'a ast::Expression)>,
         error_string: impl FnOnce(&str) -> String,
-    ) -> Result<(Expression, Dependencies<'a>), String> {
+    ) -> (Result<Expression, String>, Dependencies<'a>) {
         let mut seen = HashMap::new();
-        let mut binding_deps = Dependencies::with_level(0);
+        let mut binding_deps = Dependencies::none();
 
         for (name, value) in bindings {
             if seen.contains_key(name.as_str()) {
-                return Err(error_string(name));
+                return (Err(error_string(name)), binding_deps);
             }
 
-            let (value, d) = self.resolve_expression(value)?;
+            let (value, d) = match self.resolve_expression(value) {
+                (Ok(v), d) => (v, d),
+                (Err(e), d) => return (Err(e), binding_deps.merged(d)),
+            };
             let id = self.push_assignment(d.level, value);
             seen.insert(name.as_str(), (id, d.level));
             binding_deps.merge(d);
@@ -265,17 +284,12 @@ impl<'a> Resolver<'a> {
                 .push(name, (id, Dependencies::with_level(level)));
         }
 
-        // Don't unwrap yet because we want to clean up self.dynamic_scope. But
-        // maybe it's actually okay to leave it messy and it can cleaned up once
-        // at the end of each expression list entry?
-        let body = self.resolve_expression(body);
+        let (body, mut body_deps) = self.resolve_expression(body);
 
         for (name, (id, _)) in &seen {
             let popped = self.dynamic_scope.pop(name);
             assert_eq!(popped.map(|(i, _)| i), Some(*id))
         }
-
-        let (body, mut body_deps) = body?;
 
         for (name, (id, _)) in &seen {
             if let Some(dep) = body_deps.map.remove(name) {
@@ -306,26 +320,26 @@ impl<'a> Resolver<'a> {
             }
         }
 
-        Ok((body, binding_deps.merged(body_deps)))
+        (body, binding_deps.merged(body_deps))
     }
 
     fn resolve_call(
         &mut self,
         callee: &'a str,
         args: &'a [ast::Expression],
-    ) -> Result<(Expression, Dependencies<'a>), String> {
-        let Some(entry) = self.globals.get(callee) else {
-            return Err(format!("'{callee}' is not defined"));
-        };
-        let ExpressionListEntry::FunctionDeclaration {
-            parameters, body, ..
-        } = entry.clone()?
-        else {
-            return Err(format!("variable '{callee}' can't be used as a function"));
+    ) -> (Result<Expression, String>, Dependencies<'a>) {
+        let err = |s| (Err(s), Dependencies::none());
+        let (parameters, body) = match self.globals.get(callee).cloned() {
+            Some(Ok(ExpressionListEntry::FunctionDeclaration {
+                parameters, body, ..
+            })) => (parameters, body),
+            Some(Ok(_)) => return err(format!("variable '{callee}' can't be used as a function")),
+            Some(Err(e)) => return err(e),
+            None => return err(format!("'{callee}' is not defined")),
         };
 
         if parameters.len() != args.len() {
-            return Err(format!(
+            return err(format!(
                 "function '{callee}' requires {}{}",
                 if args.len() > parameters.len() {
                     "only "
@@ -348,58 +362,70 @@ impl<'a> Resolver<'a> {
     fn resolve_expression(
         &mut self,
         e: &'a ast::Expression,
-    ) -> Result<(Expression, Dependencies<'a>), String> {
+    ) -> (Result<Expression, String>, Dependencies<'a>) {
         match e {
             ast::Expression::Number(value) => {
-                Ok((Expression::Number(*value), Dependencies::with_level(0)))
+                (Ok(Expression::Number(*value)), Dependencies::none())
             }
             ast::Expression::Identifier(name) => {
-                let (id, d) = self.resolve_variable(name)?;
-                Ok((Expression::Identifier(id), d))
+                let (id, d) = self.resolve_variable(name);
+                (id.map(Expression::Identifier), d)
             }
             ast::Expression::List(list) => {
-                let (list, d) = self.resolve_expressions(list)?;
-                Ok((Expression::List(list), d))
+                let (list, d) = self.resolve_expressions(list);
+                (list.map(Expression::List), d)
             }
             ast::Expression::ListRange {
                 before_ellipsis,
                 after_ellipsis,
             } => {
-                let (before_ellipsis, d0) = self.resolve_expressions(before_ellipsis)?;
-                let (after_ellipsis, d1) = self.resolve_expressions(after_ellipsis)?;
-                Ok((
-                    Expression::ListRange {
+                let (before_ellipsis, d0) = match self.resolve_expressions(before_ellipsis) {
+                    (Ok(v), d) => (v, d),
+                    (Err(e), d) => return (Err(e), d),
+                };
+                let (after_ellipsis, d1) = match self.resolve_expressions(after_ellipsis) {
+                    (Ok(v), d) => (v, d),
+                    (Err(e), d) => return (Err(e), d0.merged(d)),
+                };
+                (
+                    Ok(Expression::ListRange {
                         before_ellipsis,
                         after_ellipsis,
-                    },
+                    }),
                     d0.merged(d1),
-                ))
+                )
             }
             ast::Expression::UnaryOperation { operation, arg } => {
-                let (arg, d) = self.resolve_expression(arg)?;
-                Ok((
-                    Expression::UnaryOperation {
+                let (arg, d) = self.resolve_expression(arg);
+                (
+                    arg.map(|arg| Expression::UnaryOperation {
                         operation: *operation,
                         arg: Box::new(arg),
-                    },
+                    }),
                     d,
-                ))
+                )
             }
             ast::Expression::BinaryOperation {
                 operation,
                 left,
                 right,
             } => {
-                let (left, d0) = self.resolve_expression(left)?;
-                let (right, d1) = self.resolve_expression(right)?;
-                Ok((
-                    Expression::BinaryOperation {
+                let (left, d0) = match self.resolve_expression(left) {
+                    (Ok(v), d) => (v, d),
+                    (Err(e), d) => return (Err(e), d),
+                };
+                let (right, d1) = match self.resolve_expression(right) {
+                    (Ok(v), d) => (v, d),
+                    (Err(e), d) => return (Err(e), d0.merged(d)),
+                };
+                (
+                    Ok(Expression::BinaryOperation {
                         operation: *operation,
                         left: Box::new(left),
                         right: Box::new(right),
-                    },
+                    }),
                     d0.merged(d1),
-                ))
+                )
             }
             ast::Expression::CallOrMultiply { callee, args } => {
                 if let Some(Ok(ExpressionListEntry::FunctionDeclaration { .. })) =
@@ -409,14 +435,19 @@ impl<'a> Resolver<'a> {
                 } else {
                     let (left, right) = (callee, args);
                     let name = left;
-                    let (left, d0) = self.resolve_variable(left)?;
-                    let (right, d1) = self.resolve_expressions(right)?;
+                    let (left, d0) = match self.resolve_variable(left) {
+                        (Ok(v), d) => (v, d),
+                        (Err(e), d) => return (Err(e), d),
+                    };
                     let len = right.len();
-
-                    if len == 1 || len == 2 {
-                        let mut right_iter = right.into_iter();
-                        Ok((
-                            Expression::BinaryOperation {
+                    let (right, d1) = match self.resolve_expressions(right) {
+                        (Ok(v), d) => (v, d),
+                        (Err(e), d) => return (Err(e), d0.merged(d)),
+                    };
+                    (
+                        if len == 1 || len == 2 {
+                            let mut right_iter = right.into_iter();
+                            Ok(Expression::BinaryOperation {
                                 operation: BinaryOperator::Mul,
                                 left: Box::new(Expression::Identifier(left)),
                                 right: Box::new(if len == 1 {
@@ -428,14 +459,16 @@ impl<'a> Resolver<'a> {
                                         right: Box::new(right_iter.next().unwrap()),
                                     }
                                 }),
-                            },
-                            d0.merged(d1),
-                        ))
-                    } else if len == 0 {
-                        Err(format!("variable '{name}' can't be used as a function"))
-                    } else {
-                        Err("points may only have 2 coordinates".into())
-                    }
+                            })
+                        } else {
+                            Err(if len == 0 {
+                                format!("variable '{name}' can't be used as a function")
+                            } else {
+                                "points may only have 2 coordinates".into()
+                            })
+                        },
+                        d0.merged(d1),
+                    )
                 }
             }
             ast::Expression::Call { callee, args } => self.resolve_call(callee, args),
@@ -443,37 +476,46 @@ impl<'a> Resolver<'a> {
                 operands,
                 operators,
             }) => {
-                let (operands, d) = self.resolve_expressions(operands)?;
-                Ok((
-                    Expression::ChainedComparison {
+                let (operands, d) = self.resolve_expressions(operands);
+                (
+                    operands.map(|operands| Expression::ChainedComparison {
                         operands,
                         operators: operators.clone(),
-                    },
+                    }),
                     d,
-                ))
+                )
             }
             ast::Expression::Piecewise {
                 test,
                 consequent,
                 alternate,
             } => {
-                let (test, d0) = self.resolve_expression(test)?;
-                let (consequent, d1) = self.resolve_expression(consequent)?;
+                let (test, d0) = match self.resolve_expression(test) {
+                    (Ok(v), d) => (v, d),
+                    (Err(e), d) => return (Err(e), d),
+                };
+                let (consequent, d1) = match self.resolve_expression(consequent) {
+                    (Ok(v), d) => (v, d),
+                    (Err(e), d) => return (Err(e), d0.merged(d)),
+                };
                 let mut d = d0.merged(d1);
-                Ok((
-                    Expression::Piecewise {
+                (
+                    Ok(Expression::Piecewise {
                         test: Box::new(test),
                         consequent: Box::new(consequent),
                         alternate: if let Some(e) = alternate {
-                            let (alternate, d2) = self.resolve_expression(e)?;
+                            let (alternate, d2) = self.resolve_expression(e);
                             d.merge(d2);
-                            Some(Box::new(alternate))
+                            match alternate {
+                                Ok(a) => Some(Box::new(a)),
+                                Err(e) => return (Err(e), d),
+                            }
                         } else {
                             None
                         },
-                    },
+                    }),
                     d,
-                ))
+                )
             }
             ast::Expression::SumProd { .. } => todo!(),
             ast::Expression::With {
@@ -484,17 +526,20 @@ impl<'a> Resolver<'a> {
             }),
             ast::Expression::For { body, lists } => {
                 let mut seen = HashMap::new();
-                let mut list_deps = Dependencies::with_level(0);
+                let mut list_deps = Dependencies::none();
                 let mut resolved_lists = vec![];
 
                 for (name, value) in lists {
                     if seen.contains_key(name.as_str()) {
-                        return Err(format!(
+                        return (Err(format!(
                             "you can't define '{name}' more than once on the right-hand side of 'for'"
-                        ));
+                        )), list_deps);
                     }
 
-                    let (value, d) = self.resolve_expression(value)?;
+                    let (value, d) = match self.resolve_expression(value) {
+                        (Ok(v), d) => (v, d),
+                        (Err(e), d) => return (Err(e), list_deps.merged(d)),
+                    };
                     let assignment = self.create_assignment(value);
                     seen.insert(name.as_str(), assignment.id);
                     list_deps.merge(d);
@@ -509,10 +554,7 @@ impl<'a> Resolver<'a> {
                         .push(name, (*id, Dependencies::with_level(new_level)));
                 }
 
-                // Don't unwrap yet because we want to clean up self.dynamic_scope. But
-                // maybe it's actually okay to leave it messy and it can cleaned up once
-                // at the end of each expression list entry?
-                let body = self.resolve_expression(body);
+                let (body, mut body_deps) = self.resolve_expression(body);
 
                 for (name, id) in &seen {
                     let popped = self.dynamic_scope.pop(name);
@@ -520,8 +562,6 @@ impl<'a> Resolver<'a> {
                 }
 
                 let assignments = self.assignments.pop().unwrap();
-
-                let (body, mut body_deps) = body?;
 
                 for (name, id) in &seen {
                     if let Some(dep) = body_deps.map.remove(name) {
@@ -568,16 +608,16 @@ impl<'a> Resolver<'a> {
                         .max(body_deps.level);
                 }
 
-                Ok((
-                    Expression::For {
+                (
+                    body.map(|body| Expression::For {
                         body: Body {
                             assignments,
                             value: Box::new(body),
                         },
                         lists: resolved_lists,
-                    },
+                    }),
                     list_deps.merged(body_deps),
-                ))
+                )
             }
         }
     }
@@ -600,7 +640,7 @@ pub fn resolve_names(
                         Some(Ok(*id))
                     } else {
                         match resolver.resolve_expression(value) {
-                            Ok((value, deps)) => {
+                            (Ok(value), deps) => {
                                 let id = resolver.push_assignment(0, value);
 
                                 if resolver.globals.get(name.as_str()).unwrap().is_ok() {
@@ -609,7 +649,7 @@ pub fn resolve_names(
 
                                 Some(Ok(id))
                             }
-                            Err(error) => Some(Err(error)),
+                            (Err(error), _) => Some(Err(error)),
                         }
                     }
                 }
@@ -617,11 +657,11 @@ pub fn resolve_names(
                 ExpressionListEntry::Relation(..) => todo!(),
                 ExpressionListEntry::Expression(expression) => {
                     Some(match resolver.resolve_expression(expression) {
-                        Ok((value, _)) => {
+                        (Ok(value), _) => {
                             let id = resolver.push_assignment(0, value);
                             Ok(id)
                         }
-                        Err(error) => Err(error),
+                        (Err(error), _) => Err(error),
                     })
                 }
             }
@@ -915,23 +955,28 @@ mod tests {
     fn function_errors() {
         assert_eq!(
             resolve_names(&[
+                // a()
                 ElExpr(ACallMul {
                     callee: "a".into(),
                     args: vec![],
                 }),
+                // b = 1
                 ElAssign {
                     name: "b".into(),
                     value: ANum(1.0),
                 },
+                // b()
                 ElExpr(ACallMul {
                     callee: "b".into(),
                     args: vec![],
                 }),
+                // c() = 2
                 ElFunction {
                     name: "c".into(),
                     parameters: vec![],
                     body: ANum(2.0),
                 },
+                // c
                 ElExpr(AId("c".into())),
             ]),
             (
@@ -1672,4 +1717,6 @@ mod tests {
             ),
         );
     }
+
+    // TODO: cache errors in scope to prevent duplicate assignments being made when trying to access error variable
 }

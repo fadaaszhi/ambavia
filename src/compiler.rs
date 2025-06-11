@@ -2,7 +2,9 @@ use std::collections::HashMap;
 
 use crate::{
     instruction_builder::{BaseType, InstructionBuilder, Type, Value},
-    resolver::{Assignment, BinaryOperator, Body, ComparisonOperator, Expression, UnaryOperator},
+    resolver::{
+        Assignment, BinaryOperator, Body, BuiltIn, ComparisonOperator, Expression, UnaryOperator,
+    },
     vm::Instruction::{self, *},
 };
 
@@ -300,12 +302,12 @@ pub fn compile_expression(
             let (base, instruction) = match operation {
                 BinaryOperator::Add => match (left.ty().base(), right.ty().base()) {
                     (BaseType::Number, BaseType::Number) => (BaseType::Number, Add),
-                    (BaseType::Point, BaseType::Point) => (BaseType::Number, Add2),
+                    (BaseType::Point, BaseType::Point) => (BaseType::Point, Add2),
                     _ => return Err(format!("cannot add {} and {}", left.ty(), right.ty())),
                 },
                 BinaryOperator::Sub => match (left.ty().base(), right.ty().base()) {
                     (BaseType::Number, BaseType::Number) => (BaseType::Number, Sub),
-                    (BaseType::Point, BaseType::Point) => (BaseType::Number, Sub2),
+                    (BaseType::Point, BaseType::Point) => (BaseType::Point, Sub2),
                     _ => return Err(format!("cannot subtract {} from {}", right.ty(), left.ty())),
                 },
                 BinaryOperator::Mul => match (left.ty().base(), right.ty().base()) {
@@ -717,6 +719,32 @@ pub fn compile_expression(
             builder.swap_pop(&mut result, list_values);
             Ok(result)
         }
+        Expression::BuiltIn(built_in) => match built_in {
+            BuiltIn::Count(x) => {
+                let x = compile_expression(x, builder, names)?;
+                match x.ty() {
+                    Type::Number | Type::Point | Type::Bool => {
+                        Err(format!("function 'count' cannot be applied to {}", x.ty()))
+                    }
+                    Type::NumberList | Type::BoolList | Type::EmptyList => {
+                        Ok(builder.instr1(Count, x))
+                    }
+                    Type::PointList => Ok(builder.instr1(Count2, x)),
+                }
+            }
+            BuiltIn::Total(x) => {
+                let x = compile_expression(x, builder, names)?;
+                match x.ty() {
+                    Type::Number | Type::Point | Type::Bool => {
+                        Err(format!("function 'total' cannot be applied to {}", x.ty()))
+                    }
+                    Type::NumberList | Type::BoolList | Type::EmptyList => {
+                        Ok(builder.instr1(Total, x))
+                    }
+                    Type::PointList => Ok(builder.instr1(Total2, x)),
+                }
+            }
+        },
     }
 }
 

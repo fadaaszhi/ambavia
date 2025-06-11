@@ -172,6 +172,8 @@ impl InstructionBuilder {
             PointX | PointY | Hypot => (Type::Point, Type::Number),
             Count => (Type::NumberList, Type::Number),
             Count2 => (Type::PointList, Type::Number),
+            Total => (Type::NumberList, Type::Number),
+            Total2 => (Type::PointList, Type::Point),
             _ => panic!("instruction '{instr:?}' not unary"),
         };
         self.assert_pop(a, a_type);

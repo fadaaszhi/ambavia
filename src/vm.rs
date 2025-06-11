@@ -60,6 +60,11 @@ pub enum Instruction {
     Min,
     Hypot,
 
+    Count,
+    Count2,
+    Total,
+    Total2,
+
     Index,
     Index2,
     UncheckedIndex(usize),
@@ -68,8 +73,6 @@ pub enum Instruction {
     BuildListFromRange,
     Append(usize),
     Append2(usize),
-    Count,
-    Count2,
     CountSpecific(usize),
     CountSpecific2(usize),
 
@@ -474,6 +477,28 @@ impl<'a> Vm<'a> {
                     self.push(x.hypot(y));
                 }
 
+                Instruction::Count => {
+                    let a = self.pop().list();
+                    self.push(a.borrow().len() as f64);
+                }
+                Instruction::Count2 => {
+                    let a = self.pop().list();
+                    self.push(a.borrow().len() as f64 / 2.0);
+                }
+                Instruction::Total => {
+                    let a = self.pop().list();
+                    self.push(a.borrow().iter().sum::<f64>());
+                }
+                Instruction::Total2 => {
+                    let a = self.pop().list();
+                    let (x, y) = a
+                        .borrow()
+                        .chunks_exact(2)
+                        .fold((0.0, 0.0), |(x, y), b| (x + b[0], y + b[1]));
+                    self.push(x);
+                    self.push(y);
+                }
+
                 Instruction::Index => {
                     let b = self.pop().number().floor() - 1.0;
                     let a = self.pop().list();
@@ -540,14 +565,6 @@ impl<'a> Vm<'a> {
                     let mut a = a.borrow_mut();
                     a.push(bx);
                     a.push(by);
-                }
-                Instruction::Count => {
-                    let a = self.pop().list();
-                    self.push(a.borrow().len() as f64);
-                }
-                Instruction::Count2 => {
-                    let a = self.pop().list();
-                    self.push(a.borrow().len() as f64 / 2.0);
                 }
                 Instruction::CountSpecific(index) => {
                     let a = self.peek(index).list();

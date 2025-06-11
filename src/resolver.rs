@@ -41,6 +41,17 @@ pub enum Expression {
         body: Body,
         lists: Vec<Assignment>,
     },
+    BuiltIn(BuiltIn),
+}
+
+#[derive(Debug, PartialEq)]
+pub enum BuiltIn {
+    Count(Box<Expression>),
+    Total(Box<Expression>),
+}
+
+fn is_built_in(s: &str) -> bool {
+    matches!(s, "count" | "total")
 }
 
 #[derive(Debug, PartialEq)]
@@ -334,6 +345,54 @@ impl<'a> Resolver<'a> {
         args: &'a [ast::Expression],
     ) -> (Result<Expression, String>, Dependencies<'a>) {
         let err = |s| (Err(s), Dependencies::none());
+
+        let wrong_number_of_arguments_error = |expected| {
+            format!(
+                "function '{callee}' requires {}{}",
+                if args.len() > expected { "only " } else { "" },
+                if expected == 1 {
+                    "1 argument".into()
+                } else {
+                    format!("{} arguments", expected)
+                }
+            )
+        };
+
+        if is_built_in(callee) {
+            let (args, deps) = match self.resolve_expressions(args) {
+                (Ok(v), d) => (v, d),
+                (Err(e), d) => return (Err(e), d),
+            };
+
+            return match callee {
+                "count" => {
+                    if args.len() != 1 {
+                        (Err(wrong_number_of_arguments_error(1)), deps)
+                    } else {
+                        (
+                            Ok(Expression::BuiltIn(BuiltIn::Count(Box::new(
+                                args.into_iter().next().unwrap(),
+                            )))),
+                            deps,
+                        )
+                    }
+                }
+                "total" => {
+                    if args.len() != 1 {
+                        (Err(wrong_number_of_arguments_error(1)), deps)
+                    } else {
+                        (
+                            Ok(Expression::BuiltIn(BuiltIn::Total(Box::new(
+                                args.into_iter().next().unwrap(),
+                            )))),
+                            deps,
+                        )
+                    }
+                }
+                _ => unreachable!(),
+            };
+        }
+
         let (parameters, body) = match self.globals.get(callee).cloned() {
             Some(Ok(ExpressionListEntry::FunctionDeclaration {
                 parameters, body, ..
@@ -344,19 +403,7 @@ impl<'a> Resolver<'a> {
         };
 
         if parameters.len() != args.len() {
-            return err(format!(
-                "function '{callee}' requires {}{}",
-                if args.len() > parameters.len() {
-                    "only "
-                } else {
-                    ""
-                },
-                if parameters.len() == 1 {
-                    "1 argument".into()
-                } else {
-                    format!("{} arguments", parameters.len())
-                }
-            ));
+            return err(wrong_number_of_arguments_error(parameters.len()));
         }
 
         self.resolve_dynamic(body, parameters.iter().zip(args.iter()), |name| {
@@ -433,8 +480,11 @@ impl<'a> Resolver<'a> {
                 )
             }
             ast::Expression::CallOrMultiply { callee, args } => {
-                if let Some(Ok(ExpressionListEntry::FunctionDeclaration { .. })) =
-                    self.globals.get(callee.as_str())
+                if is_built_in(callee)
+                    || matches!(
+                        self.globals.get(callee.as_str()),
+                        Some(Ok(ExpressionListEntry::FunctionDeclaration { .. }))
+                    )
                 {
                     self.resolve_call(callee, args)
                 } else {
@@ -685,7 +735,7 @@ mod tests {
         BinaryOperator as ABo,
         Expression::{
             BinaryOperation as ABop,
-            // Call as ACall,
+            Call as ACall,
             CallOrMultiply as ACallMul,
             // ChainedComparison as AComparison,
             For as AFor,
@@ -1510,21 +1560,19 @@ mod tests {
     fn nested_list_comps() {
         assert_eq!(
             resolve_names(&[
-                // E = C[1] + D[1] for j=[1...4]
+                // E = C.total + D.total for j=[1...4]
                 ElAssign {
                     name: "E".into(),
                     value: AFor {
                         body: bx(ABop {
                             operation: ABo::Add,
-                            left: bx(ABop {
-                                operation: ABo::Index,
-                                left: bx(AId("C".into())),
-                                right: bx(ANum(1.0)),
+                            left: bx(ACall {
+                                callee: "total".into(),
+                                args: vec![AId("C".into())],
                             }),
-                            right: bx(ABop {
-                                operation: ABo::Index,
-                                left: bx(AId("D".into())),
-                                right: bx(ANum(1.0)),
+                            right: bx(ACall {
+                                callee: "total".into(),
+                                args: vec![AId("D".into())],
                             }),
                         }),
                         lists: vec![(
@@ -1703,19 +1751,15 @@ mod tests {
                                         },
                                     },
                                 ],
-                                // C[i] + D[i]
+                                // C.total + D.total
                                 value: bx(Expression::BinaryOperation {
                                     operation: ABo::Add,
-                                    left: bx(Expression::BinaryOperation {
-                                        operation: ABo::Index,
-                                        left: bx(Expression::Identifier(3)),
-                                        right: bx(Expression::Number(1.0)),
-                                    }),
-                                    right: bx(Expression::BinaryOperation {
-                                        operation: ABo::Index,
-                                        left: bx(Expression::Identifier(8)),
-                                        right: bx(Expression::Number(1.0)),
-                                    }),
+                                    left: bx(Expression::BuiltIn(BuiltIn::Total(bx(
+                                        Expression::Identifier(3)
+                                    )))),
+                                    right: bx(Expression::BuiltIn(BuiltIn::Total(bx(
+                                        Expression::Identifier(8)
+                                    )))),
                                 }),
                             },
                             lists: vec![

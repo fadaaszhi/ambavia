@@ -664,8 +664,8 @@ fn parse_chained_comparison(
         operands.push(parse_expression(tokens, 0)?);
     }
 
-    assert!(operands.len() >= 2);
-    assert!(operators.len() >= 1);
+    assert!(!operators.is_empty());
+    assert_eq!(operands.len(), operators.len() + 1);
     Ok(ChainedComparison {
         operands,
         operators,

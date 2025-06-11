@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::{
     instruction_builder::{BaseType, InstructionBuilder, Type, Value},
-    resolver::{Assignment, BinaryOperator, ComparisonOperator, Expression, UnaryOperator},
+    resolver::{Assignment, BinaryOperator, Body, ComparisonOperator, Expression, UnaryOperator},
     vm::Instruction::{self, *},
 };
 
@@ -32,7 +32,7 @@ impl Names {
 pub fn compile_expression(
     expression: &Expression,
     builder: &mut InstructionBuilder,
-    names: &Names,
+    names: &mut Names,
 ) -> Result<Value, String> {
     match expression {
         Expression::Number(x) => Ok(builder.load_const(*x)),
@@ -653,7 +653,70 @@ pub fn compile_expression(
             }
         }
         Expression::SumProd { .. } => todo!(),
-        Expression::For { .. } => todo!(),
+        Expression::For {
+            body: Body { assignments, value },
+            lists,
+        } => {
+            let list_values = lists
+                .iter()
+                .map(|a| compile_expression(&a.value, builder, names))
+                .collect::<Result<Vec<_>, _>>()?;
+
+            for (Assignment { name, .. }, value) in lists.iter().zip(&list_values) {
+                let ty = value.ty();
+                if !ty.is_list() {
+                    return Err(format!("a definition on the right-hand side of 'for' must be a list, but '{name}' is {ty}"));
+                }
+            }
+
+            let mut result = builder.empty_list();
+            let mut variables = vec![];
+
+            for (Assignment { id, .. }, value) in lists.iter().zip(&list_values).rev() {
+                let count = builder.count_specific(value);
+                let i = builder.load_const(0.0);
+                let loop_start = builder.label();
+                let i_copy = builder.copy(&i);
+                let count_copy = builder.copy(&count);
+                let i_lt_count = builder.instr2(LessThan, i_copy, count_copy);
+                let loop_jump_if_false = builder.jump_if_false(i_lt_count);
+                let i_copy = builder.copy(&i);
+                let value_i = builder.unchecked_index(value, i_copy);
+                names.create(*id, value_i.ty())?;
+                builder.store(*id, value_i);
+                variables.push((count, i, loop_start, loop_jump_if_false));
+            }
+
+            for Assignment { id, value, .. } in assignments {
+                let value = compile_expression(value, builder, names)?;
+                names.create(*id, value.ty())?;
+                builder.store(*id, value);
+            }
+
+            let value = compile_expression(value, builder, names)?;
+            let ty = value.ty();
+
+            if ty.is_list() {
+                return Err(format!("cannot store {} in a list", ty));
+            }
+
+            builder.collapse(&mut result, ty.base());
+            builder.append(&result, value);
+
+            for (count, i, loop_start, loop_jump_if_false) in variables.into_iter().rev() {
+                let one = builder.load_const(1.0);
+                builder.instr2_in_place(Add, &i, one);
+                let loop_jump = builder.jump(vec![]);
+                builder.set_jump_label(loop_jump, &loop_start);
+                let loop_end = builder.label();
+                builder.set_jump_label(loop_jump_if_false, &loop_end);
+                builder.pop(i);
+                builder.pop(count);
+            }
+
+            builder.swap_pop(&mut result, list_values);
+            Ok(result)
+        }
     }
 }
 
@@ -664,8 +727,8 @@ pub fn compile_assignments(
     let mut names = Names::default();
     let mut builder = InstructionBuilder::default();
 
-    for Assignment { id, value } in assignments {
-        let value = compile_expression(value, &mut builder, &names)?;
+    for Assignment { id, value, .. } in assignments {
+        let value = compile_expression(value, &mut builder, &mut names)?;
         names.create(*id, value.ty())?;
         builder.store(*id, value);
     }

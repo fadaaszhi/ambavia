@@ -365,7 +365,13 @@ impl InstructionBuilder {
     }
 
     pub fn set_jump_label(&mut self, jump: JumpHandle, label: &Label) {
-        assert_eq!(jump.stack, label.stack[0..jump.stack.len()]);
+        assert_eq!(
+            jump.stack.iter().map(|v| v.name).collect::<Vec<_>>(),
+            label.stack[0..jump.stack.len()]
+                .iter()
+                .map(|v| v.name)
+                .collect::<Vec<_>>()
+        );
         assert_eq!(jump.ctx.len(), label.stack.len() - jump.stack.len());
         for (j, l) in jump.ctx.iter().zip(label.stack[jump.stack.len()..].iter()) {
             assert_eq!((j.index, j.ty), (l.index, l.ty));

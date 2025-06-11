@@ -39,7 +39,7 @@ pub enum Expression {
     },
     For {
         body: Body,
-        lists: Vec<(usize, Expression)>,
+        lists: Vec<Assignment>,
     },
 }
 
@@ -61,7 +61,20 @@ enum Dependency {
     NotDynamic,
 }
 
-type Dependencies<'a> = HashMap<&'a str, Dependency>;
+#[derive(Clone)]
+struct Dependencies<'a> {
+    level: usize,
+    map: HashMap<&'a str, Dependency>,
+}
+
+impl<'a> Dependencies<'a> {
+    fn with_level(level: usize) -> Self {
+        Self {
+            level,
+            map: HashMap::new(),
+        }
+    }
+}
 
 trait Merge {
     fn merge(&mut self, other: Self);
@@ -77,8 +90,8 @@ trait Merge {
 
 impl<'a> Merge for Dependencies<'a> {
     fn merge(&mut self, other: Self) {
-        for (name, dep) in &other {
-            let d = self.entry(name).or_insert(Dependency::NotDynamic);
+        for (name, dep) in &other.map {
+            let d = self.map.entry(name).or_insert(Dependency::NotDynamic);
 
             if let Dependency::Assignment(id) = dep {
                 if let Dependency::Assignment(i) = d {
@@ -89,12 +102,18 @@ impl<'a> Merge for Dependencies<'a> {
             }
         }
 
-        self.extend(other);
+        self.map.extend(other.map);
+        self.level = self.level.max(other.level);
     }
 }
 
-#[derive(Default)]
 struct ScopeMap<'a, T>(HashMap<&'a str, Vec<T>>);
+
+impl<'a, T> Default for ScopeMap<'a, T> {
+    fn default() -> Self {
+        Self(Default::default())
+    }
+}
 
 impl<'a, T> ScopeMap<'a, T> {
     fn get(&self, k: &str) -> Option<&T> {
@@ -116,9 +135,9 @@ impl<'a, T> ScopeMap<'a, T> {
 
 struct Resolver<'a> {
     globals: HashMap<&'a str, Result<&'a ExpressionListEntry, String>>,
-    assignments: Vec<Assignment>,
+    assignments: Vec<Vec<Assignment>>,
     id_counter: usize,
-    dynamic_scope: ScopeMap<'a, usize>,
+    dynamic_scope: ScopeMap<'a, (usize, Dependencies<'a>)>,
     global_scope: ScopeMap<'a, (usize, Dependencies<'a>)>,
 }
 
@@ -142,40 +161,44 @@ impl<'a> Resolver<'a> {
 
         Self {
             globals,
-            assignments: vec![],
+            assignments: vec![vec![]],
             id_counter: 0,
             dynamic_scope: Default::default(),
             global_scope: Default::default(),
         }
     }
 
-    fn create_assignment(&mut self, value: Expression) -> usize {
+    fn create_assignment(&mut self, value: Expression) -> Assignment {
         let id = self.id_counter;
         self.id_counter += 1;
-        self.assignments.push(Assignment { id, value });
+        Assignment { id, value }
+    }
+
+    fn push_assignment(&mut self, level: usize, value: Expression) -> usize {
+        let assignment = self.create_assignment(value);
+        let id = assignment.id;
+        self.assignments[level].push(assignment);
         id
     }
 
     fn resolve_variable(&mut self, name: &'a str) -> Result<(usize, Dependencies<'a>), String> {
-        if let Some(id) = self.dynamic_scope.get(name) {
-            let mut deps = Dependencies::new();
-            deps.insert(name, Dependency::Assignment(*id));
-            return Ok((*id, deps));
-        }
-
-        if let Some((id, deps)) = self.global_scope.get(name) {
-            if deps.iter().all(|(n, d)| match d {
+        if let Some((id, deps)) = self
+            .dynamic_scope
+            .get(name)
+            .or_else(|| self.global_scope.get(name))
+        {
+            if deps.map.iter().all(|(n, d)| match d {
                 Dependency::Assignment(i) => {
                     self.dynamic_scope
                         .get(n)
-                        .cloned()
-                        .unwrap_or_else(|| self.global_scope.get(n).unwrap().0)
+                        .unwrap_or_else(|| self.global_scope.get(n).unwrap())
+                        .0
                         == *i
                 }
                 Dependency::NotDynamic => !self.dynamic_scope.contains_key(n),
             }) {
                 let mut deps = deps.clone();
-                deps.insert(name, Dependency::Assignment(*id));
+                deps.map.insert(name, Dependency::Assignment(*id));
                 return Ok((*id, deps));
             }
         }
@@ -189,9 +212,9 @@ impl<'a> Resolver<'a> {
         match entry {
             ExpressionListEntry::Assignment { value, .. } => {
                 let (value, mut deps) = self.resolve_expression(value)?;
-                let id = self.create_assignment(value);
+                let id = self.push_assignment(deps.level, value);
                 self.global_scope.push(name, (id, deps.clone()));
-                deps.insert(name, Dependency::Assignment(id));
+                deps.map.insert(name, Dependency::Assignment(id));
                 Ok((id, deps))
             }
             ExpressionListEntry::FunctionDeclaration { .. } => {
@@ -206,7 +229,7 @@ impl<'a> Resolver<'a> {
         es: &'a [ast::Expression],
     ) -> Result<(Vec<Expression>, Dependencies<'a>), String> {
         let mut result = vec![];
-        let mut deps = Dependencies::new();
+        let mut deps = Dependencies::with_level(0);
 
         for e in es {
             let (e, d) = self.resolve_expression(e)?;
@@ -224,7 +247,7 @@ impl<'a> Resolver<'a> {
         error_string: impl FnOnce(&str) -> String,
     ) -> Result<(Expression, Dependencies<'a>), String> {
         let mut seen = HashMap::new();
-        let mut binding_deps = Dependencies::new();
+        let mut binding_deps = Dependencies::with_level(0);
 
         for (name, value) in bindings {
             if seen.contains_key(name.as_str()) {
@@ -232,10 +255,14 @@ impl<'a> Resolver<'a> {
             }
 
             let (value, d) = self.resolve_expression(value)?;
+            let id = self.push_assignment(d.level, value);
+            seen.insert(name.as_str(), (id, d.level));
             binding_deps.merge(d);
-            let id = self.create_assignment(value);
-            self.dynamic_scope.push(name, id);
-            seen.insert(name.as_str(), id);
+        }
+
+        for (name, &(id, level)) in &seen {
+            self.dynamic_scope
+                .push(name, (id, Dependencies::with_level(level)));
         }
 
         // Don't unwrap yet because we want to clean up self.dynamic_scope. But
@@ -243,20 +270,20 @@ impl<'a> Resolver<'a> {
         // at the end of each expression list entry?
         let body = self.resolve_expression(body);
 
-        for (name, id) in &seen {
+        for (name, (id, _)) in &seen {
             let popped = self.dynamic_scope.pop(name);
-            assert_eq!(popped, Some(*id))
+            assert_eq!(popped.map(|(i, _)| i), Some(*id))
         }
 
         let (body, mut body_deps) = body?;
 
-        for (name, id) in &seen {
-            if let Some(dep) = body_deps.remove(name) {
+        for (name, (id, _)) in &seen {
+            if let Some(dep) = body_deps.map.remove(name) {
                 assert_eq!(dep, Dependency::Assignment(*id));
             }
         }
 
-        for (name, dep) in &mut body_deps {
+        for (name, dep) in &mut body_deps.map {
             if self.dynamic_scope.contains_key(name) {
                 continue;
             }
@@ -267,13 +294,13 @@ impl<'a> Resolver<'a> {
 
             let d = &self.global_scope.get(name).unwrap().1;
 
-            for (n, i) in &seen {
-                if let Some(x) = d.get(n) {
+            for (n, (i, _)) in &seen {
+                if let Some(x) = d.map.get(n) {
                     assert_eq!(*x, Dependency::Assignment(*i));
                 }
             }
 
-            if seen.iter().any(|(n, _)| d.contains_key(n)) {
+            if seen.iter().any(|(n, _)| d.map.contains_key(n)) {
                 self.global_scope.pop(name);
                 *dep = Dependency::NotDynamic;
             }
@@ -323,7 +350,9 @@ impl<'a> Resolver<'a> {
         e: &'a ast::Expression,
     ) -> Result<(Expression, Dependencies<'a>), String> {
         match e {
-            ast::Expression::Number(value) => Ok((Expression::Number(*value), Dependencies::new())),
+            ast::Expression::Number(value) => {
+                Ok((Expression::Number(*value), Dependencies::with_level(0)))
+            }
             ast::Expression::Identifier(name) => {
                 let (id, d) = self.resolve_variable(name)?;
                 Ok((Expression::Identifier(id), d))
@@ -453,7 +482,103 @@ impl<'a> Resolver<'a> {
             } => self.resolve_dynamic(body, substitutions.iter().map(|(n, v)| (n, v)), |name| {
                 format!("a 'with' expression cannot make multiple substitutions for '{name}'")
             }),
-            ast::Expression::For { .. } => todo!(),
+            ast::Expression::For { body, lists } => {
+                let mut seen = HashMap::new();
+                let mut list_deps = Dependencies::with_level(0);
+                let mut resolved_lists = vec![];
+
+                for (name, value) in lists {
+                    if seen.contains_key(name.as_str()) {
+                        return Err(format!(
+                            "you can't define '{name}' more than once on the right-hand side of 'for'"
+                        ));
+                    }
+
+                    let (value, d) = self.resolve_expression(value)?;
+                    let assignment = self.create_assignment(value);
+                    seen.insert(name.as_str(), assignment.id);
+                    list_deps.merge(d);
+                    resolved_lists.push(assignment);
+                }
+
+                let new_level = self.assignments.len();
+                self.assignments.push(vec![]);
+
+                for (name, id) in &seen {
+                    self.dynamic_scope
+                        .push(name, (*id, Dependencies::with_level(new_level)));
+                }
+
+                // Don't unwrap yet because we want to clean up self.dynamic_scope. But
+                // maybe it's actually okay to leave it messy and it can cleaned up once
+                // at the end of each expression list entry?
+                let body = self.resolve_expression(body);
+
+                for (name, id) in &seen {
+                    let popped = self.dynamic_scope.pop(name);
+                    assert_eq!(popped.map(|(i, _)| i), Some(*id))
+                }
+
+                let assignments = self.assignments.pop().unwrap();
+
+                let (body, mut body_deps) = body?;
+
+                for (name, id) in &seen {
+                    if let Some(dep) = body_deps.map.remove(name) {
+                        assert_eq!(dep, Dependency::Assignment(*id));
+                    }
+                }
+
+                for (name, dep) in &mut body_deps.map {
+                    if self.dynamic_scope.contains_key(name) {
+                        continue;
+                    }
+
+                    if *dep == Dependency::NotDynamic {
+                        continue;
+                    }
+
+                    let d = &self.global_scope.get(name).unwrap().1;
+
+                    for (n, i) in &seen {
+                        if let Some(x) = d.map.get(n) {
+                            assert_eq!(*x, Dependency::Assignment(*i));
+                        }
+                    }
+
+                    if seen.iter().any(|(n, _)| d.map.contains_key(n)) {
+                        self.global_scope.pop(name);
+                        *dep = Dependency::NotDynamic;
+                    }
+                }
+
+                body_deps.level = 0;
+
+                for (name, dep) in &mut body_deps.map {
+                    if *dep == Dependency::NotDynamic {
+                        continue;
+                    }
+
+                    body_deps.level = self
+                        .dynamic_scope
+                        .get(name)
+                        .unwrap_or_else(|| self.global_scope.get(name).unwrap())
+                        .1
+                        .level
+                        .max(body_deps.level);
+                }
+
+                Ok((
+                    Expression::For {
+                        body: Body {
+                            assignments,
+                            value: Box::new(body),
+                        },
+                        lists: resolved_lists,
+                    },
+                    list_deps.merged(body_deps),
+                ))
+            }
         }
     }
 }
@@ -476,7 +601,7 @@ pub fn resolve_names(
                     } else {
                         match resolver.resolve_expression(value) {
                             Ok((value, deps)) => {
-                                let id = resolver.create_assignment(value);
+                                let id = resolver.push_assignment(0, value);
 
                                 if resolver.globals.get(name.as_str()).unwrap().is_ok() {
                                     resolver.global_scope.push(name, (id, deps));
@@ -493,7 +618,7 @@ pub fn resolve_names(
                 ExpressionListEntry::Expression(expression) => {
                     Some(match resolver.resolve_expression(expression) {
                         Ok((value, _)) => {
-                            let id = resolver.create_assignment(value);
+                            let id = resolver.push_assignment(0, value);
                             Ok(id)
                         }
                         Err(error) => Err(error),
@@ -503,7 +628,9 @@ pub fn resolve_names(
         })
         .collect();
 
-    (resolver.assignments, assignment_indices)
+    let assignments = resolver.assignments.pop().unwrap();
+    assert!(resolver.assignments.is_empty());
+    (assignments, assignment_indices)
 }
 
 #[cfg(test)]
@@ -512,18 +639,18 @@ mod tests {
     use ast::{
         BinaryOperator as ABo,
         Expression::{
-            // ListRange as AListRange,
-            // UnaryOperation as AUop,
             BinaryOperation as ABop,
-            CallOrMultiply as ACallMul,
             // Call as ACall,
+            CallOrMultiply as ACallMul,
+            // ChainedComparison as AComparison,
+            For as AFor,
             Identifier as AId,
             List as AList,
-            // For as AFor,
+            ListRange as AListRange,
             Number as ANum,
-            // ChainedComparison as AComparison,
             // Piecewise as APiecewise,
             // SumProd as ASumProd,
+            // UnaryOperation as AUop,
             With as AWith,
         },
     };
@@ -1164,6 +1291,384 @@ mod tests {
                     }
                 ],
                 vec![Some(Ok(1)), Some(Ok(3))]
+            ),
+        );
+    }
+
+    #[test]
+    fn list_comp() {
+        assert_eq!(
+            resolve_names(&[
+                // p for j=c, i=[1]
+                ElExpr(AFor {
+                    body: bx(AId("p".into())),
+                    lists: vec![
+                        ("j".into(), AId("c".into())),
+                        ("i".into(), AList(vec![ANum(1.0)])),
+                    ],
+                }),
+                // p = (q,i+k)
+                ElAssign {
+                    name: "p".into(),
+                    value: ABop {
+                        operation: BinaryOperator::Point,
+                        left: bx(AId("q".into())),
+                        right: bx(ABop {
+                            operation: ABo::Add,
+                            left: bx(AId("i".into())),
+                            right: bx(AId("k".into()))
+                        }),
+                    },
+                },
+                // c = [2]
+                ElAssign {
+                    name: "c".into(),
+                    value: AList(vec![ANum(2.0)]),
+                },
+                // q = jj
+                ElAssign {
+                    name: "q".into(),
+                    value: ABop {
+                        operation: BinaryOperator::Mul,
+                        left: bx(AId("j".into())),
+                        right: bx(AId("j".into())),
+                    },
+                },
+                // k = 3
+                ElAssign {
+                    name: "k".into(),
+                    value: ANum(3.0),
+                },
+            ]),
+            (
+                vec![
+                    // c = [2]
+                    Assignment {
+                        id: 0,
+                        value: Expression::List(vec![Expression::Number(2.0)]),
+                    },
+                    // k = 3
+                    Assignment {
+                        id: 4,
+                        value: Expression::Number(3.0),
+                    },
+                    // p for j=c, i=[1]
+                    Assignment {
+                        id: 6,
+                        value: Expression::For {
+                            body: Body {
+                                assignments: vec![
+                                    // q = jj
+                                    Assignment {
+                                        id: 3,
+                                        value: Expression::BinaryOperation {
+                                            operation: BinaryOperator::Mul,
+                                            left: bx(Expression::Identifier(1)),
+                                            right: bx(Expression::Identifier(1)),
+                                        },
+                                    },
+                                    // p = (q,i+k)
+                                    Assignment {
+                                        id: 5,
+                                        value: Expression::BinaryOperation {
+                                            operation: BinaryOperator::Point,
+                                            left: bx(Expression::Identifier(3)),
+                                            right: bx(Expression::BinaryOperation {
+                                                operation: BinaryOperator::Add,
+                                                left: bx(Expression::Identifier(2)),
+                                                right: bx(Expression::Identifier(4)),
+                                            }),
+                                        },
+                                    },
+                                ],
+                                value: bx(Expression::Identifier(5)),
+                            },
+                            lists: vec![
+                                // j=c
+                                Assignment {
+                                    id: 1,
+                                    value: Expression::Identifier(0)
+                                },
+                                // i=[1]
+                                Assignment {
+                                    id: 2,
+                                    value: Expression::List(vec![Expression::Number(1.0)])
+                                },
+                            ],
+                        },
+                    },
+                ],
+                vec![
+                    Some(Ok(6)),
+                    Some(Err("'j' is not defined".into())),
+                    Some(Ok(0)),
+                    Some(Err("'j' is not defined".into())),
+                    Some(Ok(4)),
+                ],
+            ),
+        );
+    }
+
+    #[test]
+    fn nested_list_comps() {
+        assert_eq!(
+            resolve_names(&[
+                // E = C[1] + D[1] for j=[1...4]
+                ElAssign {
+                    name: "E".into(),
+                    value: AFor {
+                        body: bx(ABop {
+                            operation: ABo::Add,
+                            left: bx(ABop {
+                                operation: ABo::Index,
+                                left: bx(AId("C".into())),
+                                right: bx(ANum(1.0)),
+                            }),
+                            right: bx(ABop {
+                                operation: ABo::Index,
+                                left: bx(AId("D".into())),
+                                right: bx(ANum(1.0)),
+                            }),
+                        }),
+                        lists: vec![(
+                            "j".into(),
+                            AListRange {
+                                before_ellipsis: vec![ANum(1.0)],
+                                after_ellipsis: vec![ANum(4.0)],
+                            },
+                        )],
+                    },
+                },
+                // C = B for i=[1...5]
+                ElAssign {
+                    name: "C".into(),
+                    value: AFor {
+                        body: bx(AId("B".into())),
+                        lists: vec![(
+                            "i".into(),
+                            AListRange {
+                                before_ellipsis: vec![ANum(1.0)],
+                                after_ellipsis: vec![ANum(5.0)],
+                            },
+                        )],
+                    },
+                },
+                // D = B + A + F for i=[1...3]
+                ElAssign {
+                    name: "D".into(),
+                    value: AFor {
+                        body: bx(ABop {
+                            operation: ABo::Add,
+                            left: bx(ABop {
+                                operation: ABo::Add,
+                                left: bx(AId("B".into())),
+                                right: bx(AId("A".into())),
+                            }),
+                            right: bx(AId("F".into())),
+                        }),
+                        lists: vec![(
+                            "i".into(),
+                            AListRange {
+                                before_ellipsis: vec![ANum(1.0)],
+                                after_ellipsis: vec![ANum(3.0)],
+                            },
+                        )],
+                    },
+                },
+                // B = i^2
+                ElAssign {
+                    name: "B".into(),
+                    value: ABop {
+                        operation: ABo::Pow,
+                        left: bx(AId("i".into())),
+                        right: bx(ANum(2.0)),
+                    },
+                },
+                // F = i + j
+                ElAssign {
+                    // TODO: change this back to "J" and see why it was panicking
+                    name: "F".into(),
+                    value: ABop {
+                        operation: ABo::Add,
+                        left: bx(AId("i".into())),
+                        right: bx(AId("j".into())),
+                    },
+                },
+                // A = 5
+                ElAssign {
+                    name: "A".into(),
+                    value: ANum(5.0),
+                },
+            ]),
+            (
+                vec![
+                    // C = B for i=[1...5]
+                    Assignment {
+                        id: 3,
+                        value: Expression::For {
+                            body: Body {
+                                assignments: vec![
+                                    // B = i^2
+                                    Assignment {
+                                        id: 2,
+                                        value: Expression::BinaryOperation {
+                                            operation: ABo::Pow,
+                                            left: bx(Expression::Identifier(1)),
+                                            right: bx(Expression::Number(2.0)),
+                                        },
+                                    },
+                                ],
+                                // B
+                                value: bx(Expression::Identifier(2)),
+                            },
+                            lists: vec![
+                                // i=[1...5]
+                                Assignment {
+                                    id: 1,
+                                    value: Expression::ListRange {
+                                        before_ellipsis: vec![Expression::Number(1.0)],
+                                        after_ellipsis: vec![Expression::Number(5.0)],
+                                    },
+                                },
+                            ],
+                        },
+                    },
+                    // A = 5
+                    Assignment {
+                        id: 6,
+                        value: Expression::Number(5.0),
+                    },
+                    // E = C[i] + D[i] for j=[1...4]
+                    Assignment {
+                        id: 9,
+                        value: Expression::For {
+                            body: Body {
+                                assignments: vec![
+                                    // D = B + A + F for i=[1...3]
+                                    Assignment {
+                                        id: 8,
+                                        value: Expression::For {
+                                            body: Body {
+                                                assignments: vec![
+                                                    // B = i^2
+                                                    Assignment {
+                                                        id: 5,
+                                                        value: Expression::BinaryOperation {
+                                                            operation: ABo::Pow,
+                                                            left: bx(Expression::Identifier(4)),
+                                                            right: bx(Expression::Number(2.0)),
+                                                        },
+                                                    },
+                                                    // F = i + j
+                                                    Assignment {
+                                                        id: 7,
+                                                        value: Expression::BinaryOperation {
+                                                            operation: ABo::Add,
+                                                            left: bx(Expression::Identifier(4)),
+                                                            right: bx(Expression::Identifier(0)),
+                                                        },
+                                                    },
+                                                ],
+                                                // B + A + F
+                                                value: bx(Expression::BinaryOperation {
+                                                    operation: ABo::Add,
+                                                    left: bx(Expression::BinaryOperation {
+                                                        operation: ABo::Add,
+                                                        left: bx(Expression::Identifier(5)),
+                                                        right: bx(Expression::Identifier(6)),
+                                                    }),
+                                                    right: bx(Expression::Identifier(7)),
+                                                }),
+                                            },
+                                            lists: vec![
+                                                // i=[1...3]
+                                                Assignment {
+                                                    id: 4,
+                                                    value: Expression::ListRange {
+                                                        before_ellipsis: vec![Expression::Number(
+                                                            1.0,
+                                                        )],
+                                                        after_ellipsis: vec![Expression::Number(
+                                                            3.0,
+                                                        )],
+                                                    },
+                                                },
+                                            ],
+                                        },
+                                    },
+                                ],
+                                // C[i] + D[i]
+                                value: bx(Expression::BinaryOperation {
+                                    operation: ABo::Add,
+                                    left: bx(Expression::BinaryOperation {
+                                        operation: ABo::Index,
+                                        left: bx(Expression::Identifier(3)),
+                                        right: bx(Expression::Number(1.0)),
+                                    }),
+                                    right: bx(Expression::BinaryOperation {
+                                        operation: ABo::Index,
+                                        left: bx(Expression::Identifier(8)),
+                                        right: bx(Expression::Number(1.0)),
+                                    }),
+                                }),
+                            },
+                            lists: vec![
+                                // j=[1...4]
+                                Assignment {
+                                    id: 0,
+                                    value: Expression::ListRange {
+                                        before_ellipsis: vec![Expression::Number(1.0)],
+                                        after_ellipsis: vec![Expression::Number(4.0)],
+                                    },
+                                },
+                            ],
+                        },
+                    },
+                ],
+                vec![
+                    Some(Ok(9)),
+                    Some(Ok(3)),
+                    Some(Err("'j' is not defined".into())),
+                    Some(Err("'i' is not defined".into())),
+                    Some(Err("'i' is not defined".into())),
+                    Some(Ok(6)),
+                ],
+            ),
+        );
+    }
+
+    #[test]
+    fn proper_cleanup() {
+        assert_eq!(
+            resolve_names(&[
+                ElExpr(AWith {
+                    body: bx(ABop {
+                        operation: ABo::Add,
+                        left: bx(AId("b".into())),
+                        right: bx(AId("c".into())),
+                    }),
+                    substitutions: vec![("a".into(), ANum(1.0))],
+                }),
+                ElAssign {
+                    name: "b".into(),
+                    value: AId("a".into())
+                }
+            ]),
+            (
+                vec![
+                    Assignment {
+                        id: 0,
+                        value: Expression::Number(1.0),
+                    },
+                    Assignment {
+                        id: 1,
+                        value: Expression::Identifier(0),
+                    },
+                ],
+                vec![
+                    Some(Err("'c' is not defined".into())),
+                    Some(Err("'a' is not defined".into())),
+                ],
             ),
         );
     }

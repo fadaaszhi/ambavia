@@ -67,7 +67,7 @@ pub struct Body {
     pub value: Box<Expression>,
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone)]
 enum Dependency {
     Assignment(usize),
     NotDynamic,
@@ -114,7 +114,7 @@ impl<'a> Merge for Dependencies<'a> {
                     assert_eq!(i, id);
                 }
 
-                *d = *dep;
+                *d = dep.clone();
             }
         }
 
@@ -154,7 +154,7 @@ struct Resolver<'a> {
     assignments: Vec<Vec<Assignment>>,
     id_counter: usize,
     dynamic_scope: ScopeMap<'a, (usize, Dependencies<'a>)>,
-    global_scope: ScopeMap<'a, (usize, Dependencies<'a>)>,
+    global_scope: ScopeMap<'a, ((usize, Option<String>), Dependencies<'a>)>,
 }
 
 impl<'a> Resolver<'a> {
@@ -184,11 +184,15 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    fn create_assignment(&mut self, name: &str, value: Expression) -> Assignment {
+    fn next_id(&mut self) -> usize {
         let id = self.id_counter;
         self.id_counter += 1;
+        id
+    }
+
+    fn create_assignment(&mut self, name: &str, value: Expression) -> Assignment {
         Assignment {
-            id,
+            id: self.next_id(),
             name: name.to_string(),
             value,
         }
@@ -201,25 +205,29 @@ impl<'a> Resolver<'a> {
         id
     }
 
-    fn resolve_variable(&mut self, name: &'a str) -> (Result<usize, String>, Dependencies<'a>) {
-        if let Some((id, deps)) = self
-            .dynamic_scope
+    fn get_maybe_outdated_variable(
+        &self,
+        name: &'a str,
+    ) -> Option<((&usize, Option<&String>), &Dependencies<'a>)> {
+        self.dynamic_scope
             .get(name)
-            .or_else(|| self.global_scope.get(name))
-        {
+            .map(|(id, deps)| ((id, None), deps))
+            .or_else(|| {
+                self.global_scope
+                    .get(name)
+                    .map(|((id, err), deps)| ((id, err.as_ref()), deps))
+            })
+    }
+
+    fn resolve_variable(&mut self, name: &'a str) -> (Result<usize, String>, Dependencies<'a>) {
+        if let Some(((id, err), deps)) = self.get_maybe_outdated_variable(name) {
             if deps.map.iter().all(|(n, d)| match d {
-                Dependency::Assignment(i) => {
-                    self.dynamic_scope
-                        .get(n)
-                        .unwrap_or_else(|| self.global_scope.get(n).unwrap())
-                        .0
-                        == *i
-                }
+                Dependency::Assignment(i) => self.get_maybe_outdated_variable(n).unwrap().0 .0 == i,
                 Dependency::NotDynamic => !self.dynamic_scope.contains_key(n),
             }) {
                 let mut deps = deps.clone();
                 deps.map.insert(name, Dependency::Assignment(*id));
-                return (Ok(*id), deps);
+                return (err.cloned().map_or(Ok(*id), Err), deps);
             }
         }
 
@@ -231,19 +239,28 @@ impl<'a> Resolver<'a> {
             .and_then(|x| x)
         {
             Ok(entry) => entry,
-            Err(err) => return (Err(err), Dependencies::none()),
+            Err(err) => {
+                return (
+                    Err(err),
+                    Dependencies {
+                        level: 0,
+                        map: [(name, Dependency::NotDynamic)].into(),
+                    },
+                )
+            }
         };
 
         match entry {
             ExpressionListEntry::Assignment { value, .. } => {
-                let (value, mut deps) = match self.resolve_expression(value) {
-                    (Ok(v), d) => (v, d),
-                    (Err(e), d) => return (Err(e), d),
+                let (value, mut deps) = self.resolve_expression(value);
+                let (id, err) = match value {
+                    Ok(v) => (self.push_assignment(name, deps.level, v), None),
+                    Err(e) => (self.next_id(), Some(e)),
                 };
-                let id = self.push_assignment(name, deps.level, value);
-                self.global_scope.push(name, (id, deps.clone()));
+                self.global_scope
+                    .push(name, ((id, err.clone()), deps.clone()));
                 deps.map.insert(name, Dependency::Assignment(id));
-                (Ok(id), deps)
+                (err.map_or(Ok(id), Err), deps)
             }
             ExpressionListEntry::FunctionDeclaration { .. } => (
                 Err(format!("'{name}' is a function, try using parentheses")),
@@ -655,9 +672,8 @@ impl<'a> Resolver<'a> {
                     }
 
                     body_deps.level = self
-                        .dynamic_scope
-                        .get(name)
-                        .unwrap_or_else(|| self.global_scope.get(name).unwrap())
+                        .get_maybe_outdated_variable(name)
+                        .unwrap()
                         .1
                         .level
                         .max(body_deps.level);
@@ -691,21 +707,20 @@ pub fn resolve_names(
 
             match e {
                 ExpressionListEntry::Assignment { name, value } => {
-                    if let Some((id, _)) = resolver.global_scope.get(name) {
-                        Some(Ok(*id))
+                    if let Some(((id, err), _)) = resolver.global_scope.get(name) {
+                        Some(err.clone().map_or(Ok(*id), Err))
                     } else {
-                        match resolver.resolve_expression(value) {
-                            (Ok(value), deps) => {
-                                let id = resolver.push_assignment(name, 0, value);
-
-                                if resolver.globals.get(name.as_str()).unwrap().is_ok() {
-                                    resolver.global_scope.push(name, (id, deps));
-                                }
-
-                                Some(Ok(id))
-                            }
-                            (Err(error), _) => Some(Err(error)),
+                        let (value, deps) = resolver.resolve_expression(value);
+                        let (id, err) = match value {
+                            Ok(v) => (resolver.push_assignment(name, deps.level, v), None),
+                            Err(e) => (resolver.next_id(), Some(e)),
+                        };
+                        if resolver.globals.get(name.as_str()).unwrap().is_ok() {
+                            resolver
+                                .global_scope
+                                .push(name, ((id, err.clone()), deps.clone()));
                         }
+                        Some(err.map_or(Ok(id), Err))
                     }
                 }
                 ExpressionListEntry::FunctionDeclaration { .. } => None,
@@ -1180,89 +1195,89 @@ mod tests {
                 vec![
                     // a3 = 5
                     Assignment {
-                        id: 0,
+                        id: 1,
                         name: "a3".into(),
                         value: Expression::Number(5.0),
                     },
                     // c = a3
                     Assignment {
-                        id: 1,
+                        id: 2,
                         name: "c".into(),
-                        value: Expression::Identifier(0),
+                        value: Expression::Identifier(1),
                     },
                     // with a1 = 6
                     Assignment {
-                        id: 2,
+                        id: 4,
                         name: "a1".into(),
                         value: Expression::Number(6.0),
                     },
                     // with a2 = 7
                     Assignment {
-                        id: 3,
+                        id: 5,
                         name: "a2".into(),
                         value: Expression::Number(7.0),
                     },
                     // a1 = 1
                     Assignment {
-                        id: 4,
+                        id: 6,
                         name: "a1".into(),
                         value: Expression::Number(1.0),
                     },
                     // a2 = 2
                     Assignment {
-                        id: 5,
+                        id: 7,
                         name: "a2".into(),
                         value: Expression::Number(2.0),
                     },
                     // a3 = 3
                     Assignment {
-                        id: 6,
+                        id: 8,
                         name: "a3".into(),
                         value: Expression::Number(3.0),
                     },
                     // a4 = 4
                     Assignment {
-                        id: 7,
+                        id: 9,
                         name: "a4".into(),
                         value: Expression::Number(4.0),
                     },
                     // b = a2
                     Assignment {
-                        id: 8,
+                        id: 10,
                         name: "b".into(),
-                        value: Expression::Identifier(5),
+                        value: Expression::Identifier(7),
                     },
                     // c = a3
                     Assignment {
-                        id: 9,
+                        id: 11,
                         name: "c".into(),
-                        value: Expression::Identifier(6),
+                        value: Expression::Identifier(8),
                     },
                     // d = a4
                     Assignment {
-                        id: 10,
+                        id: 12,
                         name: "d".into(),
-                        value: Expression::Identifier(7),
+                        value: Expression::Identifier(9),
                     },
                     // [a1, b, c, d]
                     Assignment {
-                        id: 11,
+                        id: 13,
                         name: "<anonymous>".into(),
                         value: Expression::List(vec![
-                            Expression::Identifier(4),
-                            Expression::Identifier(8),
-                            Expression::Identifier(9),
+                            Expression::Identifier(6),
                             Expression::Identifier(10),
+                            Expression::Identifier(11),
+                            Expression::Identifier(12),
                         ]),
                     },
                 ],
                 vec![
                     None,
                     Some(Err("'a2' is not defined".into())),
+                    Some(Ok(2)),
                     Some(Ok(1)),
-                    Some(Ok(0)),
                     Some(Err("'a4' is not defined".into())),
-                    Some(Ok(11)),
+                    Some(Ok(13)),
                 ],
             )
         );
@@ -1826,5 +1841,30 @@ mod tests {
         );
     }
 
-    // TODO: cache errors in scope to prevent duplicate assignments being made when trying to access error variable
+    #[test]
+    fn cache_errors() {
+        assert_eq!(
+            resolve_names(&[
+                ElAssign {
+                    name: "a".into(),
+                    value: AWith {
+                        body: bx(AId("c".into())),
+                        substitutions: vec![("b".into(), ANum(1.0))]
+                    }
+                },
+                ElExpr(AId("a".into()))
+            ]),
+            (
+                vec![Assignment {
+                    id: 0,
+                    name: "b".into(),
+                    value: Expression::Number(1.0)
+                }],
+                vec![
+                    Some(Err("'c' is not defined".into())),
+                    Some(Err("'c' is not defined".into()))
+                ]
+            )
+        );
+    }
 }

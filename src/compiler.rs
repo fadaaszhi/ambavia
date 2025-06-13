@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::{
     instruction_builder::{BaseType, InstructionBuilder, Type, Value},
-    resolver::{
+    name_resolver::{
         Assignment, BinaryOperator, Body, BuiltIn, ComparisonOperator, Expression, UnaryOperator,
     },
     vm::Instruction::{self, *},
@@ -719,32 +719,57 @@ pub fn compile_expression(
             builder.swap_pop(&mut result, list_values);
             Ok(result)
         }
-        Expression::BuiltIn(built_in) => match built_in {
-            BuiltIn::Count(x) => {
-                let x = compile_expression(x, builder, names)?;
-                match x.ty() {
-                    Type::Number | Type::Point | Type::Bool => {
-                        Err(format!("function 'count' cannot be applied to {}", x.ty()))
+        Expression::BuiltIn { name, args } => {
+            let mut args = args
+                .iter()
+                .map(|a| compile_expression(&a, builder, names))
+                .collect::<Result<Vec<_>, _>>()?;
+
+            let validate_args_count = |callee, expected| {
+                if args.len() != expected {
+                    Err(format!(
+                        "function '{callee}' requires {}{}",
+                        if args.len() > expected { "only " } else { "" },
+                        if expected == 1 {
+                            "1 argument".into()
+                        } else {
+                            format!("{} arguments", expected)
+                        }
+                    ))
+                } else {
+                    Ok(())
+                }
+            };
+
+            match name {
+                BuiltIn::Count => {
+                    validate_args_count("count", 1)?;
+                    let x = args.pop().unwrap();
+                    match x.ty() {
+                        Type::Number | Type::Point | Type::Bool => {
+                            Err(format!("function 'count' cannot be applied to {}", x.ty()))
+                        }
+                        Type::NumberList | Type::BoolList | Type::EmptyList => {
+                            Ok(builder.instr1(Count, x))
+                        }
+                        Type::PointList => Ok(builder.instr1(Count2, x)),
                     }
-                    Type::NumberList | Type::BoolList | Type::EmptyList => {
-                        Ok(builder.instr1(Count, x))
+                }
+                BuiltIn::Total => {
+                    validate_args_count("total", 1)?;
+                    let x = args.pop().unwrap();
+                    match x.ty() {
+                        Type::Number | Type::Point | Type::Bool => {
+                            Err(format!("function 'total' cannot be applied to {}", x.ty()))
+                        }
+                        Type::NumberList | Type::BoolList | Type::EmptyList => {
+                            Ok(builder.instr1(Total, x))
+                        }
+                        Type::PointList => Ok(builder.instr1(Total2, x)),
                     }
-                    Type::PointList => Ok(builder.instr1(Count2, x)),
                 }
             }
-            BuiltIn::Total(x) => {
-                let x = compile_expression(x, builder, names)?;
-                match x.ty() {
-                    Type::Number | Type::Point | Type::Bool => {
-                        Err(format!("function 'total' cannot be applied to {}", x.ty()))
-                    }
-                    Type::NumberList | Type::BoolList | Type::EmptyList => {
-                        Ok(builder.instr1(Total, x))
-                    }
-                    Type::PointList => Ok(builder.instr1(Total2, x)),
-                }
-            }
-        },
+        }
     }
 }
 

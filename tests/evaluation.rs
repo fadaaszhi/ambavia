@@ -4,7 +4,7 @@ use ambavia::{
     instruction_builder::InstructionBuilder,
     latex_parser::parse_latex,
     latex_tree_flattener::Token,
-    resolver::resolve_names,
+    name_resolver::resolve_names,
     vm::{self, Vm},
 };
 use rstest::rstest;

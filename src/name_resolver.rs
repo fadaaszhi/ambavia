@@ -41,17 +41,27 @@ pub enum Expression {
         body: Body,
         lists: Vec<Assignment>,
     },
-    BuiltIn(BuiltIn),
+    BuiltIn {
+        name: BuiltIn,
+        args: Vec<Expression>,
+    },
 }
 
 #[derive(Debug, PartialEq)]
 pub enum BuiltIn {
-    Count(Box<Expression>),
-    Total(Box<Expression>),
+    Count,
+    Total,
 }
 
-fn is_built_in(s: &str) -> bool {
-    matches!(s, "count" | "total")
+impl BuiltIn {
+    fn from_str(name: &str) -> Option<BuiltIn> {
+        use BuiltIn::*;
+        Some(match name {
+            "count" => Count,
+            "total" => Total,
+            _ => return None,
+        })
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -363,51 +373,13 @@ impl<'a> Resolver<'a> {
     ) -> (Result<Expression, String>, Dependencies<'a>) {
         let err = |s| (Err(s), Dependencies::none());
 
-        let wrong_number_of_arguments_error = |expected| {
-            format!(
-                "function '{callee}' requires {}{}",
-                if args.len() > expected { "only " } else { "" },
-                if expected == 1 {
-                    "1 argument".into()
-                } else {
-                    format!("{} arguments", expected)
-                }
-            )
-        };
-
-        if is_built_in(callee) {
+        if let Some(name) = BuiltIn::from_str(callee) {
             let (args, deps) = match self.resolve_expressions(args) {
                 (Ok(v), d) => (v, d),
                 (Err(e), d) => return (Err(e), d),
             };
 
-            return match callee {
-                "count" => {
-                    if args.len() != 1 {
-                        (Err(wrong_number_of_arguments_error(1)), deps)
-                    } else {
-                        (
-                            Ok(Expression::BuiltIn(BuiltIn::Count(Box::new(
-                                args.into_iter().next().unwrap(),
-                            )))),
-                            deps,
-                        )
-                    }
-                }
-                "total" => {
-                    if args.len() != 1 {
-                        (Err(wrong_number_of_arguments_error(1)), deps)
-                    } else {
-                        (
-                            Ok(Expression::BuiltIn(BuiltIn::Total(Box::new(
-                                args.into_iter().next().unwrap(),
-                            )))),
-                            deps,
-                        )
-                    }
-                }
-                _ => unreachable!(),
-            };
+            return (Ok(Expression::BuiltIn { name, args }), deps);
         }
 
         let (parameters, body) = match self.globals.get(callee).cloned() {
@@ -420,7 +392,19 @@ impl<'a> Resolver<'a> {
         };
 
         if parameters.len() != args.len() {
-            return err(wrong_number_of_arguments_error(parameters.len()));
+            return err(format!(
+                "function '{callee}' requires {}{}",
+                if args.len() > parameters.len() {
+                    "only "
+                } else {
+                    ""
+                },
+                if parameters.len() == 1 {
+                    "1 argument".into()
+                } else {
+                    format!("{} arguments", parameters.len())
+                }
+            ));
         }
 
         self.resolve_dynamic(body, parameters.iter().zip(args.iter()), |name| {
@@ -497,7 +481,7 @@ impl<'a> Resolver<'a> {
                 )
             }
             ast::Expression::CallOrMultiply { callee, args } => {
-                if is_built_in(callee)
+                if BuiltIn::from_str(callee).is_some()
                     || matches!(
                         self.globals.get(callee.as_str()),
                         Some(Ok(ExpressionListEntry::FunctionDeclaration { .. }))
@@ -1769,12 +1753,14 @@ mod tests {
                                 // C.total + D.total
                                 value: bx(Expression::BinaryOperation {
                                     operation: ABo::Add,
-                                    left: bx(Expression::BuiltIn(BuiltIn::Total(bx(
-                                        Expression::Identifier(3)
-                                    )))),
-                                    right: bx(Expression::BuiltIn(BuiltIn::Total(bx(
-                                        Expression::Identifier(8)
-                                    )))),
+                                    left: bx(Expression::BuiltIn {
+                                        name: BuiltIn::Total,
+                                        args: vec![Expression::Identifier(3)]
+                                    }),
+                                    right: bx(Expression::BuiltIn {
+                                        name: BuiltIn::Total,
+                                        args: vec![Expression::Identifier(8)]
+                                    }),
                                 }),
                             },
                             lists: vec![

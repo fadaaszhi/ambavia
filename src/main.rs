@@ -1,117 +1,78 @@
-use std::{
-    fmt::format,
-    io::{self, Write},
-};
+use std::hint::black_box;
 
 use ambavia::{
-    ast_parser::parse_expression_list_entry,
-    compiler::{compile_assignments, compile_expression, Names},
-    instruction_builder::InstructionBuilder,
-    latex_parser::parse_latex,
-    latex_tree_flattener::Token,
-    resolver::resolve_names,
-    vm::Vm,
+    ast_parser::parse_expression_list_entry, compiler::compile_assignments,
+    latex_parser::parse_latex, name_resolver::resolve_names, vm::Vm,
 };
 
-// fn main() {
-//     let mut first = true;
+use crate::timer::Timer;
 
-//     loop {
-//         if !first {
-//             // println!();
-//         }
-//         first = false;
-
-//         print!(">>> ");
-//         io::stdout().flush().unwrap();
-//         let mut input = String::new();
-//         io::stdin().read_line(&mut input).unwrap();
-
-//         let input = input.trim();
-
-//         let tree = match parse_latex(input) {
-//             Ok(tree) => tree,
-//             Err(e) => {
-//                 println!("LaTeX error: {e:?}");
-//                 continue;
-//             }
-//         };
-
-//         let ast = match parse_nodes_into_expression(&tree, Token::EndOfInput) {
-//             Ok(ast) => ast,
-//             Err(e) => {
-//                 println!("AST error: {e}");
-//                 continue;
-//             }
-//         };
-
-//         let mut builder = InstructionBuilder::default();
-//         let mut names = Names::default();
-//         if let Err(e) = compile_expression(&ast, &mut builder, &mut names) {
-//             println!("Compile error: {e}");
-//             continue;
-//         }
-//         let instructions = builder.finish();
-
-//         // println!("Compiled instructions:");
-//         // let width = (instructions.len() - 1).to_string().len();
-//         // for (i, instruction) in instructions.iter().enumerate() {
-//         //     println!("  {i:width$} {instruction:?}");
-//         // }
-
-//         let mut vm = Vm::with_program(instructions);
-//         vm.run(false);
-
-//         // println!("\nStack after running:");
-//         // let width = (vm.stack.len() - 1).to_string().len();
-//         // for (i, value) in vm.stack.iter().enumerate() {
-//         //     println!("  [{i:width$}] = {value}");
-//         // }
-//         println!("{}", vm.stack[0]);
-//     }
-// }
+pub mod timer;
 
 fn main() {
-    let graph = r"
-        c
-        a = c \with b = 3
-        b = 5a
-        c = 2b
-        c
-        d = []
+    // let graph = r"
+    //     i \for i=(4,5)+[]
+    // "
+    // .trim();
+    // let graph = r"
+    //    ( i \for i = [])+(3,4)
+    // "
+    // .trim();
+    let graph = black_box(
+        r"
+\count(5,5)
     "
-    .trim();
+        .trim(),
+    );
+    // let graph = r"
+    //     (x,y) \for x=[1...5],y=[1...2]
+    // ";
 
+    let mut timer = Timer::default();
+    timer.start("entire");
+    timer.start("parse");
     let mut output = vec!["".to_string(); graph.lines().count()];
     let mut list_indices = vec![];
     let mut list = vec![];
 
     for (i, line) in graph.lines().enumerate() {
+        timer.start(format!("line {i}"));
         if line.trim().is_empty() {
+            timer.stop();
             continue;
         }
 
+        timer.start("parse_latex");
         let tree = match parse_latex(line) {
             Ok(tree) => tree,
             Err(e) => {
                 output[i] = format!("LaTeX error: {e:?}");
+                timer.stop();
+                timer.stop();
                 continue;
             }
         };
 
+        timer.stop_start("parse_expression_list_entry");
         let ast = match parse_expression_list_entry(&tree) {
             Ok(ast) => ast,
             Err(e) => {
                 output[i] = format!("AST Error: {e}");
+                timer.stop();
+                timer.stop();
                 continue;
             }
         };
-
+        timer.stop();
+        timer.stop();
         list_indices.push(i);
         list.push(ast);
     }
 
+    timer.stop_start("resolve_names");
     let (assignments, assignment_indices) = resolve_names(&list);
+    println!("{}", assignments.len());
+    timer.stop();
 
     for (i, a) in assignment_indices.iter().enumerate() {
         match a {
@@ -121,11 +82,19 @@ fn main() {
         }
     }
 
-    match compile_assignments(&assignments, &assignment_indices) {
+    timer.start("compile_assignments");
+    let compiled = compile_assignments(&assignments, &assignment_indices);
+    timer.stop();
+
+    match compiled {
         Err(e) => output.push(format!("Compile Error: {e}")),
         Ok((program, vars)) => {
+            timer.start("create vm");
             let mut vm = Vm::with_program(program);
+            timer.stop_start("run vm");
             vm.run(false);
+            vm = black_box(vm);
+            timer.stop_start("write output");
 
             for (i, v) in vars.iter().enumerate() {
                 let Some(Ok((ty, index))) = v else {
@@ -152,8 +121,11 @@ fn main() {
                     Type::EmptyList => "[]".into(),
                 };
             }
+
+            timer.stop();
         }
     }
+    timer.stop();
 
     let lines = graph.lines().map(|l| l.trim()).collect::<Vec<_>>();
     let len = lines.iter().map(|l| l.len()).max().unwrap_or(0);
@@ -171,6 +143,9 @@ fn main() {
     if output.len() != lines.len() {
         println!("{}", output.last().unwrap());
     }
+
+    // println!("{}", timer.string());
+    // cli_clipboard::set_contents(timer.string()).unwrap();
 
     println!();
 }

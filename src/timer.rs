@@ -29,6 +29,11 @@ impl<'a> TimerHandle<'a> {
         }
     }
 
+    pub fn time<T>(&mut self, name: impl Into<String>, f: impl FnOnce() -> T) -> T {
+        let _handle = self.start(name);
+        f()
+    }
+
     pub fn disable_sections(&mut self) {
         self.do_sections = false;
     }

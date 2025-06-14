@@ -926,6 +926,67 @@ mod tests {
     }
 
     #[test]
+    fn funny_not_circular() {
+        assert_eq!(
+            resolve_names_ti(&[
+                // a = c with b = 3
+                ElAssign {
+                    name: "a".into(),
+                    value: AWith {
+                        body: bx(AId("c".into())),
+                        substitutions: vec![("b".into(), ANum(3.0))]
+                    },
+                },
+                // b = a
+                ElAssign {
+                    name: "b".into(),
+                    value: AId("a".into()),
+                },
+                // c = b
+                ElAssign {
+                    name: "c".into(),
+                    value: AId("b".into()),
+                },
+            ]),
+            (
+                vec![
+                    // with b = 3
+                    Assignment {
+                        id: 0,
+                        name: "b".into(),
+                        value: Expression::Number(3.0)
+                    },
+                    // c = b
+                    Assignment {
+                        id: 1,
+                        name: "c".into(),
+                        value: Expression::Identifier(0)
+                    },
+                    // a = c with b = 3
+                    Assignment {
+                        id: 2,
+                        name: "a".into(),
+                        value: Expression::Identifier(1)
+                    },
+                    // b = a
+                    Assignment {
+                        id: 3,
+                        name: "b".into(),
+                        value: Expression::Identifier(2)
+                    },
+                    // c = b
+                    Assignment {
+                        id: 4,
+                        name: "c".into(),
+                        value: Expression::Identifier(3)
+                    },
+                ],
+                vec![Some(Ok(2)), Some(Ok(3)), Some(Ok(4))],
+            ),
+        );
+    }
+
+    #[test]
     fn dependencies() {
         assert_eq!(
             resolve_names_ti(&[

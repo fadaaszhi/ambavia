@@ -8,9 +8,9 @@ cli-clipboard = "0.4.0"
 derive_more = { version = "2.0.1", features = ["from", "into"] }
 logos = "0.15.0"
 num-integer = "0.1.46"
-typed-index-collections = "3.2.3"
+typed-index-collections = "3.3.0"
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"
 assert_matches = "1.5.0"
-rstest = "0.24.0"
+rstest = "0.25.0"

@@ -20,32 +20,26 @@ impl BaseType {
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
-pub enum Type {
+enum Type {
     Number,
     NumberList,
     Point,
     PointList,
     Bool,
     BoolList,
-    EmptyList,
 }
 
 impl Type {
     fn size(&self) -> usize {
         match self {
-            Type::Number
-            | Type::NumberList
-            | Type::PointList
-            | Type::Bool
-            | Type::BoolList
-            | Type::EmptyList => 1,
+            Type::Number | Type::NumberList | Type::PointList | Type::Bool | Type::BoolList => 1,
             Type::Point => 2,
         }
     }
 
-    pub fn base(&self) -> BaseType {
+    fn base(&self) -> BaseType {
         match self {
-            Type::Number | Type::NumberList | Type::EmptyList => BaseType::Number,
+            Type::Number | Type::NumberList => BaseType::Number,
             Type::Point | Type::PointList => BaseType::Point,
             Type::Bool | Type::BoolList => BaseType::Bool,
         }
@@ -67,11 +61,8 @@ impl Type {
         }
     }
 
-    pub fn is_list(&self) -> bool {
-        matches!(
-            self,
-            Type::NumberList | Type::PointList | Type::BoolList | Type::EmptyList
-        )
+    fn is_list(&self) -> bool {
+        matches!(self, Type::NumberList | Type::PointList | Type::BoolList)
     }
 }
 
@@ -84,7 +75,6 @@ impl std::fmt::Display for Type {
             Type::PointList => "a list of points",
             Type::Bool => "a true/false value",
             Type::BoolList => "a list of true/false values",
-            Type::EmptyList => "an empty list",
         })
     }
 }
@@ -103,10 +93,6 @@ impl Value {
             index: self.index,
             ty: self.ty,
         }
-    }
-
-    pub fn ty(&self) -> Type {
-        self.ty
     }
 }
 
@@ -241,17 +227,6 @@ impl InstructionBuilder {
         self.create_and_push_value(Type::list_of(base))
     }
 
-    pub fn empty_list(&mut self) -> Value {
-        self.instructions.push(BuildList(0));
-        self.create_and_push_value(Type::EmptyList)
-    }
-
-    pub fn collapse(&mut self, empty_list: &mut Value, into: BaseType) {
-        self.assert_exists(empty_list, Type::EmptyList);
-        empty_list.ty = Type::list_of(into);
-        self.stack[empty_list.index] = empty_list.clone_private();
-    }
-
     pub fn append(&mut self, list: &Value, v: Value) {
         let base = list.ty.base();
         self.assert_exists(list, list.ty);
@@ -328,10 +303,18 @@ impl InstructionBuilder {
         *ty = None;
     }
 
-    pub fn defined_vars(&self) -> HashMap<usize, (Type, usize)> {
+    #[cfg(test)]
+    fn defined_vars_and_types(&self) -> HashMap<usize, (Type, usize)> {
         self.vars
             .iter()
             .filter_map(|(k, (t, i))| t.map(|t| (*k, (t, *i))))
+            .collect()
+    }
+
+    pub fn defined_vars(&self) -> HashMap<usize, usize> {
+        self.vars
+            .iter()
+            .filter_map(|(k, (t, i))| t.map(|_| (*k, *i)))
             .collect()
     }
 
@@ -820,13 +803,16 @@ mod tests {
         let mut ib = InstructionBuilder::default();
         let a = ib.load_const(5.0);
         ib.store(0, a);
-        assert_eq!(ib.defined_vars(), HashMap::from([(0, (Type::Number, 0))]));
+        assert_eq!(
+            ib.defined_vars_and_types(),
+            HashMap::from([(0, (Type::Number, 0))])
+        );
         let b = ib.load_const(1.0);
         let c = ib.load_const(2.0);
         let d = ib.instr2(Point, b, c);
         ib.store(1, d);
         assert_eq!(
-            ib.defined_vars(),
+            ib.defined_vars_and_types(),
             HashMap::from([(0, (Type::Number, 0)), (1, (Type::Point, 2))])
         );
         assert_eq!(ib.stack, []);
@@ -850,16 +836,19 @@ mod tests {
         );
         let old_a = ib.load_store(0, d);
         assert_eq!(
-            ib.defined_vars(),
+            ib.defined_vars_and_types(),
             HashMap::from([(0, (Type::Point, 0)), (1, (Type::Point, 2))])
         );
         ib.undefine(0);
-        assert_eq!(ib.defined_vars(), HashMap::from([(1, (Type::Point, 2))]));
+        assert_eq!(
+            ib.defined_vars_and_types(),
+            HashMap::from([(1, (Type::Point, 2))])
+        );
         assert_eq!(ib.stack, [a, old_a]);
         let l = ib.build_list(BaseType::Point, vec![]);
         ib.store(0, l);
         assert_eq!(
-            ib.defined_vars(),
+            ib.defined_vars_and_types(),
             HashMap::from([(0, (Type::PointList, 0)), (1, (Type::Point, 2))])
         );
         assert_eq!(
@@ -1216,46 +1205,5 @@ mod tests {
         let mut f = ib.load_const(4.0);
         let _g = ib.load_const(5.0);
         assert_panics(move || ib.swap_pop(&mut f, vec![e]));
-    }
-
-    #[test]
-    fn empty_list() {
-        let mut ib = InstructionBuilder::default();
-        let a = ib.empty_list();
-        assert_eq!(
-            a,
-            Value {
-                name: 0,
-                index: 0,
-                ty: Type::EmptyList
-            }
-        );
-        assert_eq!(ib.stack, [a]);
-        assert_eq!(ib.finish(), [BuildList(0)]);
-    }
-
-    #[test]
-    fn collapse() {
-        let mut ib = InstructionBuilder::default();
-        let mut a = ib.empty_list();
-        assert_eq!(
-            a,
-            Value {
-                name: 0,
-                index: 0,
-                ty: Type::EmptyList
-            }
-        );
-        ib.collapse(&mut a, BaseType::Point);
-        assert_eq!(
-            a,
-            Value {
-                name: 0,
-                index: 0,
-                ty: Type::PointList
-            }
-        );
-        assert_eq!(ib.stack, [a]);
-        assert_eq!(ib.finish(), [BuildList(0)]);
     }
 }

@@ -1,11 +1,10 @@
 use ambavia::{
-    ast_parser::{parse_expression_list_entry, parse_nodes_into_expression},
-    compiler::{compile_assignments, compile_expression, Names},
-    instruction_builder::InstructionBuilder,
+    ast_parser::parse_expression_list_entry,
+    compiler::compile_assignments,
     latex_parser::parse_latex,
-    latex_tree_flattener::Token,
     name_resolver::resolve_names,
-    vm::{self, Vm},
+    type_checker::{type_check, Type},
+    vm::Vm,
 };
 use rstest::rstest;
 
@@ -92,14 +91,24 @@ fn assert_expression_eq<'a>(source: &str, value: Value) {
     let tree = parse_latex(source).unwrap();
     let entry = parse_expression_list_entry(&tree).unwrap();
     let (assignments, assignment_indices) = resolve_names(&[entry]);
-    assignment_indices[0].clone().unwrap().unwrap();
-    let (instructions, indices) = compile_assignments(&assignments, &assignment_indices).unwrap();
+    let index = assignment_indices[0].clone().unwrap().unwrap();
+    let assignments = type_check(&assignments)
+        .into_iter()
+        .map(|a| a.unwrap())
+        .collect::<Vec<_>>();
+    let ty = assignments[index].value.ty;
+    let (instructions, indices) = compile_assignments(&assignments);
+
+    println!("Compiled instructions:");
+    let width = (instructions.len() - 1).to_string().len();
+    for (i, instruction) in instructions.iter().enumerate() {
+        println!("  {i:width$} {instruction:?}");
+    }
+
+    let index = indices[index];
 
     let mut vm = Vm::with_program(instructions);
     vm.run(false);
-    let (ty, index) = indices[0].clone().unwrap().unwrap();
-    use ambavia::instruction_builder::Type;
-
     assert_eq!(
         match ty {
             Type::Number => Value::Number(vm.vars[index].clone().number()),
@@ -134,16 +143,14 @@ fn assert_expression_eq<'a>(source: &str, value: Value) {
 //     assert_matches::assert_matches!(parse_nodes_into_expression(&tree, Token::EndOfInput), Err(..));
 // }
 
-fn assert_compile_error(source: &str, error: &str) {
+fn assert_type_error(source: &str, error: &str) {
     println!("expression: {source}");
     let tree = parse_latex(source).unwrap();
     let entry = parse_expression_list_entry(&tree).unwrap();
     let (assignments, assignment_indices) = resolve_names(&[entry]);
-    assignment_indices[0].clone().unwrap().unwrap();
-    assert_eq!(
-        compile_assignments(&assignments, &assignment_indices),
-        Err(error.into())
-    );
+    let index = assignment_indices[0].clone().unwrap().unwrap();
+    let assignments = type_check(&assignments);
+    assert_eq!(assignments[index], Err(error.into()));
 }
 
 const NAN: f64 = f64::NAN;
@@ -165,20 +172,20 @@ const NAN: f64 = f64::NAN;
 #[case(r"\{[1...3]<=2: 5, [7...9]\}", [5, 5, 9])]
 #[case(r"\{1<2: (3,4)\}", (3, 4))]
 #[case(r"\{1>2: (3,4)\}", (NAN, NAN))]
-#[case(r"\{1<2: (3,4), []\}", Value::EmptyList)]
+#[case(r"\{1<2: (3,4), []\}", [(0, 0); 0])]
 #[case(r"\{1<2: [(3,4)], []\}", [(3, 4)])]
 #[case(r"\{1<2: (3,4), [(5,6),(7,8)]\}", [(3, 4), (3, 4)])]
 #[case(r"[1,2,3][4=4]", [1, 2, 3])]
 #[case(r"[1,2,3][4=5]", [0; 0])]
 #[case(r"[(1,2), (3,4), (5,6)][[7...9]>=8]", [(3, 4), (5, 6)])]
 #[case(r"[1,2][[7...9]>=8]", [2])]
-#[case(r"[][[7...9]>=8] + (1,2)", Value::EmptyList)]
+#[case(r"[][[7...9]>=8] + (1,2)", [(0, 0); 0])]
 fn expression_eq(#[case] expression: &str, #[case] expected: impl Into<Value>) {
     assert_expression_eq(expression, expected.into());
 }
 
 #[rstest]
 #[case(r"\{1<2:(3,4),5\}", "cannot use a point and a number as the branches in a piecewise, every branch must have the same type")]
-fn expression_compile_error(#[case] expression: &str, #[case] error: &str) {
-    assert_compile_error(expression, error);
+fn expression_type_error(#[case] expression: &str, #[case] error: &str) {
+    assert_type_error(expression, error);
 }

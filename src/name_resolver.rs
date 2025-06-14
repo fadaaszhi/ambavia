@@ -1,5 +1,8 @@
 use std::collections::HashMap;
 
+use derive_more::{From, Into};
+use typed_index_collections::{TiSlice, TiVec};
+
 use crate::ast::{self, ExpressionListEntry};
 pub use crate::ast::{BinaryOperator, ComparisonOperator, SumProdKind, UnaryOperator};
 
@@ -167,8 +170,12 @@ struct Resolver<'a> {
     global_scope: ScopeMap<'a, ((usize, Option<String>), Dependencies<'a>)>,
 }
 
+#[derive(Debug, Copy, Clone, From, Into)]
+pub struct ExpressionIndex(usize);
+type ExpressionList = TiSlice<ExpressionIndex, ExpressionListEntry>;
+
 impl<'a> Resolver<'a> {
-    fn new(list: &'a [ExpressionListEntry]) -> Self {
+    fn new(list: &'a ExpressionList) -> Self {
         let mut globals = HashMap::new();
 
         for entry in list {
@@ -678,12 +685,17 @@ impl<'a> Resolver<'a> {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Copy, Clone, From, Into, Hash)]
+pub struct AssignmentIndex(usize);
+
+pub type ExpressionToAssignment = TiVec<ExpressionIndex, Option<Result<AssignmentIndex, String>>>;
+
 pub fn resolve_names(
-    list: &[ExpressionListEntry],
-) -> (Vec<Assignment>, Vec<Option<Result<usize, String>>>) {
+    list: &ExpressionList,
+) -> (TiVec<AssignmentIndex, Assignment>, ExpressionToAssignment) {
     let mut resolver = Resolver::new(list);
 
-    let assignment_indices: Vec<_> = list
+    let assignment_ids = list
         .iter()
         .map(|e| {
             assert!(resolver.dynamic_scope.0.iter().all(|(_, v)| v.is_empty()));
@@ -705,7 +717,7 @@ pub fn resolve_names(
                                 .global_scope
                                 .push(name, ((id, err.clone()), deps.clone()));
                         }
-                        Some(err.map_or(Ok(resolver.assignments[0].len() - 1), Err))
+                        Some(err.map_or(Ok(id), Err))
                     }
                 }
                 ExpressionListEntry::FunctionDeclaration { .. } => None,
@@ -713,18 +725,29 @@ pub fn resolve_names(
                 ExpressionListEntry::Expression(expression) => {
                     Some(match resolver.resolve_expression(expression) {
                         (Ok(value), _) => {
-                            resolver.push_assignment("<anonymous>", 0, value);
-                            Ok(resolver.assignments[0].len() - 1)
+                            let id = resolver.push_assignment("<anonymous>", 0, value);
+                            Ok(id)
                         }
                         (Err(error), _) => Err(error),
                     })
                 }
             }
         })
+        .collect::<TiVec<ExpressionIndex, _>>();
+
+    let assignments: TiVec<AssignmentIndex, Assignment> =
+        resolver.assignments.pop().unwrap().into();
+    assert!(resolver.assignments.is_empty());
+
+    let id_to_index_map = assignments
+        .iter_enumerated()
+        .map(|(i, a)| (a.id, i))
+        .collect::<HashMap<_, _>>();
+    let assignment_indices = assignment_ids
+        .into_iter()
+        .map(|id| id.map(|id| id.map(|id| id_to_index_map[&id])))
         .collect();
 
-    let assignments = resolver.assignments.pop().unwrap();
-    assert!(resolver.assignments.is_empty());
     (assignments, assignment_indices)
 }
 
@@ -758,10 +781,22 @@ mod tests {
         Box::new(x)
     }
 
+    fn resolve_names_ti(
+        list: &[ExpressionListEntry],
+    ) -> (Vec<Assignment>, Vec<Option<Result<usize, String>>>) {
+        let (a, b) = resolve_names(list.as_ref());
+        (
+            a.into(),
+            b.into_iter()
+                .map(|x| x.map(|x| x.map(Into::into)))
+                .collect(),
+        )
+    }
+
     #[test]
     fn expressions() {
         assert_eq!(
-            resolve_names(&[
+            resolve_names_ti(&[
                 ElExpr(ANum(5.0)),
                 ElExpr(ABop {
                     operation: ABo::Add,
@@ -794,7 +829,7 @@ mod tests {
     #[test]
     fn assignments() {
         assert_eq!(
-            resolve_names(&[
+            resolve_names_ti(&[
                 ElAssign {
                     name: "c".into(),
                     value: ANum(1.0),
@@ -825,7 +860,7 @@ mod tests {
     #[test]
     fn multiple_definitions_error() {
         assert_eq!(
-            resolve_names(&[
+            resolve_names_ti(&[
                 ElAssign {
                     name: "a".into(),
                     value: ANum(1.0),
@@ -866,7 +901,7 @@ mod tests {
         return;
         panic!("this currrently fails by stack overflow");
         assert_eq!(
-            resolve_names(&[
+            resolve_names_ti(&[
                 ElAssign {
                     name: "a".into(),
                     value: AId("b".into()),
@@ -893,7 +928,7 @@ mod tests {
     #[test]
     fn dependencies() {
         assert_eq!(
-            resolve_names(&[
+            resolve_names_ti(&[
                 // c = 1
                 ElAssign {
                     name: "c".into(),
@@ -1030,7 +1065,7 @@ mod tests {
     #[test]
     fn function_errors() {
         assert_eq!(
-            resolve_names(&[
+            resolve_names_ti(&[
                 // a()
                 ElExpr(ACallMul {
                     callee: "a".into(),
@@ -1075,7 +1110,7 @@ mod tests {
     #[test]
     fn call_mul_disambiguation() {
         assert_eq!(
-            resolve_names(&[
+            resolve_names_ti(&[
                 ElAssign {
                     name: "a".into(),
                     value: ANum(1.0),
@@ -1136,7 +1171,7 @@ mod tests {
     #[test]
     fn function_v1_9() {
         assert_eq!(
-            resolve_names(&[
+            resolve_names_ti(&[
                 // f(a1, a2, a3, a4) = [a1, b, c, d]
                 ElFunction {
                     name: "f".into(),
@@ -1260,10 +1295,10 @@ mod tests {
                 vec![
                     None,
                     Some(Err("'a2' is not defined".into())),
-                    Some(Ok(2)),
                     Some(Ok(1)),
+                    Some(Ok(0)),
                     Some(Err("'a4' is not defined".into())),
-                    Some(Ok(13)),
+                    Some(Ok(11)),
                 ],
             )
         );
@@ -1391,7 +1426,7 @@ mod tests {
     #[test]
     fn efficiency() {
         assert_eq!(
-            resolve_names(&[
+            resolve_names_ti(&[
                 ElAssign {
                     name: "a".into(),
                     value: AWith {
@@ -1439,7 +1474,7 @@ mod tests {
     #[test]
     fn list_comp() {
         assert_eq!(
-            resolve_names(&[
+            resolve_names_ti(&[
                 // p for j=c, i=[1]
                 ElExpr(AFor {
                     body: bx(AId("p".into())),
@@ -1547,11 +1582,11 @@ mod tests {
                     },
                 ],
                 vec![
-                    Some(Ok(6)),
+                    Some(Ok(2)),
                     Some(Err("'j' is not defined".into())),
                     Some(Ok(0)),
                     Some(Err("'j' is not defined".into())),
-                    Some(Ok(4)),
+                    Some(Ok(1)),
                 ],
             ),
         );
@@ -1560,7 +1595,7 @@ mod tests {
     #[test]
     fn nested_list_comps() {
         assert_eq!(
-            resolve_names(&[
+            resolve_names_ti(&[
                 // E = C.total + D.total for j=[1...4]
                 ElAssign {
                     name: "E".into(),
@@ -1780,12 +1815,12 @@ mod tests {
                     },
                 ],
                 vec![
-                    Some(Ok(9)),
-                    Some(Ok(3)),
+                    Some(Ok(2)),
+                    Some(Ok(0)),
                     Some(Err("'j' is not defined".into())),
                     Some(Err("'i' is not defined".into())),
                     Some(Err("'i' is not defined".into())),
-                    Some(Ok(6)),
+                    Some(Ok(1)),
                 ],
             ),
         );
@@ -1794,7 +1829,7 @@ mod tests {
     #[test]
     fn proper_cleanup() {
         assert_eq!(
-            resolve_names(&[
+            resolve_names_ti(&[
                 ElExpr(AWith {
                     body: bx(ABop {
                         operation: ABo::Add,
@@ -1832,7 +1867,7 @@ mod tests {
     #[test]
     fn cache_errors() {
         assert_eq!(
-            resolve_names(&[
+            resolve_names_ti(&[
                 ElAssign {
                     name: "a".into(),
                     value: AWith {

@@ -1,6 +1,9 @@
 use std::{borrow::Borrow, collections::HashMap};
 
-use crate::name_resolver as nr;
+use derive_more::{From, Into};
+use typed_index_collections::{ti_vec, TiSlice, TiVec};
+
+use crate::name_resolver::{self as nr};
 pub use crate::name_resolver::{ComparisonOperator, SumProdKind};
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -46,7 +49,7 @@ impl Type {
             BaseType::Number => Type::Number,
             BaseType::Point => Type::Point,
             BaseType::Bool => Type::Bool,
-            BaseType::Empty => todo!("why did you need to construct a single of empty?"),
+            BaseType::Empty => Type::Number,
         }
     }
 
@@ -760,9 +763,18 @@ impl TypeChecker {
     }
 }
 
-pub fn type_check(assignments: &[nr::Assignment]) -> Vec<Result<Assignment, String>> {
+#[derive(Debug, PartialEq, Eq, Copy, Clone, From, Into, Hash)]
+pub struct AssignmentIndex(usize);
+
+pub fn type_check(
+    assignments: &TiSlice<nr::AssignmentIndex, nr::Assignment>,
+) -> (
+    TiVec<AssignmentIndex, Assignment>,
+    TiVec<nr::AssignmentIndex, Result<AssignmentIndex, String>>,
+) {
     let mut tc = TypeChecker::default();
-    assignments
+    let mut result_assignments = ti_vec![];
+    let assignment_indices = assignments
         .iter()
         .map(|a| {
             let checked = tc
@@ -775,9 +787,13 @@ pub fn type_check(assignments: &[nr::Assignment]) -> Vec<Result<Assignment, Stri
                     .map(|c| (c.value.ty, c.id))
                     .map_err(|e| e.clone()),
             );
-            checked
+            checked.map(|a| {
+                result_assignments.push(a);
+                result_assignments.last_key().unwrap()
+            })
         })
-        .collect::<Vec<_>>()
+        .collect();
+    (result_assignments, assignment_indices)
 }
 
 #[cfg(test)]
@@ -806,10 +822,17 @@ mod tests {
         te(Type::Point, e)
     }
 
+    fn type_check_ti(
+        assignments: &[nr::Assignment],
+    ) -> (Vec<Assignment>, Vec<Result<usize, String>>) {
+        let (a, b) = type_check(assignments.as_ref());
+        (a.into(), b.into_iter().map(|x| x.map(Into::into)).collect())
+    }
+
     #[test]
     fn shrimple() {
         assert_eq!(
-            type_check(&[
+            type_check_ti(&[
                 NAs {
                     id: 0,
                     name: "a".into(),
@@ -853,34 +876,42 @@ mod tests {
                     value: NNum(9.0)
                 }
             ]),
-            vec![
-                Ok(As {
-                    id: 0,
-                    value: num(Num(5.0))
-                }),
-                Ok(As {
-                    id: 1,
-                    value: pt(Bop {
-                        operation: Bo::Point,
-                        left: bx(num(Num(3.0))),
-                        right: bx(num(Num(2.0)))
-                    })
-                }),
-                Ok(As {
-                    id: 2,
-                    value: pt(Bop {
-                        operation: Bo::MulPointNumber,
-                        left: bx(pt(Id(1))),
-                        right: bx(num(Id(0)))
-                    })
-                }),
-                Err("cannot add a point and a number".into()),
-                Err("cannot add a point and a number".into()),
-                Ok(As {
-                    id: 3,
-                    value: num(Num(9.0))
-                })
-            ]
+            (
+                vec![
+                    As {
+                        id: 0,
+                        value: num(Num(5.0))
+                    },
+                    As {
+                        id: 1,
+                        value: pt(Bop {
+                            operation: Bo::Point,
+                            left: bx(num(Num(3.0))),
+                            right: bx(num(Num(2.0)))
+                        })
+                    },
+                    As {
+                        id: 2,
+                        value: pt(Bop {
+                            operation: Bo::MulPointNumber,
+                            left: bx(pt(Id(1))),
+                            right: bx(num(Id(0)))
+                        })
+                    },
+                    As {
+                        id: 3,
+                        value: num(Num(9.0))
+                    }
+                ],
+                vec![
+                    Ok(0),
+                    Ok(1),
+                    Ok(2),
+                    Err("cannot add a point and a number".into()),
+                    Err("cannot add a point and a number".into()),
+                    Ok(3)
+                ]
+            )
         );
     }
 }

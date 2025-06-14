@@ -13,14 +13,47 @@ pub struct Timer {
     starts_minus_stops: usize,
 }
 
+pub struct TimerHandle<'a> {
+    timer: Option<&'a mut Timer>,
+    do_sections: bool,
+}
+
+impl<'a> TimerHandle<'a> {
+    pub fn start(&mut self, name: impl Into<String>) -> TimerHandle {
+        match (self.do_sections, self.timer.as_mut()) {
+            (true, Some(timer)) => timer.start(name),
+            _ => TimerHandle {
+                timer: None,
+                do_sections: false,
+            },
+        }
+    }
+
+    pub fn disable_sections(&mut self) {
+        self.do_sections = false;
+    }
+}
+
+impl<'a> Drop for TimerHandle<'a> {
+    fn drop(&mut self) {
+        if let Some(timer) = self.timer.as_mut() {
+            timer.stop();
+        }
+    }
+}
+
 impl Timer {
-    pub fn start(&mut self, name: impl Into<String>) {
+    pub fn start(&mut self, name: impl Into<String>) -> TimerHandle {
         self.actions
             .push(TimerAction::Start(name.into(), Instant::now()));
         self.starts_minus_stops += 1;
+        TimerHandle {
+            timer: Some(self),
+            do_sections: true,
+        }
     }
 
-    pub fn stop(&mut self) {
+    fn stop(&mut self) {
         self.actions.push(TimerAction::Stop(Instant::now()));
 
         if self.starts_minus_stops == 0 {
@@ -28,11 +61,6 @@ impl Timer {
         }
 
         self.starts_minus_stops -= 1;
-    }
-
-    pub fn stop_start(&mut self, name: &str) {
-        self.stop();
-        self.start(name);
     }
 
     pub fn string(&self) -> String {

@@ -90,14 +90,12 @@ fn assert_expression_eq<'a>(source: &str, value: Value) {
     println!("expression: {source}");
     let tree = parse_latex(source).unwrap();
     let entry = parse_expression_list_entry(&tree).unwrap();
-    let (assignments, assignment_indices) = resolve_names(&[entry]);
-    let index = assignment_indices[0].clone().unwrap().unwrap();
-    let assignments = type_check(&assignments)
-        .into_iter()
-        .map(|a| a.unwrap())
-        .collect::<Vec<_>>();
+    let (assignments, ei_to_nr) = resolve_names([entry].as_slice().as_ref());
+    let index = ei_to_nr.first().unwrap().clone().unwrap().unwrap();
+    let (assignments, nr_to_tc) = type_check(assignments.as_slice().as_ref());
+    let index = nr_to_tc[index].clone().unwrap();
     let ty = assignments[index].value.ty;
-    let (instructions, indices) = compile_assignments(&assignments);
+    let (instructions, vars) = compile_assignments(&assignments);
 
     println!("Compiled instructions:");
     let width = (instructions.len() - 1).to_string().len();
@@ -105,7 +103,7 @@ fn assert_expression_eq<'a>(source: &str, value: Value) {
         println!("  {i:width$} {instruction:?}");
     }
 
-    let index = indices[index];
+    let index = vars[index];
 
     let mut vm = Vm::with_program(instructions);
     vm.run(false);
@@ -147,10 +145,10 @@ fn assert_type_error(source: &str, error: &str) {
     println!("expression: {source}");
     let tree = parse_latex(source).unwrap();
     let entry = parse_expression_list_entry(&tree).unwrap();
-    let (assignments, assignment_indices) = resolve_names(&[entry]);
-    let index = assignment_indices[0].clone().unwrap().unwrap();
-    let assignments = type_check(&assignments);
-    assert_eq!(assignments[index], Err(error.into()));
+    let (assignments, ei_to_nr) = resolve_names([entry].as_slice().as_ref());
+    let index = ei_to_nr.first().unwrap().clone().unwrap().unwrap();
+    let errors = type_check(assignments.as_slice().as_ref()).1;
+    assert_eq!(errors[index], Err(error.into()));
 }
 
 const NAN: f64 = f64::NAN;

@@ -1,8 +1,10 @@
+use typed_index_collections::{TiSlice, TiVec};
+
 use crate::{
     instruction_builder::{BaseType as IbBaseType, InstructionBuilder, Value},
     type_checker::{
-        Assignment, BinaryOperator, Body, BuiltIn, ComparisonOperator, Expression, Type as TcType,
-        TypedExpression, UnaryOperator,
+        Assignment, AssignmentIndex, BinaryOperator, Body, BuiltIn, ComparisonOperator, Expression,
+        Type as TcType, TypedExpression, UnaryOperator,
     },
     vm::Instruction::{self, *},
 };
@@ -17,7 +19,7 @@ fn tc_list_to_ib_base(ty: TcType) -> IbBaseType {
     }
 }
 
-pub fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBuilder) -> Value {
+fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBuilder) -> Value {
     let TypedExpression { ty, e: expression } = expression;
     match expression {
         Expression::Number(x) => builder.load_const(*x),
@@ -317,7 +319,9 @@ pub fn compile_expression(expression: &TypedExpression, builder: &mut Instructio
     }
 }
 
-pub fn compile_assignments(assignments: &[Assignment]) -> (Vec<Instruction>, Vec<usize>) {
+pub fn compile_assignments(
+    assignments: &TiSlice<AssignmentIndex, Assignment>,
+) -> (Vec<Instruction>, TiVec<AssignmentIndex, usize>) {
     let mut builder = InstructionBuilder::default();
 
     for Assignment { id, value, .. } in assignments {
@@ -339,12 +343,9 @@ pub fn compile_assignments(assignments: &[Assignment]) -> (Vec<Instruction>, Vec
 #[cfg(test)]
 mod tests {
     use super::*;
-    use assert_matches::assert_matches;
     use pretty_assertions::assert_eq;
     use BinaryOperator as TBo;
-    use Expression::{
-        BinaryOperation as TBop, Broadcast as TBroadcast, Identifier as TId, Number as TNum,
-    };
+    use Expression::{BinaryOperation as TBop, Identifier as TId, Number as TNum};
     use InstructionBuilder as Ib;
 
     fn bx<T>(x: T) -> Box<T> {

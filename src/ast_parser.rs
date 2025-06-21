@@ -481,8 +481,9 @@ fn parse_expression(tokens: &mut Tokens, min_bp: u8) -> Result<Expression, Strin
                         let subscript = parse_nodes_into_name_subscript(sub)?;
                         match left {
                             Expression::Identifier(ref mut name) => {
-                                name.push('_');
+                                *name += "_{";
                                 name.push_str(&subscript);
+                                *name += "}";
                             }
                             _ => return Err("only identifiers may have subscripts".into()),
                         }

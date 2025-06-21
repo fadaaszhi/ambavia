@@ -1036,10 +1036,10 @@ mod tests {
             parse_expression(&mut tokens, 0),
             Ok(Bop {
                 operation: Mul,
-                left: bx(Id("a_bc".into())),
+                left: bx(Id("a_{bc}".into())),
                 right: bx(Bop {
                     operation: Pow,
-                    left: bx(Id("n_d6".into())),
+                    left: bx(Id("n_{d6}".into())),
                     right: bx(Id("e".into()))
                 })
             })
@@ -1323,7 +1323,7 @@ mod tests {
                     Num(1.0),
                     Bop {
                         operation: Add,
-                        left: bx(Id("a_2".into())),
+                        left: bx(Id("a_{2}".into())),
                         right: bx(Num(3.0))
                     }
                 ],
@@ -1358,7 +1358,7 @@ mod tests {
                     Num(1.0),
                     Bop {
                         operation: Add,
-                        left: bx(Id("a_2".into())),
+                        left: bx(Id("a_{2}".into())),
                         right: bx(Num(3.0))
                     }
                 ],
@@ -1395,7 +1395,7 @@ mod tests {
                         Num(1.0),
                         Bop {
                             operation: Add,
-                            left: bx(Id("a_2".into())),
+                            left: bx(Id("a_{2}".into())),
                             right: bx(Num(3.0))
                         }
                     ],
@@ -2097,7 +2097,7 @@ mod tests {
         assert_eq!(
             parse_expression_list_entry_from_tokens(&mut tokens),
             Ok(Ele::FunctionDeclaration {
-                name: "f_4".into(),
+                name: "f_{4}".into(),
                 parameters: vec!["x".into(), "y".into()],
                 body: Bop {
                     operation: Mul,
@@ -2140,7 +2140,7 @@ mod tests {
             Ok(Ele::Relation(ChainedComparison {
                 operands: vec![
                     CallMull {
-                        callee: "f_4".into(),
+                        callee: "f_{4}".into(),
                         args: vec![Id("x".into()), Id("y".into())],
                     },
                     Bop {
@@ -2186,7 +2186,7 @@ mod tests {
             Ok(Ele::Expression(Bop {
                 operation: Add,
                 left: bx(CallMull {
-                    callee: "f_4".into(),
+                    callee: "f_{4}".into(),
                     args: vec![Id("x".into()), Id("y".into())],
                 }),
                 right: bx(Bop {

@@ -4,11 +4,16 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+bytemuck = { version = "1.23.1", features = ["derive"] }
 cli-clipboard = "0.4.0"
 derive_more = { version = "2.0.1", features = ["from", "into"] }
+glam = { version = "0.30.4", features = ["bytemuck"] }
 logos = "0.15.0"
 num-integer = "0.1.46"
+pollster = "0.4.0"
 typed-index-collections = "3.3.0"
+wgpu = "25.0.2"
+winit = "0.30.11"
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"

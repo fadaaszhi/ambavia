@@ -4,10 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+arboard = "3.6.0"
 bytemuck = { version = "1.23.1", features = ["derive"] }
 cli-clipboard = "0.4.0"
 derive_more = { version = "2.0.1", features = ["from", "into"] }
 glam = { version = "0.30.4", features = ["bytemuck"] }
+image = "0.25.6"
 logos = "0.15.0"
 num-integer = "0.1.46"
 pollster = "0.4.0"

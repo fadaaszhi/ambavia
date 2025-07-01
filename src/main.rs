@@ -578,12 +578,12 @@ mod expression_list {
                                 };
                                 self.cursor = CursorKind::selection(start, end.max(1) - 1);
                             } else {
-                                let left = match self.cursor {
+                                let pos = match self.cursor {
                                     CursorKind::None => unreachable!(),
-                                    CursorKind::Line(pos) => pos,
+                                    CursorKind::Line(pos) => pos.max(1) - 1,
                                     CursorKind::Selection(start, end) => start.min(end),
                                 };
-                                self.cursor = CursorKind::Line(left.max(1) - 1);
+                                self.cursor = CursorKind::Line(pos);
                             }
                             response.consume_event();
                             response.request_redraw();
@@ -598,12 +598,12 @@ mod expression_list {
                                 self.cursor =
                                     CursorKind::selection(start, (end + 1).min(self.editor.len()));
                             } else {
-                                let right = match self.cursor {
+                                let pos = match self.cursor {
                                     CursorKind::None => unreachable!(),
-                                    CursorKind::Line(pos) => pos,
+                                    CursorKind::Line(pos) => (pos + 1).min(self.editor.len()),
                                     CursorKind::Selection(start, end) => start.max(end),
                                 };
-                                self.cursor = CursorKind::Line((right + 1).min(self.editor.len()));
+                                self.cursor = CursorKind::Line(pos);
                             }
                             response.consume_event();
                             response.request_redraw();

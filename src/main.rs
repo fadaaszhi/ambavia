@@ -625,7 +625,7 @@ mod expression_list {
                                         self.modify_editor(|e| e.remove(pos - 1));
                                         self.cursor = CursorKind::Line(pos - 1);
                                         response.request_redraw();
-                                    } else if pos == 0 && self.editor.len() == 0 {
+                                    } else if pos == 0 && self.editor.is_empty() {
                                         message = Some(Message::Remove);
                                     }
                                 }

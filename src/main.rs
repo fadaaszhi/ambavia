@@ -428,7 +428,6 @@ impl MainThing {
         self.graph_paper
             .render(device, queue, view, config, &mut encoder, right);
         Some(encoder.finish())
-        // todo!()
     }
 }
 

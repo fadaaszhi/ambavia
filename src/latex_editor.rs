@@ -1,3 +1,5 @@
+use std::iter::zip;
+
 #[derive(Debug, PartialEq)]
 pub enum BracketKind {
     Paren,
@@ -82,10 +84,7 @@ pub mod editor {
             for &name in OPERATORNAMES {
                 let count = name.chars().count();
                 if tree.len() - i >= count
-                    && name
-                        .chars()
-                        .zip(&tree[i..])
-                        .all(|(c, n)| *n == Node::Char(c))
+                    && zip(name.chars(), &tree[i..]).all(|(c, n)| *n == Node::Char(c))
                 {
                     write!(l, r"\operatorname{{{name}}}").unwrap();
                     i += count;
@@ -429,7 +428,6 @@ pub mod layout {
             kind: SumProdKind,
             sub: Nodes,
             sup: Nodes,
-            body: Nodes,
         },
         Char(Glyph),
     }
@@ -442,10 +440,7 @@ pub mod layout {
             for &name in OPERATORNAMES {
                 let count = name.chars().count();
                 if tree.len() - i >= count
-                    && name
-                        .chars()
-                        .zip(&tree[i..])
-                        .all(|(c, n)| *n == ENode::Char(c))
+                    && zip(name.chars(), &tree[i..]).all(|(c, n)| *n == ENode::Char(c))
                 {
                     for (j, c) in name.chars().enumerate() {
                         let mut g = get_glyph(Font::MainRegular, c);

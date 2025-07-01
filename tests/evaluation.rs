@@ -1,3 +1,5 @@
+use std::iter::zip;
+
 use ambavia::{
     ast_parser::parse_expression_list_entry,
     compiler::compile_assignments,
@@ -23,14 +25,11 @@ impl PartialEq for Value {
         match (self, other) {
             (Self::Number(l), Self::Number(r)) => eq(l, r),
             (Self::NumberList(l), Self::NumberList(r)) => {
-                l.len() == r.len() && l.iter().zip(r.iter()).all(|(l, r)| eq(l, r))
+                l.len() == r.len() && zip(l, r).all(|(l, r)| eq(l, r))
             }
             (Self::Point(lx, ly), Self::Point(rx, ry)) => eq(lx, rx) && eq(ly, ry),
             (Self::PointList(l), Self::PointList(r)) => {
-                l.len() == r.len()
-                    && l.iter()
-                        .zip(r.iter())
-                        .all(|((lx, ly), (rx, ry))| eq(lx, rx) && eq(ly, ry))
+                l.len() == r.len() && zip(l, r).all(|((lx, ly), (rx, ry))| eq(lx, rx) && eq(ly, ry))
             }
             (Self::EmptyList, Self::EmptyList) => true,
             _ => false,

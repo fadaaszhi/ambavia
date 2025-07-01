@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, iter::zip};
 
 use derive_more::{From, Into};
 use typed_index_collections::{TiSlice, TiVec};
@@ -414,7 +414,7 @@ impl<'a> Resolver<'a> {
             ));
         }
 
-        self.resolve_dynamic(body, parameters.iter().zip(args.iter()), |name| {
+        self.resolve_dynamic(body, zip(parameters, args), |name| {
             format!("cannot use '{name}' for multiple parameters of this function")
         })
     }

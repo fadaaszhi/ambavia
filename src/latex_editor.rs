@@ -309,6 +309,13 @@ pub mod layout {
     const BINOP_SPACE: f64 = 0.2;
     const COMMA_SPACE: f64 = 0.2;
     const COLON_SPACE: f64 = 0.2;
+    const FRAC_SCALE: f64 = 0.91;
+    const FRAC_NUM_OFFSET: f64 = 0.0;
+    const FRAC_DEN_OFFSET: f64 = 0.079;
+    const FRAC_LINE_JUT: f64 = 0.09;
+    const FRAC_SIDE_PADDING: f64 = 0.18;
+    const FRAC_TOP_PADDING: f64 = 0.0;
+    const FRAC_BOTTOM_PADDING: f64 = 0.09;
     const CHAR_CENTER: f64 = -0.249;
     const CHAR_HEIGHT: f64 = 0.526;
     const CHAR_DEPTH: f64 = 0.462;
@@ -359,12 +366,13 @@ pub mod layout {
             dvec2(self.right(), self.bottom())
         }
 
-        fn transform(&mut self, position: DVec2, scale: f64) {
+        fn transform(&mut self, position: DVec2, scale: f64) -> (DVec2, f64) {
             self.width *= scale;
             self.height *= scale;
             self.depth *= scale;
             self.scale *= scale;
             self.position = position + scale * self.position;
+            (self.position, self.scale)
         }
 
         fn scale(&mut self, scale: f64) {
@@ -413,6 +421,7 @@ pub mod layout {
             arg: Nodes,
         },
         Frac {
+            line: (DVec2, DVec2),
             num: Nodes,
             den: Nodes,
         },
@@ -497,11 +506,42 @@ pub mod layout {
                 }
             }
 
-            match &tree[i] {
+            let (bounds, node) = match &tree[i] {
                 ENode::DelimitedGroup { .. } => todo!(),
                 ENode::SubSup { .. } => todo!(),
                 ENode::Sqrt { .. } => todo!(),
-                ENode::Frac { .. } => todo!(),
+                ENode::Frac { num, den } => {
+                    let mut num = layout_relative(num);
+                    let mut den = layout_relative(den);
+                    num.bounds.scale(FRAC_SCALE);
+                    den.bounds.scale(FRAC_SCALE);
+                    let max_width = num.bounds.width.max(den.bounds.width);
+                    let line = (
+                        dvec2(FRAC_SIDE_PADDING, 0.0),
+                        dvec2(FRAC_SIDE_PADDING + 2.0 * FRAC_LINE_JUT + max_width, 0.0),
+                    );
+                    let bounds = Bounds {
+                        width: max_width + (FRAC_SIDE_PADDING + FRAC_LINE_JUT) * 2.0,
+                        height: num.bounds.height
+                            + num.bounds.depth
+                            + FRAC_NUM_OFFSET
+                            + FRAC_TOP_PADDING,
+                        depth: den.bounds.height
+                            + den.bounds.depth
+                            + FRAC_DEN_OFFSET
+                            + FRAC_BOTTOM_PADDING,
+                        ..Default::default()
+                    };
+                    num.bounds.position = dvec2(
+                        (bounds.width - num.bounds.width) / 2.0,
+                        -num.bounds.depth - FRAC_NUM_OFFSET,
+                    );
+                    den.bounds.position = dvec2(
+                        (bounds.width - den.bounds.width) / 2.0,
+                        den.bounds.height + FRAC_DEN_OFFSET,
+                    );
+                    (bounds, Node::Frac { line, num, den })
+                }
                 ENode::SumProd { .. } => todo!(),
                 ENode::Char(c) => {
                     let (space_before, space_after) = match *c {
@@ -544,7 +584,7 @@ pub mod layout {
                     g.plane.right += space_before;
                     g.advance += space_before + space_after;
 
-                    nodes.push(
+                    (
                         Bounds {
                             width: g.advance,
                             height: CHAR_HEIGHT,
@@ -552,9 +592,10 @@ pub mod layout {
                             ..Default::default()
                         },
                         Node::Char(g.clone()),
-                    );
+                    )
                 }
-            }
+            };
+            nodes.push(bounds, node);
 
             i += 1;
         }
@@ -562,21 +603,26 @@ pub mod layout {
     }
 
     fn make_absolute(nodes: &mut Nodes, position: DVec2, scale: f64) {
-        nodes.bounds.transform(position, scale);
+        let (position, scale) = nodes.bounds.transform(position, scale);
         for (bounds, node) in &mut nodes.nodes {
-            bounds.transform(nodes.bounds.position, nodes.bounds.scale);
+            let (position, scale) = bounds.transform(position, scale);
             match node {
                 Node::DelimitedGroup { .. } => todo!(),
                 Node::SubSup { .. } => todo!(),
                 Node::Sqrt { .. } => todo!(),
-                Node::Frac { .. } => todo!(),
+                Node::Frac { line, num, den } => {
+                    line.0 = position + scale * line.0;
+                    line.1 = position + scale * line.1;
+                    make_absolute(num, position, scale);
+                    make_absolute(den, position, scale);
+                }
                 Node::SumProd { .. } => todo!(),
                 Node::Char(glyph) => {
-                    glyph.advance *= bounds.scale;
-                    glyph.plane.left = bounds.position.x + scale * glyph.plane.left;
-                    glyph.plane.top = bounds.position.y + scale * glyph.plane.top;
-                    glyph.plane.right = bounds.position.x + scale * glyph.plane.right;
-                    glyph.plane.bottom = bounds.position.y + scale * glyph.plane.bottom;
+                    glyph.advance *= scale;
+                    glyph.plane.left = position.x + scale * glyph.plane.left;
+                    glyph.plane.top = position.y + scale * glyph.plane.top;
+                    glyph.plane.right = position.x + scale * glyph.plane.right;
+                    glyph.plane.bottom = position.y + scale * glyph.plane.bottom;
                 }
             }
         }

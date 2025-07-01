@@ -879,21 +879,7 @@ mod expression_list {
             (response, message)
         }
 
-        fn render(&self, bounds: Bounds, indices: &mut Vec<u32>, vertices: &mut Vec<Vertex>) {
-            let mut i = 0;
-            if self.cursor != CursorKind::None {
-                indices.push(vertices.len() as u32 + 0);
-                indices.push(vertices.len() as u32 + 1);
-                indices.push(vertices.len() as u32 + 2);
-                indices.push(vertices.len() as u32 + 3);
-                indices.push(0xffffffff);
-                i = vertices.len();
-                vertices.push(Vertex::zeroed());
-                vertices.push(Vertex::zeroed());
-                vertices.push(Vertex::zeroed());
-                vertices.push(Vertex::zeroed());
-            }
-            let mut cursor_vertices = [Vertex::zeroed(); 4];
+        fn render(&self, bounds: Bounds, draw_quad: &mut impl FnMut(DVec2, DVec2, DVec2, DVec2)) {
             draw_latex(
                 &self.layout,
                 match self.cursor {
@@ -902,19 +888,13 @@ mod expression_list {
                     }
                     x => x,
                 },
-                |p| {
+                &|p| {
                     bounds.pos.as_dvec2()
                         + self.padding
                         + self.scale * (p + dvec2(0.0, self.layout.bounds.height))
                 },
-                indices,
-                vertices,
-                &mut cursor_vertices,
+                draw_quad,
             );
-
-            if self.cursor != CursorKind::None {
-                vertices[i..i + 4].copy_from_slice(&cursor_vertices);
-            }
         }
     }
 
@@ -979,99 +959,60 @@ mod expression_list {
     fn draw_latex(
         nodes: &Nodes,
         cursor: CursorKind,
-        transform: impl Fn(DVec2) -> DVec2,
-        indices: &mut Vec<u32>,
-        vertices: &mut Vec<Vertex>,
-        cursor_vertices: &mut [Vertex; 4],
+        transform: &impl Fn(DVec2) -> DVec2,
+        draw_quad: &mut impl FnMut(DVec2, DVec2, DVec2, DVec2),
     ) {
-        let mut cursor_p0 = DVec2::INFINITY;
-        let mut cursor_p1 = -DVec2::INFINITY;
-
-        if cursor == CursorKind::Line(nodes.nodes.len()) {
-            let b = latex_editor::layout::Bounds::default();
-            let bounds = nodes.bounds;
-            cursor_p0 = transform(bounds.position + dvec2(bounds.width, bounds.scale * -b.height));
-            cursor_p1 = transform(bounds.position + dvec2(bounds.width, bounds.scale * b.depth));
+        match cursor {
+            CursorKind::None => {}
+            CursorKind::Line(index) => {
+                let position = nodes.nodes.get(index).map_or(
+                    nodes.bounds.position + dvec2(nodes.bounds.width, 0.0),
+                    |(b, _)| b.position,
+                );
+                let b = latex_editor::layout::Bounds::default();
+                let p0 = transform(position - dvec2(0.0, nodes.bounds.scale * b.height));
+                let p1 = transform(position + dvec2(0.0, nodes.bounds.scale * b.depth));
+                let p0 = dvec2(p0.x.round() - 1.0, p0.y.floor());
+                let p1 = dvec2(p1.x.round() + 1.0, p1.y.floor() + 1.0);
+                let uv = DVec2::splat(-1.0);
+                draw_quad(p0, p1, uv, uv);
+            }
+            CursorKind::Selection(start, end) => {
+                for (b, _) in &nodes.nodes[start..end] {
+                    let p0 = transform(b.top_left()).floor();
+                    let p1 = transform(b.bottom_right()).ceil();
+                    let uv = DVec2::splat(-2.0);
+                    draw_quad(p0, p1, uv, uv);
+                }
+            }
         }
 
-        for (i, (bounds, node)) in nodes.nodes.iter().enumerate() {
-            match cursor {
-                CursorKind::Line(index) if i == index => {
-                    let b = latex_editor::layout::Bounds::default();
-                    cursor_p0 = transform(bounds.position - dvec2(0.0, b.height));
-                    cursor_p1 = transform(bounds.position + dvec2(0.0, b.depth));
-                }
-                CursorKind::Selection(start, end) if start <= i && i < end => {
-                    cursor_p0 = cursor_p0.min(transform(bounds.top_left()));
-                    cursor_p1 = cursor_p1.max(transform(bounds.bottom_right()));
-                }
-                _ => {}
-            }
-
+        for (_, node) in &nodes.nodes {
             match node {
                 latex_editor::layout::Node::DelimitedGroup { .. } => todo!(),
                 latex_editor::layout::Node::SubSup { .. } => todo!(),
                 latex_editor::layout::Node::Sqrt { .. } => todo!(),
-                latex_editor::layout::Node::Frac { .. } => todo!(),
+                latex_editor::layout::Node::Frac { line, num, den } => {
+                    let l0 = transform(line.0);
+                    let l1 = transform(line.1);
+                    draw_quad(
+                        dvec2(l0.x.floor(), l0.y.round() - 1.0),
+                        dvec2(l1.x.ceil(), l1.y.round() + 1.0),
+                        DVec2::splat(-1.0),
+                        DVec2::splat(-1.0),
+                    );
+                    draw_latex(num, CursorKind::None, transform, draw_quad);
+                    draw_latex(den, CursorKind::None, transform, draw_quad);
+                }
                 latex_editor::layout::Node::SumProd { .. } => todo!(),
                 latex_editor::layout::Node::Char(g) => {
-                    indices.push(vertices.len() as u32 + 0);
-                    indices.push(vertices.len() as u32 + 1);
-                    indices.push(vertices.len() as u32 + 2);
-                    indices.push(vertices.len() as u32 + 3);
-                    indices.push(0xffffffff);
-
-                    let p0 = transform(dvec2(g.plane.left, g.plane.top)).as_vec2();
-                    let p1 = transform(dvec2(g.plane.right, g.plane.bottom)).as_vec2();
-                    let uv0 = dvec2(g.atlas.left, g.atlas.top).as_vec2();
-                    let uv1 = dvec2(g.atlas.right, g.atlas.bottom).as_vec2();
-
-                    vertices.push(Vertex {
-                        position: p0,
-                        uv: uv0,
-                    });
-                    vertices.push(Vertex {
-                        position: vec2(p1.x, p0.y),
-                        uv: vec2(uv1.x, uv0.y),
-                    });
-                    vertices.push(Vertex {
-                        position: vec2(p0.x, p1.y),
-                        uv: vec2(uv0.x, uv1.y),
-                    });
-                    vertices.push(Vertex {
-                        position: p1,
-                        uv: uv1,
-                    });
+                    let p0 = transform(dvec2(g.plane.left, g.plane.top));
+                    let p1 = transform(dvec2(g.plane.right, g.plane.bottom));
+                    let uv0 = dvec2(g.atlas.left, g.atlas.top);
+                    let uv1 = dvec2(g.atlas.right, g.atlas.bottom);
+                    draw_quad(p0, p1, uv0, uv1);
                 }
             }
-        }
-
-        if cursor != CursorKind::None {
-            let (mut p0, mut p1) = (cursor_p0, cursor_p1);
-            let uv;
-
-            if let CursorKind::Line(_) = cursor {
-                p0 = dvec2(p0.x.round() - 1.0, p0.y.floor());
-                p1 = dvec2(p1.x.round() + 1.0, p1.y.floor() + 1.0);
-                uv = Vec2::splat(-1.0);
-            } else {
-                (p0, p1) = (p0.floor(), p1.floor() + 1.0);
-                uv = Vec2::splat(-2.0);
-            };
-
-            let (p0, p1) = (p0.as_vec2(), p1.as_vec2());
-            *cursor_vertices = [
-                Vertex { position: p0, uv },
-                Vertex {
-                    position: vec2(p1.x, p0.y),
-                    uv,
-                },
-                Vertex {
-                    position: vec2(p0.x, p1.y),
-                    uv,
-                },
-                Vertex { position: p1, uv },
-            ];
         }
     }
 
@@ -1235,7 +1176,7 @@ mod expression_list {
             });
 
             Self {
-                expressions: vec![Expression::default()],
+                expressions: vec![Expression::from_latex(r"\frac{1}{2}{3}").unwrap()],
 
                 pipeline,
                 vertex_buffer,
@@ -1336,30 +1277,36 @@ mod expression_list {
         ) {
             let mut indices = vec![];
             let mut vertices = vec![];
+            let draw_quad = &mut |p0: DVec2, p1: DVec2, uv0: DVec2, uv1: DVec2| {
+                let p0 = p0.as_vec2();
+                let p1 = p1.as_vec2();
+                let uv0 = uv0.as_vec2();
+                let uv1 = uv1.as_vec2();
 
-            let mut y_offset = 0;
-
-            let push_quad = |p0: Vec2,
-                             p1: Vec2,
-                             uv: Vec2,
-                             indices: &mut Vec<u32>,
-                             vertices: &mut Vec<Vertex>| {
                 indices.push(vertices.len() as u32 + 0);
                 indices.push(vertices.len() as u32 + 1);
                 indices.push(vertices.len() as u32 + 2);
                 indices.push(vertices.len() as u32 + 3);
                 indices.push(0xffffffff);
-                vertices.push(Vertex { position: p0, uv });
+
+                vertices.push(Vertex {
+                    position: p0,
+                    uv: uv0,
+                });
                 vertices.push(Vertex {
                     position: vec2(p1.x, p0.y),
-                    uv,
+                    uv: vec2(uv1.x, uv0.y),
                 });
                 vertices.push(Vertex {
                     position: vec2(p0.x, p1.y),
-                    uv,
+                    uv: vec2(uv0.x, uv1.y),
                 });
-                vertices.push(Vertex { position: p1, uv });
+                vertices.push(Vertex {
+                    position: p1,
+                    uv: uv1,
+                });
             };
+            let mut y_offset = 0;
 
             for expression in &mut self.expressions {
                 let y_size = expression.size().y.ceil() as u32;
@@ -1368,19 +1315,18 @@ mod expression_list {
                         pos: bounds.pos + uvec2(0, y_offset),
                         size: uvec2(bounds.size.x, y_size),
                     }),
-                    &mut indices,
-                    &mut vertices,
+                    draw_quad,
                 );
                 y_offset += y_size;
 
-                let p0 = (bounds.pos + uvec2(0, y_offset)).as_vec2();
+                let p0 = (bounds.pos + uvec2(0, y_offset)).as_dvec2();
                 let p1 = uvec2(
                     bounds.right(),
                     bounds.top() + y_offset + Self::SEPARATOR_WIDTH,
                 )
-                .as_vec2();
-                let uv = Vec2::splat(-3.0);
-                push_quad(p0, p1, uv, &mut indices, &mut vertices);
+                .as_dvec2();
+                let uv = DVec2::splat(-3.0);
+                draw_quad(p0, p1, uv, uv);
 
                 y_offset += Self::SEPARATOR_WIDTH;
             }
@@ -1391,8 +1337,8 @@ mod expression_list {
                     bounds.top(),
                 );
                 let p1 = uvec2(bounds.right(), bounds.bottom());
-                let uv = Vec2::splat(-3.0);
-                push_quad(p0.as_vec2(), p1.as_vec2(), uv, &mut indices, &mut vertices);
+                let uv = DVec2::splat(-3.0);
+                draw_quad(p0.as_dvec2(), p1.as_dvec2(), uv, uv);
             }
 
             let indices_size = size_of_val(&indices[..]) as u64;

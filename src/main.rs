@@ -198,9 +198,6 @@ impl App {
                 }),
                 WindowEvent::MouseInput { state, button, .. } => Event::MouseInput(state, button),
                 WindowEvent::PinchGesture { delta, .. } => Event::PinchGesture(delta),
-                WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                    dbg!((scale_factor, Event::ScaleFactorChanged)).1
-                }
                 _ => break 'update,
             };
             let response = self.main_thing.update(&mut self.context, &my_event, bounds);
@@ -249,7 +246,6 @@ pub enum Event {
     MouseWheel(DVec2),
     MouseInput(ElementState, MouseButton),
     PinchGesture(f64),
-    ScaleFactorChanged,
 }
 
 #[derive(Debug, Clone, Copy)]

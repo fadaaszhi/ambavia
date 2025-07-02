@@ -1154,12 +1154,6 @@ mod expression_list {
                                                     let index = sup.len();
                                                     self.set_cursor((path, index));
                                                 }
-                                                SubSup { sub: Some(sub), .. } => {
-                                                    path.push((i, Nf::SubSupSub));
-                                                    let index = sub.len();
-                                                    self.set_cursor((path, index));
-                                                }
-                                                SubSup { .. } => unreachable!(),
                                                 Sqrt { .. } => todo!(),
                                                 Frac { num, .. } => {
                                                     path.push((i, Nf::FracNum));
@@ -1167,7 +1161,9 @@ mod expression_list {
                                                     self.set_cursor((path, index));
                                                 }
                                                 SumProd { .. } => todo!(),
-                                                Char(_) => self.set_cursor((path, i)),
+                                                SubSup { .. } | Char(_) => {
+                                                    self.set_cursor((path, i))
+                                                }
                                             }
                                         } else if let Some((index, field)) = path.pop() {
                                             match field {
@@ -1226,17 +1222,15 @@ mod expression_list {
                                                     path.push((i, Nf::SubSupSup));
                                                     self.set_cursor((path, 0));
                                                 }
-                                                SubSup { .. } => {
-                                                    path.push((i, Nf::SubSupSub));
-                                                    self.set_cursor((path, 0));
-                                                }
                                                 Sqrt { .. } => todo!(),
                                                 Frac { .. } => {
                                                     path.push((i, Nf::FracNum));
                                                     self.set_cursor((path, 0));
                                                 }
                                                 SumProd { .. } => todo!(),
-                                                Char(_) => self.set_cursor((path, i + 1)),
+                                                SubSup { .. } | Char(_) => {
+                                                    self.set_cursor((path, i + 1))
+                                                }
                                             }
                                         } else if let Some((index, field)) = path.pop() {
                                             match field {

@@ -1344,8 +1344,19 @@ mod expression_list {
                                                 Nf::DelimitedGroup => todo!(),
                                                 Nf::SubSupSub => {}
                                                 Nf::SubSupSup => {
-                                                    path.push((index, Nf::SubSupSub));
-                                                    break;
+                                                    let SubSup { sub, .. } =
+                                                        &self.editor.walk(&path)[index]
+                                                    else {
+                                                        unreachable!();
+                                                    };
+                                                    if sub.is_some() {
+                                                        path.push((index, Nf::SubSupSub));
+                                                        break;
+                                                    } else {
+                                                        self.set_cursor((path, index));
+                                                        response.request_redraw();
+                                                        break 'stuff;
+                                                    }
                                                 }
                                                 Nf::SqrtRoot => todo!(),
                                                 Nf::SqrtArg => todo!(),
@@ -1456,10 +1467,21 @@ mod expression_list {
                                             match field {
                                                 Nf::DelimitedGroup => todo!(),
                                                 Nf::SubSupSub => {
-                                                    path.push((index, Nf::SubSupSup));
-                                                    break;
+                                                    let SubSup { sup, .. } =
+                                                        &self.editor.walk(&path)[index]
+                                                    else {
+                                                        unreachable!();
+                                                    };
+                                                    if sup.is_some() {
+                                                        path.push((index, Nf::SubSupSup));
+                                                        break;
+                                                    } else {
+                                                        self.set_cursor((path, index));
+                                                        response.request_redraw();
+                                                        break 'stuff;
+                                                    }
                                                 }
-                                                Nf::SubSupSup => todo!(),
+                                                Nf::SubSupSup => {}
                                                 Nf::SqrtRoot => todo!(),
                                                 Nf::SqrtArg => todo!(),
                                                 Nf::FracNum => {}

@@ -471,7 +471,7 @@ mod expression_list {
     use winit::keyboard::ModifiersState;
 
     use crate::latex_editor::{
-        editor::{self, Node as ENode, Nodes as ENodes},
+        editor::{self, Node as ENode, Nodes as ENodes, ends_in_operatorname},
         layout::{self, Node as LNode, Nodes as LNodes},
     };
 
@@ -901,6 +901,51 @@ mod expression_list {
                 r.start
             }
         };
+        if matches!(c, '0'..='9') {
+            let is_letter = |n: &ENode| {
+                matches!(
+                    n,
+                    ENode::Char(
+                        'A'..='Z'
+                        | 'a'..='z'
+                        | 'Γ'
+                        | 'Δ'
+                        | 'Θ'
+                        | 'Λ'
+                        | 'Ξ'
+                        | 'Π'
+                        | 'Σ'
+                        | 'Υ'
+                        | 'Φ'
+                        | 'Ψ'
+                        | 'Ω'
+                        | 'α'..='ω'
+                        | 'ϑ'
+                        | 'ϕ'
+                        | 'ϖ'
+                        | 'ϱ'
+                        | 'ϵ',
+                    )
+                )
+            };
+            if cursor > 0
+                && is_letter(&nodes[cursor - 1])
+                && !ends_in_operatorname(&nodes[..cursor])
+                || cursor > 1
+                    && is_letter(&nodes[cursor - 2])
+                    && !ends_in_operatorname(&nodes[..cursor - 1])
+                    && matches!(&nodes[cursor - 1], ENode::SubSup { sup: None, .. })
+            {
+                nodes.insert(
+                    cursor,
+                    ENode::SubSup {
+                        sub: Some(vec![ENode::Char(c)]),
+                        sup: None,
+                    },
+                );
+                return cursor + 1;
+            }
+        }
         nodes.insert(cursor, ENode::Char(c));
         let replacements = [
             ("cross", "×"),

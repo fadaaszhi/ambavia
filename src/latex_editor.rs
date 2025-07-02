@@ -75,6 +75,15 @@ pub mod editor {
         Char(char),
     }
 
+    pub fn ends_in_operatorname(nodes: &[Node]) -> bool {
+        OPERATORNAMES.iter().any(|name| {
+            let count = name.chars().count();
+            nodes.len() >= count
+                && zip(name.chars(), &nodes[nodes.len() - count..])
+                    .all(|(c, n)| *n == Node::Char(c))
+        })
+    }
+
     pub fn to_latex(tree: &[Node]) -> String {
         let mut latex = String::new();
         let l = &mut latex;

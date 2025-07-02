@@ -142,6 +142,10 @@ impl App {
             .get_default_config(&adapter, size.x, size.y)
             .unwrap();
         config.format = config.format.remove_srgb_suffix();
+        let present_modes = surface.get_capabilities(&adapter).present_modes;
+        if present_modes.contains(&wgpu::PresentMode::Mailbox) {
+            config.present_mode = wgpu::PresentMode::Mailbox;
+        }
         surface.configure(&device, &config);
         let clipboard = Clipboard::new().unwrap();
         let context = Context {

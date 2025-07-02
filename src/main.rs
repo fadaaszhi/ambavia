@@ -1292,7 +1292,6 @@ mod expression_list {
                                             SubSup { sub: Some(_), .. } => {
                                                 path.push((i, Nf::SubSupSub));
                                                 self.set_cursor((path, 0));
-                                                response.request_redraw();
                                                 break 'stuff;
                                             }
                                             SubSup { .. } => {}
@@ -1300,7 +1299,6 @@ mod expression_list {
                                             Frac { .. } => {
                                                 path.push((i, Nf::FracDen));
                                                 self.set_cursor((path, 0));
-                                                response.request_redraw();
                                                 break 'stuff;
                                             }
                                             SumProd { .. } => todo!(),
@@ -1315,7 +1313,6 @@ mod expression_list {
                                                 path.push((i - 1, Nf::SubSupSub));
                                                 let index = sub.len();
                                                 self.set_cursor((path, index));
-                                                response.request_redraw();
                                                 break 'stuff;
                                             }
                                             SubSup { .. } => {}
@@ -1324,7 +1321,6 @@ mod expression_list {
                                                 path.push((i - 1, Nf::FracDen));
                                                 let index = den.len();
                                                 self.set_cursor((path, index));
-                                                response.request_redraw();
                                                 break 'stuff;
                                             }
                                             SumProd { .. } => todo!(),
@@ -1354,7 +1350,6 @@ mod expression_list {
                                                         break;
                                                     } else {
                                                         self.set_cursor((path, index));
-                                                        response.request_redraw();
                                                         break 'stuff;
                                                     }
                                                 }
@@ -1416,7 +1411,6 @@ mod expression_list {
                                             SubSup { sup: Some(_), .. } => {
                                                 path.push((i, Nf::SubSupSup));
                                                 self.set_cursor((path, 0));
-                                                response.request_redraw();
                                                 break 'stuff;
                                             }
                                             SubSup { .. } => {}
@@ -1424,7 +1418,6 @@ mod expression_list {
                                             Frac { .. } => {
                                                 path.push((i, Nf::FracNum));
                                                 self.set_cursor((path, 0));
-                                                response.request_redraw();
                                                 break 'stuff;
                                             }
                                             SumProd { .. } => todo!(),
@@ -1439,7 +1432,6 @@ mod expression_list {
                                                 path.push((i - 1, Nf::SubSupSup));
                                                 let index = sup.len();
                                                 self.set_cursor((path, index));
-                                                response.request_redraw();
                                                 break 'stuff;
                                             }
                                             SubSup { .. } => {}
@@ -1448,7 +1440,6 @@ mod expression_list {
                                                 path.push((i - 1, Nf::FracNum));
                                                 let index = num.len();
                                                 self.set_cursor((path, index));
-                                                response.request_redraw();
                                                 break 'stuff;
                                             }
                                             SumProd { .. } => todo!(),
@@ -1477,7 +1468,6 @@ mod expression_list {
                                                         break;
                                                     } else {
                                                         self.set_cursor((path, index));
-                                                        response.request_redraw();
                                                         break 'stuff;
                                                     }
                                                 }

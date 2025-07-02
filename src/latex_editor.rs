@@ -308,6 +308,9 @@ pub mod layout {
     const BINOP_SPACE: f64 = 0.2;
     const COMMA_SPACE: f64 = 0.2;
     const COLON_SPACE: f64 = 0.2;
+    const SUB_SCALE: f64 = 0.73;
+    const SUP_SCALE: f64 = 0.91;
+    const SUB_SUP_MIDDLE: f64 = 0.02;
     const FRAC_SCALE: f64 = 0.91;
     const FRAC_NUM_OFFSET: f64 = 0.0;
     const FRAC_DEN_OFFSET: f64 = 0.079;
@@ -503,7 +506,24 @@ pub mod layout {
 
             let (bounds, node) = match &tree[i] {
                 ENode::DelimitedGroup { .. } => todo!(),
-                ENode::SubSup { .. } => todo!(),
+                ENode::SubSup { sub, sup } => {
+                    let mut bounds = Bounds::default();
+                    let sub = sub.as_ref().map(|sub| {
+                        let mut sub = layout_relative(sub);
+                        sub.bounds.scale(SUB_SCALE);
+                        sub.bounds.position.y = SUB_SUP_MIDDLE + sub.bounds.height;
+                        bounds.union(&sub.bounds);
+                        sub
+                    });
+                    let sup = sup.as_ref().map(|sup| {
+                        let mut sup = layout_relative(sup);
+                        sup.bounds.scale(SUP_SCALE);
+                        sup.bounds.position.y = SUB_SUP_MIDDLE - sup.bounds.depth;
+                        bounds.union(&sup.bounds);
+                        sup
+                    });
+                    (bounds, Node::SubSup { sub, sup })
+                }
                 ENode::Sqrt { .. } => todo!(),
                 ENode::Frac { num, den } => {
                     let mut num = layout_relative(num);
@@ -603,7 +623,10 @@ pub mod layout {
             let (position, scale) = bounds.transform(position, scale);
             match node {
                 Node::DelimitedGroup { .. } => todo!(),
-                Node::SubSup { .. } => todo!(),
+                Node::SubSup { sub, sup } => {
+                    sub.as_mut().map(|sub| make_absolute(sub, position, scale));
+                    sup.as_mut().map(|sup| make_absolute(sup, position, scale));
+                }
                 Node::Sqrt { .. } => todo!(),
                 Node::Frac { line, num, den } => {
                     line.0 = position + scale * line.0;

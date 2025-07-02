@@ -655,6 +655,137 @@ mod expression_list {
         }
     }
 
+    /// bruh
+    fn join_consecutive_scripts(nodes: &mut ENodes, mut cursor: Option<(&mut Cursor, usize)>) {
+        let mut i = 0;
+        while i < nodes.len() {
+            let mut subscripts: Vec<Vec<_>> = vec![];
+            let mut superscripts: Vec<Vec<_>> = vec![];
+            let mut first = true;
+            while let Some(ENode::SubSup { .. }) = nodes.get(i) {
+                let ENode::SubSup { sub, sup } = nodes.remove(i) else {
+                    unreachable!()
+                };
+                if !first {
+                    if let Some((cursor, offset)) = &mut cursor {
+                        if let Some((index, field)) = cursor.path.get_mut(*offset) {
+                            if *index > i {
+                                *index -= 1;
+                                if *index == i {
+                                    let field = field.clone();
+                                    let index = cursor
+                                        .path
+                                        .get_mut(*offset + 1)
+                                        .map_or(&mut cursor.index, |(index, _)| index);
+                                    *index += if field == Nf::SubSupSub {
+                                        &subscripts
+                                    } else {
+                                        assert_eq!(field, Nf::SubSupSup);
+                                        &superscripts
+                                    }
+                                    .iter()
+                                    .map(|s| s.len())
+                                    .sum::<usize>();
+                                }
+                            }
+                        } else {
+                            if cursor.index > i {
+                                cursor.index -= 1;
+                                if cursor.index == i {
+                                    if !superscripts.is_empty() {
+                                        cursor.path.push((cursor.index, Nf::SubSupSup));
+                                        cursor.index = superscripts.iter().map(|s| s.len()).sum();
+                                    } else {
+                                        assert!(!subscripts.is_empty());
+                                        cursor.path.push((cursor.index, Nf::SubSupSub));
+                                        cursor.index = subscripts.iter().map(|s| s.len()).sum();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                first = false;
+                subscripts.extend(sub);
+                superscripts.extend(sup);
+            }
+            let sub = subscripts.into_iter().reduce(|mut x, mut y| {
+                x.append(&mut y);
+                x
+            });
+            let sup = superscripts.into_iter().reduce(|mut x, mut y| {
+                x.append(&mut y);
+                x
+            });
+            if sub.is_some() || sup.is_some() {
+                nodes.insert(i, ENode::SubSup { sub, sup });
+            }
+            i += 1;
+        }
+
+        for (i, node) in nodes.iter_mut().enumerate() {
+            let field_cursor = if let Some((cursor, offset)) = &mut cursor
+                && let Some((index, field)) = cursor.path.get(*offset)
+                && *index == i
+            {
+                Some((field.clone(), (&mut **cursor, *offset + 1)))
+            } else {
+                None
+            };
+
+            match node {
+                ENode::DelimitedGroup { inner, .. } => {
+                    let cursor = match field_cursor {
+                        Some((Nf::DelimitedGroup, cursor)) => Some(cursor),
+                        _ => None,
+                    };
+                    join_consecutive_scripts(inner, cursor)
+                }
+                ENode::SubSup { sub, sup } => {
+                    let (sub_cursor, sup_cursor) = match field_cursor {
+                        Some((Nf::SubSupSub, cursor)) => (Some(cursor), None),
+                        Some((Nf::SubSupSup, cursor)) => (None, Some(cursor)),
+                        _ => (None, None),
+                    };
+                    sub.as_mut()
+                        .map(|sub| join_consecutive_scripts(sub, sub_cursor));
+                    sup.as_mut()
+                        .map(|sup| join_consecutive_scripts(sup, sup_cursor));
+                }
+                ENode::Sqrt { root, arg } => {
+                    let (root_cursor, arg_cursor) = match field_cursor {
+                        Some((Nf::SqrtRoot, cursor)) => (Some(cursor), None),
+                        Some((Nf::SqrtArg, cursor)) => (None, Some(cursor)),
+                        _ => (None, None),
+                    };
+                    root.as_mut()
+                        .map(|root| join_consecutive_scripts(root, root_cursor));
+                    join_consecutive_scripts(arg, arg_cursor);
+                }
+                ENode::Frac { num, den } => {
+                    let (num_cursor, den_cursor) = match field_cursor {
+                        Some((Nf::FracNum, cursor)) => (Some(cursor), None),
+                        Some((Nf::FracDen, cursor)) => (None, Some(cursor)),
+                        _ => (None, None),
+                    };
+                    join_consecutive_scripts(num, num_cursor);
+                    join_consecutive_scripts(den, den_cursor);
+                }
+                ENode::SumProd { sub, sup, .. } => {
+                    let (sub_cursor, sup_cursor) = match field_cursor {
+                        Some((Nf::SumProdSub, cursor)) => (Some(cursor), None),
+                        Some((Nf::SumProdSup, cursor)) => (None, Some(cursor)),
+                        _ => (None, None),
+                    };
+                    join_consecutive_scripts(sub, sub_cursor);
+                    join_consecutive_scripts(sup, sup_cursor);
+                }
+                ENode::Char(_) => {}
+            }
+        }
+    }
+
     struct Expression {
         latex: String,
         editor: ENodes,
@@ -704,7 +835,32 @@ mod expression_list {
 
                 match node {
                     LNode::DelimitedGroup { .. } => todo!(),
-                    LNode::SubSup { .. } => todo!(),
+                    LNode::SubSup { sub, sup } => {
+                        if position.x < bounds.left() {
+                            break 'index i;
+                        }
+                        nodes = match (sub, sup) {
+                            (None, None) => unreachable!(),
+                            (None, Some(sup)) => {
+                                path.push((i, Nf::SubSupSup));
+                                sup
+                            }
+                            (Some(sub), None) => {
+                                path.push((i, Nf::SubSupSub));
+                                sub
+                            }
+                            (Some(sub), Some(sup)) => {
+                                if position.y < sup.bounds.bottom() {
+                                    path.push((i, Nf::SubSupSup));
+                                    sup
+                                } else {
+                                    path.push((i, Nf::SubSupSub));
+                                    sub
+                                }
+                            }
+                        };
+                        continue 'index;
+                    }
                     LNode::Sqrt { .. } => todo!(),
                     LNode::Frac { line, num, den } => {
                         if position.x < line.0.x {
@@ -911,8 +1067,7 @@ mod expression_list {
                         }
                         Key::Named(NamedKey::Space) => {
                             let index = add_char(self.editor.walk(&path), span, ' ');
-                            self.set_cursor((path, index));
-                            self.editor_updated();
+                            self.editor_updated((path, index));
                             response.request_redraw();
                             response.consume_event();
                         }
@@ -944,7 +1099,17 @@ mod expression_list {
                                             i -= 1;
                                             match &self.editor.walk(&path)[i] {
                                                 DelimitedGroup { .. } => todo!(),
-                                                SubSup { .. } => todo!(),
+                                                SubSup { sup: Some(sup), .. } => {
+                                                    path.push((i, Nf::SubSupSup));
+                                                    let index = sup.len();
+                                                    self.set_cursor((path, index));
+                                                }
+                                                SubSup { sub: Some(sub), .. } => {
+                                                    path.push((i, Nf::SubSupSub));
+                                                    let index = sub.len();
+                                                    self.set_cursor((path, index));
+                                                }
+                                                SubSup { .. } => unreachable!(),
                                                 Sqrt { .. } => todo!(),
                                                 Frac { num, .. } => {
                                                     path.push((i, Nf::FracNum));
@@ -957,11 +1122,12 @@ mod expression_list {
                                         } else if let Some((index, field)) = path.pop() {
                                             match field {
                                                 Nf::DelimitedGroup => todo!(),
-                                                Nf::SubSupSub => todo!(),
-                                                Nf::SubSupSup => todo!(),
                                                 Nf::SqrtRoot => todo!(),
                                                 Nf::SqrtArg => todo!(),
-                                                Nf::FracNum | Nf::FracDen => {
+                                                Nf::SubSupSub
+                                                | Nf::SubSupSup
+                                                | Nf::FracNum
+                                                | Nf::FracDen => {
                                                     self.set_cursor((path, index));
                                                 }
                                                 Nf::SumProdSub => todo!(),
@@ -1006,7 +1172,14 @@ mod expression_list {
                                         if i < nodes.len() {
                                             match &nodes[i] {
                                                 DelimitedGroup { .. } => todo!(),
-                                                SubSup { .. } => todo!(),
+                                                SubSup { sup: Some(_), .. } => {
+                                                    path.push((i, Nf::SubSupSup));
+                                                    self.set_cursor((path, 0));
+                                                }
+                                                SubSup { .. } => {
+                                                    path.push((i, Nf::SubSupSub));
+                                                    self.set_cursor((path, 0));
+                                                }
                                                 Sqrt { .. } => todo!(),
                                                 Frac { .. } => {
                                                     path.push((i, Nf::FracNum));
@@ -1018,11 +1191,12 @@ mod expression_list {
                                         } else if let Some((index, field)) = path.pop() {
                                             match field {
                                                 Nf::DelimitedGroup => todo!(),
-                                                Nf::SubSupSub => todo!(),
-                                                Nf::SubSupSup => todo!(),
                                                 Nf::SqrtRoot => todo!(),
                                                 Nf::SqrtArg => todo!(),
-                                                Nf::FracNum | Nf::FracDen => {
+                                                Nf::SubSupSub
+                                                | Nf::SubSupSup
+                                                | Nf::FracNum
+                                                | Nf::FracDen => {
                                                     self.set_cursor((path, index + 1));
                                                 }
                                                 Nf::SumProdSub => todo!(),
@@ -1065,7 +1239,13 @@ mod expression_list {
                                     if i < nodes.len() {
                                         match nodes[i] {
                                             DelimitedGroup { .. } => todo!(),
-                                            SubSup { .. } => todo!(),
+                                            SubSup { sub: Some(_), .. } => {
+                                                path.push((i, Nf::SubSupSub));
+                                                self.set_cursor((path, 0));
+                                                response.request_redraw();
+                                                break 'stuff;
+                                            }
+                                            SubSup { .. } => {}
                                             Sqrt { .. } => todo!(),
                                             Frac { .. } => {
                                                 path.push((i, Nf::FracDen));
@@ -1081,7 +1261,14 @@ mod expression_list {
                                     if i > 0 {
                                         match &nodes[i - 1] {
                                             DelimitedGroup { .. } => todo!(),
-                                            SubSup { .. } => todo!(),
+                                            SubSup { sub: Some(sub), .. } => {
+                                                path.push((i - 1, Nf::SubSupSub));
+                                                let index = sub.len();
+                                                self.set_cursor((path, index));
+                                                response.request_redraw();
+                                                break 'stuff;
+                                            }
+                                            SubSup { .. } => {}
                                             Sqrt { .. } => todo!(),
                                             Frac { den, .. } => {
                                                 path.push((i - 1, Nf::FracDen));
@@ -1105,8 +1292,11 @@ mod expression_list {
                                         if let Some((index, field)) = path.pop() {
                                             match field {
                                                 Nf::DelimitedGroup => todo!(),
-                                                Nf::SubSupSub => todo!(),
-                                                Nf::SubSupSup => todo!(),
+                                                Nf::SubSupSub => {}
+                                                Nf::SubSupSup => {
+                                                    path.push((index, Nf::SubSupSub));
+                                                    break;
+                                                }
                                                 Nf::SqrtRoot => todo!(),
                                                 Nf::SqrtArg => todo!(),
                                                 Nf::FracNum => {
@@ -1162,7 +1352,13 @@ mod expression_list {
                                     if i < nodes.len() {
                                         match nodes[i] {
                                             DelimitedGroup { .. } => todo!(),
-                                            SubSup { .. } => todo!(),
+                                            SubSup { sup: Some(_), .. } => {
+                                                path.push((i, Nf::SubSupSup));
+                                                self.set_cursor((path, 0));
+                                                response.request_redraw();
+                                                break 'stuff;
+                                            }
+                                            SubSup { .. } => {}
                                             Sqrt { .. } => todo!(),
                                             Frac { .. } => {
                                                 path.push((i, Nf::FracNum));
@@ -1178,7 +1374,14 @@ mod expression_list {
                                     if i > 0 {
                                         match &nodes[i - 1] {
                                             DelimitedGroup { .. } => todo!(),
-                                            SubSup { .. } => todo!(),
+                                            SubSup { sup: Some(sup), .. } => {
+                                                path.push((i - 1, Nf::SubSupSup));
+                                                let index = sup.len();
+                                                self.set_cursor((path, index));
+                                                response.request_redraw();
+                                                break 'stuff;
+                                            }
+                                            SubSup { .. } => {}
                                             Sqrt { .. } => todo!(),
                                             Frac { num, .. } => {
                                                 path.push((i - 1, Nf::FracNum));
@@ -1202,7 +1405,10 @@ mod expression_list {
                                         if let Some((index, field)) = path.pop() {
                                             match field {
                                                 Nf::DelimitedGroup => todo!(),
-                                                Nf::SubSupSub => todo!(),
+                                                Nf::SubSupSub => {
+                                                    path.push((index, Nf::SubSupSup));
+                                                    break;
+                                                }
                                                 Nf::SubSupSup => todo!(),
                                                 Nf::SqrtRoot => todo!(),
                                                 Nf::SqrtArg => todo!(),
@@ -1236,9 +1442,19 @@ mod expression_list {
                                     let nodes = self.editor.walk(&path);
                                     if i > 0 {
                                         i -= 1;
-                                        match &nodes[i] {
+                                        match &mut nodes[i] {
                                             DelimitedGroup { .. } => todo!(),
-                                            SubSup { .. } => todo!(),
+                                            SubSup { sup: Some(sup), .. } => {
+                                                path.push((i, Nf::SubSupSup));
+                                                let index = sup.len();
+                                                self.set_cursor((path, index));
+                                            }
+                                            SubSup { sub: Some(sub), .. } => {
+                                                path.push((i, Nf::SubSupSub));
+                                                let index = sub.len();
+                                                self.set_cursor((path, index));
+                                            }
+                                            SubSup { .. } => unreachable!(),
                                             Sqrt { .. } => todo!(),
                                             Frac { den, .. } => {
                                                 path.push((i, Nf::FracDen));
@@ -1248,16 +1464,51 @@ mod expression_list {
                                             SumProd { .. } => todo!(),
                                             Char(_) => {
                                                 nodes.remove(i);
-                                                self.editor_updated();
-                                                self.set_cursor((path, i));
+                                                self.editor_updated((path, i));
                                             }
                                         }
                                     } else if let Some((index, field)) = path.pop() {
                                         let nodes = self.editor.walk(&path);
                                         match field {
                                             Nf::DelimitedGroup => todo!(),
-                                            Nf::SubSupSub => todo!(),
-                                            Nf::SubSupSup => todo!(),
+                                            Nf::SubSupSub => {
+                                                let SubSup {
+                                                    sub: Some(sub),
+                                                    sup,
+                                                } = nodes.remove(index)
+                                                else {
+                                                    unreachable!();
+                                                };
+                                                nodes.splice(
+                                                    index..index,
+                                                    sub.into_iter().chain(sup.map(|sup| SubSup {
+                                                        sub: None,
+                                                        sup: Some(sup),
+                                                    })),
+                                                );
+                                                self.editor_updated((path, index));
+                                            }
+                                            Nf::SubSupSup => {
+                                                let SubSup {
+                                                    sub,
+                                                    sup: Some(sup),
+                                                } = nodes.remove(index)
+                                                else {
+                                                    unreachable!();
+                                                };
+                                                let i =
+                                                    if sub.is_some() { index + 1 } else { index };
+                                                nodes.splice(
+                                                    index..index,
+                                                    sub.map(|sub| SubSup {
+                                                        sub: Some(sub),
+                                                        sup: None,
+                                                    })
+                                                    .into_iter()
+                                                    .chain(sup),
+                                                );
+                                                self.editor_updated((path, i));
+                                            }
                                             Nf::SqrtRoot => todo!(),
                                             Nf::SqrtArg => todo!(),
                                             Nf::FracNum | Nf::FracDen => {
@@ -1273,8 +1524,7 @@ mod expression_list {
                                                     index..index,
                                                     num.into_iter().chain(den),
                                                 );
-                                                self.editor_updated();
-                                                self.set_cursor((path, i));
+                                                self.editor_updated((path, i));
                                             }
                                             Nf::SumProdSub => todo!(),
                                             Nf::SumProdSup => todo!(),
@@ -1285,8 +1535,7 @@ mod expression_list {
                                 }
                                 SelectionSpan::Range(r) => {
                                     self.editor.walk(&path).drain(r.clone());
-                                    self.editor_updated();
-                                    self.set_cursor((path, r.start));
+                                    self.editor_updated((path, r.start));
                                 }
                             }
 
@@ -1300,7 +1549,15 @@ mod expression_list {
                                     if i < nodes.len() {
                                         match &nodes[i] {
                                             DelimitedGroup { .. } => todo!(),
-                                            SubSup { .. } => todo!(),
+                                            SubSup { sub: Some(_), .. } => {
+                                                path.push((i, Nf::SubSupSub));
+                                                self.set_cursor((path, 0));
+                                            }
+                                            SubSup { sup: Some(_), .. } => {
+                                                path.push((i, Nf::SubSupSup));
+                                                self.set_cursor((path, 0));
+                                            }
+                                            SubSup { .. } => unreachable!(),
                                             Sqrt { .. } => todo!(),
                                             Frac { .. } => {
                                                 path.push((i, Nf::FracNum));
@@ -1309,16 +1566,55 @@ mod expression_list {
                                             SumProd { .. } => todo!(),
                                             Char(_) => {
                                                 nodes.remove(i);
-                                                self.editor_updated();
-                                                self.set_cursor((path, i));
+                                                self.editor_updated((path, i));
                                             }
                                         }
                                     } else if let Some((index, field)) = path.pop() {
                                         let nodes = self.editor.walk(&path);
                                         match field {
                                             Nf::DelimitedGroup => todo!(),
-                                            Nf::SubSupSub => todo!(),
-                                            Nf::SubSupSup => todo!(),
+                                            Nf::SubSupSub => {
+                                                let SubSup {
+                                                    sub: Some(sub),
+                                                    sup,
+                                                } = nodes.remove(index)
+                                                else {
+                                                    unreachable!();
+                                                };
+                                                let i = index + sub.len();
+                                                nodes.splice(
+                                                    index..index,
+                                                    sub.into_iter().chain(sup.map(|sup| SubSup {
+                                                        sub: None,
+                                                        sup: Some(sup),
+                                                    })),
+                                                );
+                                                self.editor_updated((path, i));
+                                            }
+                                            Nf::SubSupSup => {
+                                                let SubSup {
+                                                    sub,
+                                                    sup: Some(sup),
+                                                } = nodes.remove(index)
+                                                else {
+                                                    unreachable!();
+                                                };
+                                                let i = if sub.is_some() {
+                                                    index + 1 + sup.len()
+                                                } else {
+                                                    index + sup.len()
+                                                };
+                                                nodes.splice(
+                                                    index..index,
+                                                    sub.map(|sub| SubSup {
+                                                        sub: Some(sub),
+                                                        sup: None,
+                                                    })
+                                                    .into_iter()
+                                                    .chain(sup),
+                                                );
+                                                self.editor_updated((path, i));
+                                            }
                                             Nf::SqrtRoot => todo!(),
                                             Nf::SqrtArg => todo!(),
                                             Nf::FracNum | Nf::FracDen => {
@@ -1334,8 +1630,7 @@ mod expression_list {
                                                     index..index,
                                                     num.into_iter().chain(den),
                                                 );
-                                                self.editor_updated();
-                                                self.set_cursor((path, i));
+                                                self.editor_updated((path, i));
                                             }
                                             Nf::SumProdSub => todo!(),
                                             Nf::SumProdSup => todo!(),
@@ -1344,8 +1639,7 @@ mod expression_list {
                                 }
                                 SelectionSpan::Range(r) => {
                                     self.editor.walk(&path).drain(r.clone());
-                                    self.editor_updated();
-                                    self.set_cursor((path, r.start));
+                                    self.editor_updated((path, r.start));
                                 }
                             }
                             response.consume_event();
@@ -1389,8 +1683,7 @@ mod expression_list {
                                         eprintln!("failed to set clipboard contents: {e}");
                                     } else {
                                         nodes.drain(r.clone());
-                                        self.editor_updated();
-                                        self.set_cursor((path, r.start));
+                                        self.editor_updated((path, r.start));
                                         response.request_redraw();
                                     }
                                 }
@@ -1407,11 +1700,48 @@ mod expression_list {
                                         let r = span.as_range();
                                         let pasted_len = nodes.len();
                                         self.editor.walk(&path).splice(r.clone(), nodes);
-                                        self.editor_updated();
-                                        self.set_cursor((path, r.start + pasted_len));
+                                        self.editor_updated((path, r.start + pasted_len));
                                         response.request_redraw();
                                     }
                                     Err(e) => eprintln!("parse_latex error: {e:?}"),
+                                }
+                                response.consume_event();
+                            }
+                            Some('_') => {
+                                let nodes = self.editor.walk(&path);
+                                let r = span.as_range();
+                                if r.end > 0 {
+                                    let sub = nodes.drain(r.clone()).collect::<Vec<_>>();
+                                    let sub_len = sub.len();
+                                    nodes.insert(
+                                        r.start,
+                                        SubSup {
+                                            sub: Some(sub),
+                                            sup: None,
+                                        },
+                                    );
+                                    path.push((r.start, Nf::SubSupSub));
+                                    self.editor_updated((path, sub_len));
+                                    response.request_redraw();
+                                }
+                                response.consume_event();
+                            }
+                            Some('^') => {
+                                let nodes = self.editor.walk(&path);
+                                let r = span.as_range();
+                                if r.end > 0 {
+                                    let sup = nodes.drain(r.clone()).collect::<Vec<_>>();
+                                    let sup_len = sup.len();
+                                    nodes.insert(
+                                        r.start,
+                                        SubSup {
+                                            sub: None,
+                                            sup: Some(sup),
+                                        },
+                                    );
+                                    path.push((r.start, Nf::SubSupSup));
+                                    self.editor_updated((path, sup_len));
+                                    response.request_redraw();
                                 }
                                 response.consume_event();
                             }
@@ -1451,7 +1781,6 @@ mod expression_list {
 
                                 let num = nodes.drain(r.clone()).collect();
                                 nodes.insert(r.start, Frac { num, den: vec![] });
-                                self.editor_updated();
                                 path.push((
                                     r.start,
                                     if r.is_empty() {
@@ -1460,7 +1789,7 @@ mod expression_list {
                                         Nf::FracDen
                                     },
                                 ));
-                                self.set_cursor((path, 0));
+                                self.editor_updated((path, 0));
                                 response.consume_event();
                                 response.request_redraw();
                             }
@@ -1482,8 +1811,7 @@ mod expression_list {
                                 | '\''),
                             ) => {
                                 let index = add_char(self.editor.walk(&path), span, c);
-                                self.set_cursor((path, index));
-                                self.editor_updated();
+                                self.editor_updated((path, index));
                                 response.request_redraw();
                                 response.consume_event();
                             }
@@ -1626,7 +1954,12 @@ mod expression_list {
         for (_, node) in &nodes.nodes {
             match node {
                 LNode::DelimitedGroup { .. } => todo!(),
-                LNode::SubSup { .. } => todo!(),
+                LNode::SubSup { sub, sup } => {
+                    sub.as_ref()
+                        .map(|sub| draw_latex(ctx, sub, transform, draw_quad));
+                    sup.as_ref()
+                        .map(|sup| draw_latex(ctx, sup, transform, draw_quad));
+                }
                 LNode::Sqrt { .. } => todo!(),
                 LNode::Frac { line, num, den } => {
                     let l0 = transform(line.0);
@@ -1814,7 +2147,11 @@ mod expression_list {
             });
 
             Self {
-                expressions: vec![Expression::from_latex(r"\frac{a}{\frac{b}{c}+\alpha\operatorname{count}\frac{\frac{4}{7}}{\frac{4}{\frac{4}{4}}}}+\frac{\sin\frac{5}{6}}{6}").unwrap()],
+                // expressions: vec![Expression::from_latex(r"\frac{a}{\frac{b}{c}+\alpha\operatorname{count}\frac{\frac{4}{7}}{\frac{4}{\frac{4}{4}}}}+\frac{\sin\frac{5}{6}}{6}").unwrap()],
+                expressions: vec![Expression::from_latex(
+                    r"p_{11}^{4}+6_{\frac{3}{\frac{4}{5}}}^{\frac{4}{\frac{4}{\frac{4}{4}}}}+lkjdsf_{kljf}+alskdfj^{kljasdf}+asdf",
+                )
+                .unwrap()],
 
                 pipeline,
                 vertex_buffer,

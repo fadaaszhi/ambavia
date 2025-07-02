@@ -432,17 +432,200 @@ impl MainThing {
 }
 
 mod expression_list {
+    use std::{iter::zip, ops::Range};
+
     use bytemuck::{offset_of, Zeroable};
     use winit::keyboard::ModifiersState;
 
-    use crate::latex_editor::{editor::Node as ENode, editor::Nodes as ENodes, layout::Nodes};
+    use crate::latex_editor::{
+        editor::{self, Node as ENode, Nodes as ENodes},
+        layout::{self, Node as LNode, Nodes as LNodes},
+    };
 
     use super::*;
+
+    /// Specifies which structural component of a node to navigate to. Used for
+    /// traversing into the different parts of an expression tree.
+    #[derive(Debug, Clone, PartialEq)]
+    enum NodeField {
+        DelimitedGroup,
+        SubSupSub,
+        SubSupSup,
+        SqrtRoot,
+        SqrtArg,
+        FracNum,
+        FracDen,
+        SumProdSub,
+        SumProdSup,
+    }
+
+    use NodeField as Nf;
+
+    /// Represents a path through an expression tree to reach a specific list of
+    /// nodes. Each tuple contains the child index and which structural
+    /// component to enter.
+    type NodePath = Vec<(usize, NodeField)>;
+
+    /// Represents a cursor position within an expression tree. The cursor sits
+    /// between nodes.
+    #[derive(Debug, Clone, PartialEq)]
+    struct Cursor {
+        /// The path through the expression tree to reach the target node list.
+        path: NodePath,
+        /// The position within the target node list. The cursor
+        /// sits to the left of the `index`th node.
+        index: usize,
+    }
+
+    impl From<(NodePath, usize)> for Cursor {
+        fn from((path, index): (NodePath, usize)) -> Self {
+            Self { path, index }
+        }
+    }
+
+    /// Represents the extent of a user selection within a single node list. Can
+    /// be either a cursor (zero-width) or a range of selected nodes.
+    #[derive(Debug, PartialEq)]
+    enum SelectionSpan {
+        /// A cursor position between two nodes.
+        Cursor(usize),
+        /// A range of selected nodes, where `start < end`.
+        Range(Range<usize>),
+    }
+
+    impl From<Range<usize>> for SelectionSpan {
+        fn from(r: Range<usize>) -> Self {
+            if r.is_empty() {
+                Self::Cursor(r.start)
+            } else {
+                Self::Range(r)
+            }
+        }
+    }
+
+    impl SelectionSpan {
+        fn as_range(&self) -> Range<usize> {
+            match self {
+                Self::Cursor(pos) => *pos..*pos,
+                Self::Range(r) => r.clone(),
+            }
+        }
+    }
+
+    /// Represents the user's actual selection before normalization. The
+    /// `anchor` and `focus` may be at different tree depths and in any order.
+    struct UserSelection {
+        /// Where the selection started (e.g., mouse down position or
+        /// `Shift`+`Arrow` start)
+        anchor: Cursor,
+        /// Where the selection currently ends (e.g., current mouse position or
+        /// `Shift`+`Arrow` end)
+        focus: Cursor,
+    }
+
+    impl From<Cursor> for UserSelection {
+        fn from(c: Cursor) -> Self {
+            Self {
+                anchor: c.clone(),
+                focus: c,
+            }
+        }
+    }
+
+    /// Represents a normalized selection within the document tree. Unlike
+    /// `UserSelection`, this is guaranteed to be within a single node list.
+    struct Selection {
+        /// The path to the node list containing the selection.
+        path: NodePath,
+        /// The selected range or cursor position within the node list.
+        span: SelectionSpan,
+    }
+
+    impl UserSelection {
+        fn normalize(&self) -> (NodePath, f64, f64) {
+            let path: NodePath = zip(&self.anchor.path, &self.focus.path)
+                .take_while(|(a, f)| a == f)
+                .map(|(a, _)| a.clone())
+                .collect();
+            let anchor = self
+                .anchor
+                .path
+                .get(path.len())
+                .map_or(self.anchor.index as f64, |(i, _)| *i as f64 + 0.5);
+            let focus = self
+                .focus
+                .path
+                .get(path.len())
+                .map_or(self.focus.index as f64, |(i, _)| *i as f64 + 0.5);
+            (path, anchor, focus)
+        }
+    }
+
+    impl From<&UserSelection> for Selection {
+        fn from(s: &UserSelection) -> Self {
+            let (path, anchor, focus) = s.normalize();
+            let span =
+                (anchor.min(focus).floor() as usize..anchor.max(focus).ceil() as usize).into();
+            Self { path, span }
+        }
+    }
+
+    trait Walkable {
+        fn walk(self, path: &NodePath) -> Self;
+    }
+
+    impl Walkable for &mut ENodes {
+        fn walk(self, path: &NodePath) -> Self {
+            let mut nodes = self;
+            for (index, field) in path {
+                use ENode::*;
+                nodes = match (&mut nodes[*index], field) {
+                    (DelimitedGroup { inner, .. }, Nf::DelimitedGroup) => inner,
+                    (SubSup { sub: Some(s), .. }, Nf::SubSupSub) => s,
+                    (SubSup { sup: Some(s), .. }, Nf::SubSupSup) => s,
+                    (Sqrt { root: Some(r), .. }, Nf::SqrtRoot) => r,
+                    (Sqrt { arg, .. }, Nf::SqrtArg) => arg,
+                    (Frac { num, .. }, Nf::FracNum) => num,
+                    (Frac { den, .. }, Nf::FracDen) => den,
+                    (SumProd { sub, .. }, Nf::SumProdSub) => sub,
+                    (SumProd { sup, .. }, Nf::SumProdSup) => sup,
+                    (node, field) => {
+                        panic!("mismatched node/field:\n  node = {node:?}\n  field = {field:?}")
+                    }
+                };
+            }
+            nodes
+        }
+    }
+
+    impl Walkable for &LNodes {
+        fn walk(self, path: &NodePath) -> Self {
+            let mut nodes = self;
+            for (index, field) in path {
+                use LNode::*;
+                nodes = match (&nodes.nodes[*index].1, field) {
+                    (DelimitedGroup { inner, .. }, Nf::DelimitedGroup) => inner,
+                    (SubSup { sub: Some(s), .. }, Nf::SubSupSub) => s,
+                    (SubSup { sup: Some(s), .. }, Nf::SubSupSup) => s,
+                    (Sqrt { root: Some(r), .. }, Nf::SqrtRoot) => r,
+                    (Sqrt { arg, .. }, Nf::SqrtArg) => arg,
+                    (Frac { num, .. }, Nf::FracNum) => num,
+                    (Frac { den, .. }, Nf::FracDen) => den,
+                    (SumProd { sub, .. }, Nf::SumProdSub) => sub,
+                    (SumProd { sup, .. }, Nf::SumProdSup) => sup,
+                    (node, field) => {
+                        panic!("mismatched node/field:\n  node = {node:?}\n  field = {field:?}")
+                    }
+                };
+            }
+            nodes
+        }
+    }
 
     struct Expression {
         latex: String,
         editor: ENodes,
-        layout: Nodes,
+        layout: LNodes,
 
         scale: f64,
         padding: f64,
@@ -450,7 +633,7 @@ mod expression_list {
         modifiers: ModifiersState,
         dragging: bool,
         mouse_position: DVec2,
-        cursor: CursorKind,
+        selection: Option<UserSelection>,
     }
 
     impl Default for Expression {
@@ -464,22 +647,150 @@ mod expression_list {
                 modifiers: Default::default(),
                 dragging: false,
                 mouse_position: DVec2::ZERO,
-                cursor: CursorKind::None,
+                selection: None,
             }
         }
     }
 
+    /// The message returned by an expression after it receives input.
     enum Message {
+        /// Set the focus to the expression above this one.
         Up,
+        /// Set the focus to the expression below this one.
         Down,
+        /// Add an expression below this one.
         Add,
+        /// Remove this expression.
         Remove,
+    }
+
+    fn get_hovered(mut nodes: &LNodes, mut path: NodePath, position: DVec2) -> Cursor {
+        let index = 'index: loop {
+            for (i, (bounds, node)) in nodes.nodes.iter().enumerate() {
+                if position.x >= bounds.right() {
+                    continue;
+                }
+
+                match node {
+                    LNode::DelimitedGroup { .. } => todo!(),
+                    LNode::SubSup { .. } => todo!(),
+                    LNode::Sqrt { .. } => todo!(),
+                    LNode::Frac { line, num, den } => {
+                        if position.x < line.0.x {
+                            break 'index i;
+                        }
+                        if position.x >= line.1.x {
+                            break 'index i + 1;
+                        }
+                        nodes = if position.y < line.0.y {
+                            path.push((i, Nf::FracNum));
+                            num
+                        } else {
+                            path.push((i, Nf::FracDen));
+                            den
+                        };
+                        continue 'index;
+                    }
+                    LNode::SumProd { .. } => todo!(),
+                    LNode::Char(_) => {
+                        if position.x < bounds.left() + 0.5 * bounds.width {
+                            break 'index i;
+                        }
+                    }
+                }
+            }
+
+            break nodes.nodes.len();
+        };
+
+        Cursor { path, index }
+    }
+
+    fn add_char(nodes: &mut ENodes, span: SelectionSpan, c: char) -> usize {
+        let cursor = match span {
+            SelectionSpan::Cursor(c) => c,
+            SelectionSpan::Range(r) => {
+                nodes.drain(r.clone());
+                r.start
+            }
+        };
+        nodes.insert(cursor, ENode::Char(c));
+        let replacements = [
+            ("cross", "×"),
+            ("Gamma", "Γ"),
+            ("Delta", "Δ"),
+            ("Theta", "Θ"),
+            ("Lambda", "Λ"),
+            ("Xi", "Ξ"),
+            ("Pi", "Π"),
+            ("Sigma", "Σ"),
+            ("Upsilon", "Υ"),
+            ("Uψlon", "Υ"),
+            ("Phi", "Φ"),
+            ("Psi", "Ψ"),
+            ("Omega", "Ω"),
+            ("alpha", "α"),
+            ("beta", "β"),
+            ("gamma", "γ"),
+            ("delta", "δ"),
+            ("varepsilon", "ε"),
+            ("vareψlon", "ε"),
+            ("zeta", "ζ"),
+            ("vartheta", "ϑ"),
+            ("theta", "θ"),
+            ("eta", "η"),
+            ("iota", "ι"),
+            ("kappa", "κ"),
+            ("lambda", "λ"),
+            ("mu", "μ"),
+            ("nu", "ν"),
+            ("xi", "ξ"),
+            ("varpi", "ϖ"),
+            ("pi", "π"),
+            ("varrho", "ϱ"),
+            ("rho", "ρ"),
+            ("varsigma", "ς"),
+            ("sigma", "σ"),
+            ("tau", "τ"),
+            ("upsilon", "υ"),
+            ("uψlon", "υ"),
+            ("varphi", "φ"),
+            ("chi", "χ"),
+            ("psi", "ψ"),
+            ("omega", "ω"),
+            ("phi", "ϕ"),
+            ("epsilon", "ϵ"),
+            ("eψlon", "ϵ"),
+            ("->", "→"),
+            ("infty", "∞"),
+            ("infinity", "∞"),
+            ("<=", "≤"),
+            (">=", "≥"),
+            ("*", "⋅"),
+        ];
+        for (find, replace) in replacements {
+            let char_count = find.chars().count();
+            if cursor + 1 >= char_count
+                && find
+                    .chars()
+                    .rev()
+                    .enumerate()
+                    .all(|(i, c)| nodes[cursor - i] == ENode::Char(c))
+            {
+                nodes.splice(
+                    cursor + 1 - char_count..cursor + 1,
+                    replace.chars().map(ENode::Char),
+                );
+                return cursor + 1 + replace.chars().count() - char_count;
+            }
+        }
+        cursor + 1
     }
 
     impl Expression {
         fn from_latex(latex: &str) -> Result<Self, ambavia::latex_parser::ParseError> {
-            let editor = latex_editor::editor::convert(&parse_latex(latex)?);
-            let layout = latex_editor::layout::layout(&editor);
+            let editor = editor::convert(&parse_latex(latex)?);
+            let layout = layout::layout(&editor);
             Ok(Self {
                 latex: latex.into(),
                 editor,
@@ -490,8 +801,8 @@ mod expression_list {
 
         fn unfocus(&mut self) -> Response {
             let mut response = Response::default();
-            if self.cursor != CursorKind::None {
-                self.cursor = CursorKind::None;
+            if self.selection.is_some() {
+                self.selection = None;
                 response.request_redraw();
             }
             response
@@ -499,15 +810,21 @@ mod expression_list {
 
         fn focus(&mut self) -> Response {
             let mut response = Response::default();
-            if self.cursor == CursorKind::None {
-                self.cursor = CursorKind::Line(self.editor.len());
+            if self.selection.is_none() {
+                self.selection = Some(
+                    Cursor {
+                        path: vec![],
+                        index: self.editor.len(),
+                    }
+                    .into(),
+                );
                 response.request_redraw();
             }
             response
         }
 
         fn has_focus(&self) -> bool {
-            self.cursor != CursorKind::None
+            self.selection.is_some()
         }
 
         fn size(&self) -> DVec2 {
@@ -515,11 +832,13 @@ mod expression_list {
             dvec2(1.0, 2.0) * self.padding + self.scale * dvec2(b.width, b.height + b.depth)
         }
 
-        fn modify_editor<T>(&mut self, f: impl FnOnce(&mut ENodes) -> T) -> T {
-            let y = f(&mut self.editor);
-            self.latex = latex_editor::editor::to_latex(&self.editor);
-            self.layout = latex_editor::layout::layout(&self.editor);
-            y
+        fn editor_updated(&mut self) {
+            self.latex = editor::to_latex(&self.editor);
+            self.layout = layout::layout(&self.editor);
+        }
+
+        fn set_cursor(&mut self, cursor: impl Into<Cursor>) {
+            self.selection = Some(cursor.into().into());
         }
 
         fn update(
@@ -539,11 +858,7 @@ mod expression_list {
                 let position = (self.mouse_position - (bounds.pos.as_dvec2() + self.padding))
                     / self.scale
                     - dvec2(0.0, self.layout.bounds.height);
-                self.layout
-                    .nodes
-                    .iter()
-                    .position(|(b, _)| position.x < b.position.x + 0.5 * b.width)
-                    .unwrap_or(self.layout.nodes.len())
+                get_hovered(&self.layout, vec![], position)
             });
 
             if hovered.is_some() {
@@ -555,9 +870,10 @@ mod expression_list {
                     logical_key,
                     state: ElementState::Pressed,
                     ..
-                }) if self.cursor != CursorKind::None => {
+                }) if self.selection.is_some() => {
                     use winit::keyboard::{Key, NamedKey};
-                    let mut char_to_add = None;
+                    use ENode::*;
+                    let Selection { mut path, span } = self.selection.as_ref().unwrap().into();
 
                     match &logical_key {
                         Key::Named(NamedKey::Enter) => {
@@ -565,140 +881,491 @@ mod expression_list {
                             response.consume_event();
                         }
                         Key::Named(NamedKey::Space) => {
-                            char_to_add = Some(' ');
+                            let index = add_char(self.editor.walk(&path), span, ' ');
+                            self.set_cursor((path, index));
+                            self.editor_updated();
+                            response.request_redraw();
                             response.consume_event();
                         }
                         Key::Named(NamedKey::ArrowLeft) => {
                             if self.modifiers.shift_key() {
-                                let (start, end) = match self.cursor {
-                                    CursorKind::None => unreachable!(),
-                                    CursorKind::Line(pos) => (pos, pos),
-                                    CursorKind::Selection(start, end) => (start, end),
+                                let s = self.selection.as_mut().unwrap();
+                                let (mut path, anchor, focus) = s.normalize();
+                                let index = if focus % 1.0 == 0.5 {
+                                    let mut index = focus.floor() as usize;
+                                    if focus <= anchor && index > 0 {
+                                        index -= 1
+                                    }
+                                    index
+                                } else if anchor + 0.5 == focus {
+                                    path.push(s.anchor.path[path.len()].clone());
+                                    self.editor.walk(&path).len()
+                                } else if focus > 0.0 {
+                                    focus as usize - 1
+                                } else if let Some((index, _)) = path.pop() {
+                                    index
+                                } else {
+                                    0
                                 };
-                                self.cursor = CursorKind::selection(start, end.max(1) - 1);
+                                s.focus = Cursor { path, index };
                             } else {
-                                let pos = match self.cursor {
-                                    CursorKind::None => unreachable!(),
-                                    CursorKind::Line(pos) => pos.max(1) - 1,
-                                    CursorKind::Selection(start, end) => start.min(end),
-                                };
-                                self.cursor = CursorKind::Line(pos);
+                                match span {
+                                    SelectionSpan::Cursor(mut i) => {
+                                        if i > 0 {
+                                            i -= 1;
+                                            match &self.editor.walk(&path)[i] {
+                                                DelimitedGroup { .. } => todo!(),
+                                                SubSup { .. } => todo!(),
+                                                Sqrt { .. } => todo!(),
+                                                Frac { num, .. } => {
+                                                    path.push((i, Nf::FracNum));
+                                                    let index = num.len();
+                                                    self.set_cursor((path, index));
+                                                }
+                                                SumProd { .. } => todo!(),
+                                                Char(_) => self.set_cursor((path, i)),
+                                            }
+                                        } else if let Some((index, field)) = path.pop() {
+                                            match field {
+                                                Nf::DelimitedGroup => todo!(),
+                                                Nf::SubSupSub => todo!(),
+                                                Nf::SubSupSup => todo!(),
+                                                Nf::SqrtRoot => todo!(),
+                                                Nf::SqrtArg => todo!(),
+                                                Nf::FracNum | Nf::FracDen => {
+                                                    self.set_cursor((path, index));
+                                                }
+                                                Nf::SumProdSub => todo!(),
+                                                Nf::SumProdSup => todo!(),
+                                            }
+                                        }
+                                    }
+                                    SelectionSpan::Range(r) => self.set_cursor((path, r.start)),
+                                }
                             }
-                            response.consume_event();
                             response.request_redraw();
+                            response.consume_event();
                         }
                         Key::Named(NamedKey::ArrowRight) => {
                             if self.modifiers.shift_key() {
-                                let (start, end) = match self.cursor {
-                                    CursorKind::None => unreachable!(),
-                                    CursorKind::Line(pos) => (pos, pos),
-                                    CursorKind::Selection(start, end) => (start, end),
+                                let s = self.selection.as_mut().unwrap();
+                                let (mut path, anchor, focus) = s.normalize();
+                                let index = if focus % 1.0 == 0.5 {
+                                    let mut index = focus.ceil() as usize;
+                                    if focus >= anchor && index < self.editor.walk(&path).len() {
+                                        index += 1
+                                    }
+                                    index
+                                } else if anchor - 0.5 == focus {
+                                    path.push(s.anchor.path[path.len()].clone());
+                                    0
+                                } else {
+                                    let index = focus as usize;
+                                    if index < self.editor.walk(&path).len() {
+                                        index + 1
+                                    } else if let Some((index, _)) = path.pop() {
+                                        index + 1
+                                    } else {
+                                        self.editor.len()
+                                    }
                                 };
-                                self.cursor =
-                                    CursorKind::selection(start, (end + 1).min(self.editor.len()));
+                                s.focus = Cursor { path, index };
                             } else {
-                                let pos = match self.cursor {
-                                    CursorKind::None => unreachable!(),
-                                    CursorKind::Line(pos) => (pos + 1).min(self.editor.len()),
-                                    CursorKind::Selection(start, end) => start.max(end),
-                                };
-                                self.cursor = CursorKind::Line(pos);
+                                match span {
+                                    SelectionSpan::Cursor(i) => {
+                                        let nodes = self.editor.walk(&path);
+                                        if i < nodes.len() {
+                                            match &nodes[i] {
+                                                DelimitedGroup { .. } => todo!(),
+                                                SubSup { .. } => todo!(),
+                                                Sqrt { .. } => todo!(),
+                                                Frac { .. } => {
+                                                    path.push((i, Nf::FracNum));
+                                                    self.set_cursor((path, 0));
+                                                }
+                                                SumProd { .. } => todo!(),
+                                                Char(_) => self.set_cursor((path, i + 1)),
+                                            }
+                                        } else if let Some((index, field)) = path.pop() {
+                                            match field {
+                                                Nf::DelimitedGroup => todo!(),
+                                                Nf::SubSupSub => todo!(),
+                                                Nf::SubSupSup => todo!(),
+                                                Nf::SqrtRoot => todo!(),
+                                                Nf::SqrtArg => todo!(),
+                                                Nf::FracNum | Nf::FracDen => {
+                                                    self.set_cursor((path, index + 1));
+                                                }
+                                                Nf::SumProdSub => todo!(),
+                                                Nf::SumProdSup => todo!(),
+                                            }
+                                        }
+                                    }
+                                    SelectionSpan::Range(r) => self.set_cursor((path, r.end)),
+                                }
                             }
                             response.consume_event();
                             response.request_redraw();
                         }
                         Key::Named(NamedKey::ArrowDown) => {
-                            message = Some(Message::Down);
+                            if self.modifiers.shift_key() {
+                                let s = self.selection.as_mut().unwrap();
+                                let (mut path, anchor, focus) = s.normalize();
+                                let index = if focus > anchor
+                                    || anchor % 1.0 == 0.0
+                                    || focus == anchor && focus % 1.0 == 0.0
+                                {
+                                    let index = self.editor.walk(&path).len();
+                                    if focus.ceil() < index as f64 || path.is_empty() {
+                                        index
+                                    } else {
+                                        path.pop().unwrap().0 + 1
+                                    }
+                                } else if focus + 0.5 == anchor {
+                                    path.push(s.anchor.path[path.len()].clone());
+                                    0
+                                } else {
+                                    anchor.floor() as usize
+                                };
+                                s.focus = Cursor { path, index };
+                            } else {
+                                let i = span.as_range().end;
+
+                                'stuff: {
+                                    let nodes = self.editor.walk(&path);
+                                    if i < nodes.len() {
+                                        match nodes[i] {
+                                            DelimitedGroup { .. } => todo!(),
+                                            SubSup { .. } => todo!(),
+                                            Sqrt { .. } => todo!(),
+                                            Frac { .. } => {
+                                                path.push((i, Nf::FracDen));
+                                                self.set_cursor((path, 0));
+                                                response.request_redraw();
+                                                break 'stuff;
+                                            }
+                                            SumProd { .. } => todo!(),
+                                            Char(_) => {}
+                                        }
+                                    }
+
+                                    if i > 0 {
+                                        match &nodes[i - 1] {
+                                            DelimitedGroup { .. } => todo!(),
+                                            SubSup { .. } => todo!(),
+                                            Sqrt { .. } => todo!(),
+                                            Frac { den, .. } => {
+                                                path.push((i - 1, Nf::FracDen));
+                                                let index = den.len();
+                                                self.set_cursor((path, index));
+                                                response.request_redraw();
+                                                break 'stuff;
+                                            }
+                                            SumProd { .. } => todo!(),
+                                            Char(_) => {}
+                                        }
+                                    }
+
+                                    let nodes = self.layout.walk(&path);
+                                    let x = nodes
+                                        .nodes
+                                        .get(i)
+                                        .map_or(nodes.bounds.right(), |(b, _)| b.left());
+
+                                    loop {
+                                        if let Some((index, field)) = path.pop() {
+                                            match field {
+                                                Nf::DelimitedGroup => todo!(),
+                                                Nf::SubSupSub => todo!(),
+                                                Nf::SubSupSup => todo!(),
+                                                Nf::SqrtRoot => todo!(),
+                                                Nf::SqrtArg => todo!(),
+                                                Nf::FracNum => {
+                                                    path.push((index, Nf::FracDen));
+                                                    break;
+                                                }
+                                                Nf::FracDen => {}
+                                                Nf::SumProdSub => todo!(),
+                                                Nf::SumProdSup => todo!(),
+                                            }
+                                        } else {
+                                            message = Some(Message::Down);
+                                            break 'stuff;
+                                        }
+                                    }
+
+                                    self.set_cursor(get_hovered(
+                                        self.layout.walk(&path),
+                                        path,
+                                        dvec2(x, -f64::INFINITY),
+                                    ));
+                                }
+                            }
+                            response.request_redraw();
                             response.consume_event();
                         }
                         Key::Named(NamedKey::ArrowUp) => {
-                            message = Some(Message::Up);
+                            if self.modifiers.shift_key() {
+                                let s = self.selection.as_mut().unwrap();
+                                let (mut path, anchor, focus) = s.normalize();
+                                let index = if focus < anchor
+                                    || anchor % 1.0 == 0.0
+                                    || focus == anchor && focus % 1.0 == 0.0
+                                {
+                                    let index = focus.floor() as usize;
+                                    if index > 0 || path.is_empty() {
+                                        0
+                                    } else {
+                                        path.pop().unwrap().0
+                                    }
+                                } else if focus - 0.5 == anchor {
+                                    path.push(s.anchor.path[path.len()].clone());
+                                    self.editor.walk(&path).len()
+                                } else {
+                                    anchor.ceil() as usize
+                                };
+                                s.focus = Cursor { path, index };
+                            } else {
+                                let i = span.as_range().end;
+
+                                'stuff: {
+                                    let nodes = self.editor.walk(&path);
+                                    if i < nodes.len() {
+                                        match nodes[i] {
+                                            DelimitedGroup { .. } => todo!(),
+                                            SubSup { .. } => todo!(),
+                                            Sqrt { .. } => todo!(),
+                                            Frac { .. } => {
+                                                path.push((i, Nf::FracNum));
+                                                self.set_cursor((path, 0));
+                                                response.request_redraw();
+                                                break 'stuff;
+                                            }
+                                            SumProd { .. } => todo!(),
+                                            Char(_) => {}
+                                        }
+                                    }
+
+                                    if i > 0 {
+                                        match &nodes[i - 1] {
+                                            DelimitedGroup { .. } => todo!(),
+                                            SubSup { .. } => todo!(),
+                                            Sqrt { .. } => todo!(),
+                                            Frac { num, .. } => {
+                                                path.push((i - 1, Nf::FracNum));
+                                                let index = num.len();
+                                                self.set_cursor((path, index));
+                                                response.request_redraw();
+                                                break 'stuff;
+                                            }
+                                            SumProd { .. } => todo!(),
+                                            Char(_) => {}
+                                        }
+                                    }
+
+                                    let nodes = self.layout.walk(&path);
+                                    let x = nodes
+                                        .nodes
+                                        .get(i)
+                                        .map_or(nodes.bounds.right(), |(b, _)| b.left());
+
+                                    loop {
+                                        if let Some((index, field)) = path.pop() {
+                                            match field {
+                                                Nf::DelimitedGroup => todo!(),
+                                                Nf::SubSupSub => todo!(),
+                                                Nf::SubSupSup => todo!(),
+                                                Nf::SqrtRoot => todo!(),
+                                                Nf::SqrtArg => todo!(),
+                                                Nf::FracNum => {}
+                                                Nf::FracDen => {
+                                                    path.push((index, Nf::FracNum));
+                                                    break;
+                                                }
+                                                Nf::SumProdSub => todo!(),
+                                                Nf::SumProdSup => todo!(),
+                                            }
+                                        } else {
+                                            message = Some(Message::Up);
+                                            break 'stuff;
+                                        }
+                                    }
+
+                                    self.set_cursor(get_hovered(
+                                        self.layout.walk(&path),
+                                        path,
+                                        dvec2(x, f64::INFINITY),
+                                    ));
+                                }
+                            }
+                            response.request_redraw();
                             response.consume_event();
                         }
                         Key::Named(NamedKey::Backspace) => {
-                            response.consume_event();
-                            match self.cursor {
-                                CursorKind::None => unreachable!(),
-                                CursorKind::Line(pos) => {
-                                    if pos > 0 {
-                                        self.modify_editor(|e| e.remove(pos - 1));
-                                        self.cursor = CursorKind::Line(pos - 1);
-                                        response.request_redraw();
-                                    } else if pos == 0 && self.editor.is_empty() {
+                            match span {
+                                SelectionSpan::Cursor(mut i) => {
+                                    let nodes = self.editor.walk(&path);
+                                    if i > 0 {
+                                        i -= 1;
+                                        match &nodes[i] {
+                                            DelimitedGroup { .. } => todo!(),
+                                            SubSup { .. } => todo!(),
+                                            Sqrt { .. } => todo!(),
+                                            Frac { den, .. } => {
+                                                path.push((i, Nf::FracDen));
+                                                let index = den.len();
+                                                self.set_cursor((path, index));
+                                            }
+                                            SumProd { .. } => todo!(),
+                                            Char(_) => {
+                                                nodes.remove(i);
+                                                self.editor_updated();
+                                                self.set_cursor((path, i));
+                                            }
+                                        }
+                                    } else if let Some((index, field)) = path.pop() {
+                                        let nodes = self.editor.walk(&path);
+                                        match field {
+                                            Nf::DelimitedGroup => todo!(),
+                                            Nf::SubSupSub => todo!(),
+                                            Nf::SubSupSup => todo!(),
+                                            Nf::SqrtRoot => todo!(),
+                                            Nf::SqrtArg => todo!(),
+                                            Nf::FracNum | Nf::FracDen => {
+                                                let Frac { num, den } = nodes.remove(index) else {
+                                                    unreachable!()
+                                                };
+                                                let i = if field == Nf::FracNum {
+                                                    index
+                                                } else {
+                                                    index + num.len()
+                                                };
+                                                nodes.splice(
+                                                    index..index,
+                                                    num.into_iter().chain(den),
+                                                );
+                                                self.editor_updated();
+                                                self.set_cursor((path, i));
+                                            }
+                                            Nf::SumProdSub => todo!(),
+                                            Nf::SumProdSup => todo!(),
+                                        }
+                                    } else if self.editor.is_empty() {
                                         message = Some(Message::Remove);
                                     }
                                 }
-                                CursorKind::Selection(start, end) => {
-                                    let (start, end) = (start.min(end), start.max(end));
-                                    self.modify_editor(|e| {
-                                        e.drain(start..end);
-                                    });
-                                    self.cursor = CursorKind::Line(start);
-                                    response.request_redraw();
+                                SelectionSpan::Range(r) => {
+                                    self.editor.walk(&path).drain(r.clone());
+                                    self.editor_updated();
+                                    self.set_cursor((path, r.start));
                                 }
                             }
+
+                            response.consume_event();
+                            response.request_redraw();
                         }
                         Key::Named(NamedKey::Delete) => {
-                            response.consume_event();
-                            match self.cursor {
-                                CursorKind::None => unreachable!(),
-                                CursorKind::Line(pos) => {
-                                    if pos < self.layout.nodes.len() {
-                                        self.modify_editor(|e| e.remove(pos));
-                                        self.cursor = CursorKind::Line(pos);
-                                        response.request_redraw();
+                            match span {
+                                SelectionSpan::Cursor(i) => {
+                                    let nodes = self.editor.walk(&path);
+                                    if i < nodes.len() {
+                                        match &nodes[i] {
+                                            DelimitedGroup { .. } => todo!(),
+                                            SubSup { .. } => todo!(),
+                                            Sqrt { .. } => todo!(),
+                                            Frac { .. } => {
+                                                path.push((i, Nf::FracNum));
+                                                self.set_cursor((path, 0));
+                                            }
+                                            SumProd { .. } => todo!(),
+                                            Char(_) => {
+                                                nodes.remove(i);
+                                                self.editor_updated();
+                                                self.set_cursor((path, i));
+                                            }
+                                        }
+                                    } else if let Some((index, field)) = path.pop() {
+                                        let nodes = self.editor.walk(&path);
+                                        match field {
+                                            Nf::DelimitedGroup => todo!(),
+                                            Nf::SubSupSub => todo!(),
+                                            Nf::SubSupSup => todo!(),
+                                            Nf::SqrtRoot => todo!(),
+                                            Nf::SqrtArg => todo!(),
+                                            Nf::FracNum | Nf::FracDen => {
+                                                let Frac { num, den } = nodes.remove(index) else {
+                                                    unreachable!()
+                                                };
+                                                let i = if field == Nf::FracNum {
+                                                    index + num.len()
+                                                } else {
+                                                    index + num.len() + den.len()
+                                                };
+                                                nodes.splice(
+                                                    index..index,
+                                                    num.into_iter().chain(den),
+                                                );
+                                                self.editor_updated();
+                                                self.set_cursor((path, i));
+                                            }
+                                            Nf::SumProdSub => todo!(),
+                                            Nf::SumProdSup => todo!(),
+                                        }
                                     }
                                 }
-                                CursorKind::Selection(start, end) => {
-                                    let (start, end) = (start.min(end), start.max(end));
-                                    self.modify_editor(|e| {
-                                        e.drain(start..end);
-                                    });
-                                    self.cursor = CursorKind::Line(start);
-                                    response.request_redraw();
+                                SelectionSpan::Range(r) => {
+                                    self.editor.walk(&path).drain(r.clone());
+                                    self.editor_updated();
+                                    self.set_cursor((path, r.start));
                                 }
                             }
+                            response.consume_event();
+                            response.request_redraw();
                         }
                         Key::Character(c) => match c.as_str().chars().next() {
                             Some('a')
                                 if self.modifiers.control_key() || self.modifiers.super_key() =>
                             {
-                                self.cursor = CursorKind::Selection(0, self.editor.len());
+                                self.selection = Some(UserSelection {
+                                    anchor: Cursor {
+                                        path: vec![],
+                                        index: 0,
+                                    },
+                                    focus: Cursor {
+                                        path: vec![],
+                                        index: self.editor.len(),
+                                    },
+                                });
                                 response.consume_event();
                                 response.request_redraw();
                             }
                             Some('c')
                                 if self.modifiers.control_key() || self.modifiers.super_key() =>
                             {
-                                if let CursorKind::Selection(start, end) = self.cursor {
-                                    let (start, end) = (start.min(end), start.max(end));
-                                    let latex =
-                                        latex_editor::editor::to_latex(&self.editor[start..end]);
+                                if let SelectionSpan::Range(r) = span {
+                                    let latex = editor::to_latex(&self.editor.walk(&path)[r]);
                                     if let Err(e) = clipboard.set_text(latex) {
                                         eprintln!("failed to set clipboard contents: {e}");
                                     }
                                 }
                                 response.consume_event();
-                                response.request_redraw();
                             }
                             Some('x')
                                 if self.modifiers.control_key() || self.modifiers.super_key() =>
                             {
-                                if let CursorKind::Selection(start, end) = self.cursor {
-                                    let (start, end) = (start.min(end), start.max(end));
-                                    let latex =
-                                        latex_editor::editor::to_latex(&self.editor[start..end]);
+                                if let SelectionSpan::Range(r) = span {
+                                    let nodes = self.editor.walk(&path);
+                                    let latex = editor::to_latex(&nodes[r.clone()]);
                                     if let Err(e) = clipboard.set_text(latex) {
                                         eprintln!("failed to set clipboard contents: {e}");
                                     } else {
-                                        self.modify_editor(|e| {
-                                            e.drain(start..end);
-                                        });
-                                        self.cursor = CursorKind::Line(start);
+                                        nodes.drain(r.clone());
+                                        self.editor_updated();
+                                        self.set_cursor((path, r.start));
+                                        response.request_redraw();
                                     }
                                 }
                                 response.consume_event();
-                                response.request_redraw();
                             }
                             Some('v')
                                 if self.modifiers.control_key() || self.modifiers.super_key() =>
@@ -707,22 +1374,64 @@ mod expression_list {
 
                                 match parse_latex(&latex) {
                                     Ok(tree) => {
-                                        let nodes = latex_editor::editor::convert(&tree);
-                                        let (start, end) = match self.cursor {
-                                            CursorKind::None => unreachable!(),
-                                            CursorKind::Line(pos) => (pos, pos),
-                                            CursorKind::Selection(start, end) => {
-                                                (start.min(end), start.max(end))
-                                            }
-                                        };
+                                        let nodes = editor::convert(&tree);
+                                        let r = span.as_range();
                                         let pasted_len = nodes.len();
-                                        self.modify_editor(|e| {
-                                            e.splice(start..end, nodes);
-                                        });
-                                        self.cursor = CursorKind::Line(start + pasted_len);
+                                        self.editor.walk(&path).splice(r.clone(), nodes);
+                                        self.editor_updated();
+                                        self.set_cursor((path, r.start + pasted_len));
+                                        response.request_redraw();
                                     }
                                     Err(e) => eprintln!("parse_latex error: {e:?}"),
                                 }
+                                response.consume_event();
+                            }
+                            Some('/') => {
+                                let nodes = self.editor.walk(&path);
+                                let r = match span {
+                                    SelectionSpan::Cursor(c) => {
+                                        nodes[0..c]
+                                            .iter()
+                                            .enumerate()
+                                            .rev()
+                                            .find_map(|(i, n)| {
+                                                matches!(
+                                                    n,
+                                                    SumProd { .. }
+                                                        | Char(
+                                                            '+' | '-'
+                                                                | '*'
+                                                                | '='
+                                                                | '<'
+                                                                | '>'
+                                                                | ','
+                                                                | ':'
+                                                                | '×'
+                                                                | '→'
+                                                                | '≤'
+                                                                | '≥'
+                                                                | '⋅'
+                                                        )
+                                                )
+                                                .then(|| i + 1)
+                                            })
+                                            .unwrap_or(0)..c
+                                    }
+                                    SelectionSpan::Range(r) => r,
+                                };
+
+                                let num = nodes.drain(r.clone()).collect();
+                                nodes.insert(r.start, Frac { num, den: vec![] });
+                                self.editor_updated();
+                                path.push((
+                                    r.start,
+                                    if r.is_empty() {
+                                        Nf::FracNum
+                                    } else {
+                                        Nf::FracDen
+                                    },
+                                ));
+                                self.set_cursor((path, 0));
                                 response.consume_event();
                                 response.request_redraw();
                             }
@@ -742,117 +1451,24 @@ mod expression_list {
                                 | '!'
                                 | '%'
                                 | '\''),
-                            ) => char_to_add = Some(c),
+                            ) => {
+                                let index = add_char(self.editor.walk(&path), span, c);
+                                self.set_cursor((path, index));
+                                self.editor_updated();
+                                response.request_redraw();
+                                response.consume_event();
+                            }
                             _ => {}
                         },
                         _ => {}
                     }
-
-                    if let Some(c) = char_to_add {
-                        let pos = match self.cursor {
-                            CursorKind::None => unreachable!(),
-                            CursorKind::Line(pos) => pos,
-                            CursorKind::Selection(start, end) => {
-                                let (start, end) = (start.min(end), start.max(end));
-                                self.modify_editor(|e| {
-                                    e.drain(start..end);
-                                });
-                                start
-                            }
-                        };
-                        self.modify_editor(|e| e.insert(pos, ENode::Char(c)));
-
-                        'replace: {
-                            let replacements = [
-                                ("χsqdist", "chisqdist"),
-                                ("χsqtest", "chisqtest"),
-                                ("χsqgof", "chisqgof"),
-                                ("cross", "×"),
-                                ("Gamma", "Γ"),
-                                ("Delta", "Δ"),
-                                ("Theta", "Θ"),
-                                ("Lambda", "Λ"),
-                                ("Xi", "Ξ"),
-                                ("Pi", "Π"),
-                                ("Sigma", "Σ"),
-                                ("Upsilon", "Υ"),
-                                ("Uψlon", "Υ"),
-                                ("Phi", "Φ"),
-                                ("Psi", "Ψ"),
-                                ("Omega", "Ω"),
-                                ("alpha", "α"),
-                                ("beta", "β"),
-                                ("gamma", "γ"),
-                                ("delta", "δ"),
-                                ("varepsilon", "ε"),
-                                ("vareψlon", "ε"),
-                                ("zeta", "ζ"),
-                                ("vartheta", "ϑ"),
-                                ("theta", "θ"),
-                                ("eta", "η"),
-                                ("iota", "ι"),
-                                ("kappa", "κ"),
-                                ("lambda", "λ"),
-                                ("mu", "μ"),
-                                ("nu", "ν"),
-                                ("xi", "ξ"),
-                                ("varpi", "ϖ"),
-                                ("pi", "π"),
-                                ("varrho", "ϱ"),
-                                ("rho", "ρ"),
-                                ("varsigma", "ς"),
-                                ("sigma", "σ"),
-                                ("tau", "τ"),
-                                ("upsilon", "υ"),
-                                ("uψlon", "υ"),
-                                ("varphi", "φ"),
-                                ("chi", "χ"),
-                                ("psi", "ψ"),
-                                ("omega", "ω"),
-                                ("phi", "ϕ"),
-                                ("epsilon", "ϵ"),
-                                ("eψlon", "ϵ"),
-                                ("->", "→"),
-                                ("infty", "∞"),
-                                ("infinity", "∞"),
-                                ("<=", "≤"),
-                                (">=", "≥"),
-                                ("*", "⋅"),
-                            ];
-                            for (find, replace) in replacements {
-                                let char_count = find.chars().count();
-                                if pos + 1 >= char_count
-                                    && find
-                                        .chars()
-                                        .rev()
-                                        .enumerate()
-                                        .all(|(i, c)| self.editor[pos - i] == ENode::Char(c))
-                                {
-                                    self.modify_editor(|e| {
-                                        e.splice(
-                                            pos + 1 - char_count..pos + 1,
-                                            replace.chars().map(ENode::Char),
-                                        );
-                                    });
-                                    self.cursor = CursorKind::Line(
-                                        pos + 1 + replace.chars().count() - char_count,
-                                    );
-                                    break 'replace;
-                                }
-                            }
-                            self.cursor = CursorKind::Line(pos + 1);
-                        }
-                        response.request_redraw();
-                    }
                 }
                 Event::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
                 Event::CursorMoved(_) if self.dragging => {
-                    let start = match self.cursor {
-                        CursorKind::None => unreachable!(),
-                        CursorKind::Line(start) | CursorKind::Selection(start, _) => start,
-                    };
-                    if let Some(end) = hovered {
-                        self.cursor = CursorKind::selection(start, end);
+                    if let Some(hovered) = hovered {
+                        self.selection.as_mut().unwrap().focus = hovered;
+                    } else {
+                        eprintln!("how did we get here?");
                     }
                     response.consume_event();
                     response.request_redraw();
@@ -860,11 +1476,11 @@ mod expression_list {
                 Event::MouseInput(ElementState::Pressed, MouseButton::Left) => {
                     if let Some(hovered) = hovered {
                         self.dragging = true;
-                        self.cursor = CursorKind::Line(hovered);
+                        self.selection = Some(hovered.into());
                         response.consume_event();
                         response.request_redraw();
-                    } else if self.cursor != CursorKind::None {
-                        self.cursor = CursorKind::None;
+                    } else if self.selection.is_some() {
+                        self.selection = None;
                         response.request_redraw();
                     }
                 }
@@ -879,21 +1495,15 @@ mod expression_list {
         }
 
         fn render(&self, bounds: Bounds, draw_quad: &mut impl FnMut(DVec2, DVec2, DVec2, DVec2)) {
-            draw_latex(
-                &self.layout,
-                match self.cursor {
-                    CursorKind::Selection(start, end) => {
-                        CursorKind::Selection(start.min(end), start.max(end))
-                    }
-                    x => x,
-                },
-                &|p| {
-                    bounds.pos.as_dvec2()
-                        + self.padding
-                        + self.scale * (p + dvec2(0.0, self.layout.bounds.height))
-                },
-                draw_quad,
-            );
+            let transform = &|p| {
+                bounds.pos.as_dvec2()
+                    + self.padding
+                    + self.scale * (p + dvec2(0.0, self.layout.bounds.height))
+            };
+            if let Some(selection) = &self.selection {
+                draw_selection(&self.layout, selection.into(), transform, draw_quad);
+            }
+            draw_latex(&self.layout, transform, draw_quad);
         }
     }
 
@@ -938,37 +1548,20 @@ mod expression_list {
         })
     }
 
-    #[derive(Debug, Clone, Copy, PartialEq)]
-    enum CursorKind {
-        None,
-        Line(usize),
-        Selection(usize, usize),
-    }
-
-    impl CursorKind {
-        fn selection(start: usize, end: usize) -> CursorKind {
-            if start == end {
-                CursorKind::Line(start)
-            } else {
-                CursorKind::Selection(start, end)
-            }
-        }
-    }
-
-    fn draw_latex(
-        nodes: &Nodes,
-        cursor: CursorKind,
+    fn draw_selection(
+        nodes: &LNodes,
+        selection: Selection,
         transform: &impl Fn(DVec2) -> DVec2,
         draw_quad: &mut impl FnMut(DVec2, DVec2, DVec2, DVec2),
     ) {
-        match cursor {
-            CursorKind::None => {}
-            CursorKind::Line(index) => {
+        let nodes = nodes.walk(&selection.path);
+        match selection.span {
+            SelectionSpan::Cursor(index) => {
                 let position = nodes.nodes.get(index).map_or(
                     nodes.bounds.position + dvec2(nodes.bounds.width, 0.0),
                     |(b, _)| b.position,
                 );
-                let b = latex_editor::layout::Bounds::default();
+                let b = layout::Bounds::default();
                 let p0 = transform(position - dvec2(0.0, nodes.bounds.scale * b.height));
                 let p1 = transform(position + dvec2(0.0, nodes.bounds.scale * b.depth));
                 let p0 = dvec2(p0.x.round() - 1.0, p0.y.floor());
@@ -976,8 +1569,8 @@ mod expression_list {
                 let uv = DVec2::splat(-1.0);
                 draw_quad(p0, p1, uv, uv);
             }
-            CursorKind::Selection(start, end) => {
-                for (b, _) in &nodes.nodes[start..end] {
+            SelectionSpan::Range(r) => {
+                for (b, _) in &nodes.nodes[r] {
                     let p0 = transform(b.top_left()).floor();
                     let p1 = transform(b.bottom_right()).ceil();
                     let uv = DVec2::splat(-2.0);
@@ -985,13 +1578,19 @@ mod expression_list {
                 }
             }
         }
+    }
 
+    fn draw_latex(
+        nodes: &LNodes,
+        transform: &impl Fn(DVec2) -> DVec2,
+        draw_quad: &mut impl FnMut(DVec2, DVec2, DVec2, DVec2),
+    ) {
         for (_, node) in &nodes.nodes {
             match node {
-                latex_editor::layout::Node::DelimitedGroup { .. } => todo!(),
-                latex_editor::layout::Node::SubSup { .. } => todo!(),
-                latex_editor::layout::Node::Sqrt { .. } => todo!(),
-                latex_editor::layout::Node::Frac { line, num, den } => {
+                LNode::DelimitedGroup { .. } => todo!(),
+                LNode::SubSup { .. } => todo!(),
+                LNode::Sqrt { .. } => todo!(),
+                LNode::Frac { line, num, den } => {
                     let l0 = transform(line.0);
                     let l1 = transform(line.1);
                     draw_quad(
@@ -1000,11 +1599,11 @@ mod expression_list {
                         DVec2::splat(-1.0),
                         DVec2::splat(-1.0),
                     );
-                    draw_latex(num, CursorKind::None, transform, draw_quad);
-                    draw_latex(den, CursorKind::None, transform, draw_quad);
+                    draw_latex(num, transform, draw_quad);
+                    draw_latex(den, transform, draw_quad);
                 }
-                latex_editor::layout::Node::SumProd { .. } => todo!(),
-                latex_editor::layout::Node::Char(g) => {
+                LNode::SumProd { .. } => todo!(),
+                LNode::Char(g) => {
                     let p0 = transform(dvec2(g.plane.left, g.plane.top));
                     let p1 = transform(dvec2(g.plane.right, g.plane.bottom));
                     let uv0 = dvec2(g.atlas.left, g.atlas.top);
@@ -1175,7 +1774,7 @@ mod expression_list {
             });
 
             Self {
-                expressions: vec![Expression::from_latex(r"\frac{1}{2}{3}").unwrap()],
+                expressions: vec![Expression::from_latex(r"\frac{a}{\frac{b}{c}+\alpha\operatorname{count}\frac{\frac{4}{7}}{\frac{4}{\frac{4}{4}}}}+\frac{\sin\frac{5}{6}}{6}").unwrap()],
 
                 pipeline,
                 vertex_buffer,

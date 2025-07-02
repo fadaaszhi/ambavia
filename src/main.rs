@@ -1419,7 +1419,7 @@ mod expression_list {
                                 let nodes = self.editor.walk(&path);
                                 let r = match span {
                                     SelectionSpan::Cursor(c) => {
-                                        nodes[0..c]
+                                        nodes[..c]
                                             .iter()
                                             .enumerate()
                                             .rev()

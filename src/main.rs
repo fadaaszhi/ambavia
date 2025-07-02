@@ -5,7 +5,7 @@ use std::{f64, sync::Arc};
 
 use ambavia::latex_parser::parse_latex;
 use arboard::Clipboard;
-use glam::{dvec2, uvec2, vec2, DVec2, UVec2, Vec2};
+use glam::{DVec2, UVec2, Vec2, dvec2, uvec2, vec2};
 use winit::{
     dpi::{PhysicalPosition, PhysicalSize},
     event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent},
@@ -467,7 +467,7 @@ impl MainThing {
 mod expression_list {
     use std::{iter::zip, ops::Range};
 
-    use bytemuck::{offset_of, Zeroable};
+    use bytemuck::{Zeroable, offset_of};
     use winit::keyboard::ModifiersState;
 
     use crate::latex_editor::{
@@ -1020,7 +1020,12 @@ mod expression_list {
                 * (dvec2(1.0, 2.0) * self.padding + self.scale * dvec2(b.width, b.height + b.depth))
         }
 
-        fn editor_updated(&mut self) {
+        /// This function removes consecutive `SubSup`s, updates
+        /// `self.selection`, `self.latex` and `self.layout`.
+        fn editor_updated(&mut self, cursor: impl Into<Cursor>) {
+            let mut cursor = cursor.into();
+            join_consecutive_scripts(&mut self.editor, Some((&mut cursor, 0)));
+            self.set_cursor(cursor);
             self.latex = editor::to_latex(&self.editor);
             self.layout = layout::layout(&self.editor);
         }
@@ -1056,8 +1061,8 @@ mod expression_list {
                     state: ElementState::Pressed,
                     ..
                 }) if self.selection.is_some() => {
-                    use winit::keyboard::{Key, NamedKey};
                     use ENode::*;
+                    use winit::keyboard::{Key, NamedKey};
                     let Selection { mut path, span } = self.selection.as_ref().unwrap().into();
 
                     match &logical_key {

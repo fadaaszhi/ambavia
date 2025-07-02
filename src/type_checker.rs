@@ -1,7 +1,7 @@
 use std::{borrow::Borrow, collections::HashMap};
 
 use derive_more::{From, Into};
-use typed_index_collections::{ti_vec, TiSlice, TiVec};
+use typed_index_collections::{TiSlice, TiVec, ti_vec};
 
 use crate::name_resolver::{self as nr};
 pub use crate::name_resolver::{ComparisonOperator, SumProdKind};
@@ -374,7 +374,7 @@ impl TypeChecker {
                         (B::Number, B::Number) => (B::Number, O::AddNumber),
                         (B::Point, B::Point) => (B::Point, O::AddPoint),
                         (B::Number, B::Empty) | (B::Empty, B::Number) => {
-                            return empty_list(B::Number)
+                            return empty_list(B::Number);
                         }
                         (B::Point, B::Empty) | (B::Empty, B::Point) => return empty_list(B::Point),
                         _ => return Err(format!("cannot add {} and {}", left.ty, right.ty)),
@@ -383,7 +383,7 @@ impl TypeChecker {
                         (B::Number, B::Number) => (B::Number, O::SubNumber),
                         (B::Point, B::Point) => (B::Point, O::SubPoint),
                         (B::Number, B::Empty) | (B::Empty, B::Number) => {
-                            return empty_list(B::Number)
+                            return empty_list(B::Number);
                         }
                         (B::Point, B::Empty) | (B::Empty, B::Point) => return empty_list(B::Point),
                         _ => return Err(format!("cannot subtract {} from {}", left.ty, right.ty)),
@@ -393,7 +393,7 @@ impl TypeChecker {
                         (B::Number, B::Point) => (B::Point, O::MulNumberPoint),
                         (B::Point, B::Number) => (B::Point, O::MulPointNumber),
                         (B::Number, B::Empty) | (B::Empty, B::Number) => {
-                            return empty_list(B::Empty)
+                            return empty_list(B::Empty);
                         }
                         (B::Point, B::Empty) | (B::Empty, B::Point) => return empty_list(B::Point),
                         _ => return Err(format!("cannot multiply {} by {}", left.ty, right.ty)),
@@ -409,7 +409,7 @@ impl TypeChecker {
                     nr::BinaryOperator::Pow => match (left.ty.base(), right.ty.base()) {
                         (B::Number, B::Number) => (B::Number, O::Pow),
                         (B::Number, B::Empty) | (B::Empty, B::Number) => {
-                            return empty_list(B::Number)
+                            return empty_list(B::Number);
                         }
                         _ => return Err(format!("cannot raise {} to {}", left.ty, right.ty)),
                     },
@@ -429,27 +429,27 @@ impl TypeChecker {
                         (B::Number, B::Point) => (B::Point, O::MulNumberPoint),
                         (B::Point, B::Number) => (B::Point, O::MulPointNumber),
                         (B::Number, B::Empty) | (B::Empty, B::Number) => {
-                            return empty_list(B::Empty)
+                            return empty_list(B::Empty);
                         }
                         (B::Point, B::Empty) | (B::Empty, B::Point) => return empty_list(B::Point),
                         (B::Point, B::Point) => {
                             return Err(format!(
                                 "cannot take the cross product of {} and {}",
                                 left.ty, right.ty,
-                            ))
+                            ));
                         }
                         _ => return Err(format!("cannot multiply {} by {}", left.ty, right.ty)),
                     },
                     nr::BinaryOperator::Point => match (left.ty.base(), right.ty.base()) {
                         (B::Number, B::Number) => (B::Point, O::Point),
                         (B::Number, B::Empty) | (B::Empty, B::Number) => {
-                            return empty_list(B::Point)
+                            return empty_list(B::Point);
                         }
                         _ => {
                             return Err(format!(
                                 "cannot use {} and {} as the coordinates of a point",
                                 left.ty, right.ty
-                            ))
+                            ));
                         }
                     },
                     nr::BinaryOperator::Index => match (left.ty, right.ty.base()) {
@@ -483,7 +483,7 @@ impl TypeChecker {
                                         right: Box::new(right),
                                     },
                                 )
-                            })
+                            });
                         }
                         _ => return Err(format!("cannot index {} with {}", left.ty, right.ty)),
                     },
@@ -799,12 +799,12 @@ pub fn type_check(
 #[cfg(test)]
 mod tests {
     use super::{
+        Assignment as As, BinaryOperator as Bo,
+        Expression::{BinaryOperation as Bop, Identifier as Id, Number as Num},
         nr::{
             Assignment as NAs, BinaryOperator as NBo,
             Expression::{BinaryOperation as NBop, Identifier as NId, Number as NNum},
         },
-        Assignment as As, BinaryOperator as Bo,
-        Expression::{BinaryOperation as Bop, Identifier as Id, Number as Num},
         *,
     };
 

@@ -345,10 +345,10 @@ pub fn compile_assignments(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pretty_assertions::assert_eq;
     use BinaryOperator as TBo;
     use Expression::{BinaryOperation as TBop, Identifier as TId, Number as TNum};
     use InstructionBuilder as Ib;
+    use pretty_assertions::assert_eq;
 
     fn bx<T>(x: T) -> Box<T> {
         Box::new(x)

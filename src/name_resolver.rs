@@ -239,7 +239,7 @@ impl<'a> Resolver<'a> {
     fn resolve_variable(&mut self, name: &'a str) -> (Result<usize, String>, Dependencies<'a>) {
         if let Some(((id, err), deps)) = self.get_maybe_outdated_variable(name) {
             if deps.map.iter().all(|(n, d)| match d {
-                Dependency::Assignment(i) => self.get_maybe_outdated_variable(n).unwrap().0 .0 == i,
+                Dependency::Assignment(i) => self.get_maybe_outdated_variable(n).unwrap().0.0 == i,
                 Dependency::NotDynamic => !self.dynamic_scope.contains_key(n),
             }) {
                 let mut deps = deps.clone();
@@ -263,7 +263,7 @@ impl<'a> Resolver<'a> {
                         level: 0,
                         map: [(name, Dependency::NotDynamic)].into(),
                     },
-                )
+                );
             }
         };
 
@@ -594,9 +594,12 @@ impl<'a> Resolver<'a> {
 
                 for (name, value) in lists {
                     if seen.contains_key(name.as_str()) {
-                        return (Err(format!(
-                            "you can't define '{name}' more than once on the right-hand side of 'for'"
-                        )), list_deps);
+                        return (
+                            Err(format!(
+                                "you can't define '{name}' more than once on the right-hand side of 'for'"
+                            )),
+                            list_deps,
+                        );
                     }
 
                     let (value, d) = match self.resolve_expression(value) {
@@ -754,6 +757,9 @@ pub fn resolve_names(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ExpressionListEntry::{
+        Assignment as ElAssign, Expression as ElExpr, FunctionDeclaration as ElFunction,
+    };
     use ast::{
         BinaryOperator as ABo,
         Expression::{
@@ -773,9 +779,6 @@ mod tests {
         },
     };
     use pretty_assertions::assert_eq;
-    use ExpressionListEntry::{
-        Assignment as ElAssign, Expression as ElExpr, FunctionDeclaration as ElFunction,
-    };
 
     fn bx<T>(x: T) -> Box<T> {
         Box::new(x)

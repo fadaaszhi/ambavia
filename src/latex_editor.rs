@@ -298,9 +298,9 @@ pub mod editor {
 }
 
 pub mod layout {
-    use glam::{dvec2, DVec2};
+    use glam::{DVec2, dvec2};
 
-    use crate::katex_font::{get_glyph, Font, Glyph};
+    use crate::katex_font::{Font, Glyph, get_glyph};
 
     use super::{editor::Node as ENode, *};
 

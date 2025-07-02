@@ -198,7 +198,7 @@ fn parse_nodes<'a>(
                         expecter,
                         arg_index,
                         found: lexer.next()?,
-                    })
+                    });
                 }
                 _ => break,
             },

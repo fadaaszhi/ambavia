@@ -5,7 +5,7 @@ use ambavia::{
     compiler::compile_assignments,
     latex_parser::parse_latex,
     name_resolver::resolve_names,
-    type_checker::{type_check, Type},
+    type_checker::{Type, type_check},
     vm::Vm,
 };
 use rstest::rstest;
@@ -182,7 +182,10 @@ fn expression_eq(#[case] expression: &str, #[case] expected: impl Into<Value>) {
 }
 
 #[rstest]
-#[case(r"\{1<2:(3,4),5\}", "cannot use a point and a number as the branches in a piecewise, every branch must have the same type")]
+#[case(
+    r"\{1<2:(3,4),5\}",
+    "cannot use a point and a number as the branches in a piecewise, every branch must have the same type"
+)]
 fn expression_type_error(#[case] expression: &str, #[case] error: &str) {
     assert_type_error(expression, error);
 }

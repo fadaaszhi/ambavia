@@ -1,7 +1,7 @@
 use crate::{
     ast::*,
     latex_tree::Node,
-    latex_tree_flattener::{flatten, Token},
+    latex_tree_flattener::{Token, flatten},
 };
 
 struct Tokens<'a> {
@@ -79,7 +79,7 @@ fn parse_nodes_into_name_subscript(nodes: &[Node]) -> Result<String, String> {
                 return Err(format!(
                     "name subscript expected letters and digits, found {}",
                     other.to_small_string(),
-                ))
+                ));
             }
         }
     }
@@ -452,7 +452,7 @@ fn parse_expression(tokens: &mut Tokens, min_bp: u8) -> Result<Expression, Strin
                     return Err(format!(
                         "expected expression, found {}",
                         token.to_small_string()
-                    ))
+                    ));
                 }
             }
         }
@@ -556,7 +556,7 @@ fn parse_expression(tokens: &mut Tokens, min_bp: u8) -> Result<Expression, Strin
                                 "{} expected identifier, found {}",
                                 Token::Dot.to_small_string(),
                                 other.to_small_string()
-                            ))
+                            ));
                         }
                     };
                     left = match callee.as_str() {
@@ -698,7 +698,7 @@ fn parse_expression_list_entry_from_tokens(
                 return Ok(ExpressionListEntry::Assignment {
                     name: name.clone(),
                     value: chain.operands.pop().unwrap(),
-                })
+                });
             }
             Expression::CallOrMultiply { callee, args } => {
                 if let Some(parameters) = args
@@ -728,7 +728,6 @@ mod tests {
     use crate::latex_tree::Node;
 
     use super::*;
-    use pretty_assertions::assert_eq;
     use BinaryOperator::*;
     use ComparisonOperator::*;
     use Expression::{
@@ -739,6 +738,7 @@ mod tests {
     use SumProdKind::*;
     use Token as T;
     use UnaryOperator::*;
+    use pretty_assertions::assert_eq;
 
     fn bx<T>(x: T) -> Box<T> {
         Box::new(x)

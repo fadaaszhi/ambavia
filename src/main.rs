@@ -103,6 +103,18 @@ struct Context {
     clipboard: Clipboard,
     prev_cursor: DVec2,
     cursor: DVec2,
+    scale_factor: f64,
+}
+
+impl Context {
+    fn scale_width(&self, width: f64) -> u32 {
+        (self.scale_factor * width).round().max(1.0) as u32
+    }
+}
+
+fn snap(x: f64, w: u32) -> f64 {
+    let a = 0.5 * (w % 2) as f64;
+    (x - a).round() + a
 }
 
 impl App {
@@ -112,7 +124,6 @@ impl App {
                 .create_window(
                     WindowAttributes::default()
                         .with_title("Ambavia")
-                        .with_inner_size(PhysicalSize::new(1440, 1080))
                         .with_theme(Some(winit::window::Theme::Light)),
                 )
                 .unwrap(),
@@ -133,6 +144,12 @@ impl App {
         config.format = config.format.remove_srgb_suffix();
         surface.configure(&device, &config);
         let clipboard = Clipboard::new().unwrap();
+        let context = Context {
+            clipboard,
+            prev_cursor: DVec2::ZERO,
+            cursor: DVec2::ZERO,
+            scale_factor: window.scale_factor(),
+        };
         let main_thing = MainThing::new(&device, &queue, &config);
 
         App {
@@ -141,11 +158,7 @@ impl App {
             config,
             device,
             queue,
-            context: Context {
-                clipboard,
-                prev_cursor: DVec2::ZERO,
-                cursor: DVec2::ZERO,
-            },
+            context,
             main_thing,
         }
     }
@@ -161,8 +174,12 @@ impl App {
             size: self.window.inner_size().as_glam(),
         };
 
+        self.context.scale_factor = self.window.scale_factor();
+
+        // Should this happen every event or only when CursorMoved?
+        self.context.prev_cursor = self.context.cursor;
+
         if let WindowEvent::CursorMoved { position, .. } = &event {
-            self.context.prev_cursor = self.context.cursor;
             self.context.cursor = position.as_glam();
         }
 
@@ -177,6 +194,9 @@ impl App {
                 }),
                 WindowEvent::MouseInput { state, button, .. } => Event::MouseInput(state, button),
                 WindowEvent::PinchGesture { delta, .. } => Event::PinchGesture(delta),
+                WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                    dbg!((scale_factor, Event::ScaleFactorChanged)).1
+                }
                 _ => break 'update,
             };
             let response = self.main_thing.update(&mut self.context, &my_event, bounds);
@@ -199,6 +219,7 @@ impl App {
                     .expect("Failed to acquire next swap chain texture");
                 let surface_view = surface_texture.texture.create_view(&Default::default());
                 let command_buffer = self.main_thing.render(
+                    &self.context,
                     &self.device,
                     &self.queue,
                     &surface_view,
@@ -224,6 +245,7 @@ pub enum Event {
     MouseWheel(DVec2),
     MouseInput(ElementState, MouseButton),
     PinchGesture(f64),
+    ScaleFactorChanged,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -327,7 +349,7 @@ impl MainThing {
         config: &wgpu::SurfaceConfiguration,
     ) -> MainThing {
         MainThing {
-            resizer_width: 50.0,
+            resizer_width: 25.0,
             resizer_position: 0.3,
             dragging: None,
             expression_list: expression_list::ExpressionList::new(device, queue, config),
@@ -352,7 +374,7 @@ impl MainThing {
         }
 
         let offset = x - ctx.cursor.x;
-        let hovering = offset.abs() <= self.resizer_width / 2.0;
+        let hovering = offset.abs() <= ctx.scale_factor * self.resizer_width / 2.0;
 
         if let Event::MouseInput(state, MouseButton::Left) = event {
             match state {
@@ -395,6 +417,7 @@ impl MainThing {
 
     fn render(
         &mut self,
+        ctx: &Context,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         view: &wgpu::TextureView,
@@ -434,9 +457,9 @@ impl MainThing {
             size: uvec2(bounds.right() - x, bounds.size.y),
         };
         self.expression_list
-            .render(device, queue, view, config, &mut encoder, left);
+            .render(ctx, device, queue, view, config, &mut encoder, left);
         self.graph_paper
-            .render(device, queue, view, config, &mut encoder, right);
+            .render(ctx, device, queue, view, config, &mut encoder, right);
         Some(encoder.finish())
     }
 }
@@ -651,8 +674,8 @@ mod expression_list {
                 latex: Default::default(),
                 editor: Default::default(),
                 layout: Default::default(),
-                scale: 40.0,
-                padding: 32.0,
+                scale: 20.0,
+                padding: 16.0,
                 modifiers: Default::default(),
                 dragging: false,
                 selection: None,
@@ -835,9 +858,10 @@ mod expression_list {
             self.selection.is_some()
         }
 
-        fn size(&self) -> DVec2 {
+        fn size(&self, ctx: &Context) -> DVec2 {
             let b = self.layout.bounds;
-            dvec2(1.0, 2.0) * self.padding + self.scale * dvec2(b.width, b.height + b.depth)
+            ctx.scale_factor
+                * (dvec2(1.0, 2.0) * self.padding + self.scale * dvec2(b.width, b.height + b.depth))
         }
 
         fn editor_updated(&mut self) {
@@ -859,7 +883,9 @@ mod expression_list {
             let mut message = None;
 
             let hovered = (bounds.contains(ctx.cursor) || self.dragging).then(|| {
-                let position = (ctx.cursor - (bounds.pos.as_dvec2() + self.padding)) / self.scale
+                let position = (ctx.cursor
+                    - (bounds.pos.as_dvec2() + ctx.scale_factor * self.padding))
+                    / (ctx.scale_factor * self.scale)
                     - dvec2(0.0, self.layout.bounds.height);
                 get_hovered(&self.layout, vec![], position)
             });
@@ -1497,16 +1523,21 @@ mod expression_list {
             (response, message)
         }
 
-        fn render(&self, bounds: Bounds, draw_quad: &mut impl FnMut(DVec2, DVec2, DVec2, DVec2)) {
+        fn render(
+            &self,
+            ctx: &Context,
+            bounds: Bounds,
+            draw_quad: &mut impl FnMut(DVec2, DVec2, DVec2, DVec2),
+        ) {
             let transform = &|p| {
                 bounds.pos.as_dvec2()
-                    + self.padding
-                    + self.scale * (p + dvec2(0.0, self.layout.bounds.height))
+                    + ctx.scale_factor
+                        * (self.padding + self.scale * (p + dvec2(0.0, self.layout.bounds.height)))
             };
             if let Some(selection) = &self.selection {
-                draw_selection(&self.layout, selection.into(), transform, draw_quad);
+                draw_selection(ctx, &self.layout, selection.into(), transform, draw_quad);
             }
-            draw_latex(&self.layout, transform, draw_quad);
+            draw_latex(ctx, &self.layout, transform, draw_quad);
         }
     }
 
@@ -1552,6 +1583,7 @@ mod expression_list {
     }
 
     fn draw_selection(
+        ctx: &Context,
         nodes: &LNodes,
         selection: Selection,
         transform: &impl Fn(DVec2) -> DVec2,
@@ -1567,8 +1599,10 @@ mod expression_list {
                 let b = layout::Bounds::default();
                 let p0 = transform(position - dvec2(0.0, nodes.bounds.scale * b.height));
                 let p1 = transform(position + dvec2(0.0, nodes.bounds.scale * b.depth));
-                let p0 = dvec2(p0.x.round() - 1.0, p0.y.floor());
-                let p1 = dvec2(p1.x.round() + 1.0, p1.y.floor() + 1.0);
+                let w = ctx.scale_width(1.0);
+                let x = snap(p0.x, w);
+                let p0 = dvec2(x - w as f64 / 2.0, p0.y.floor());
+                let p1 = dvec2(x + w as f64 / 2.0, p1.y.floor() + 1.0);
                 let uv = DVec2::splat(-1.0);
                 draw_quad(p0, p1, uv, uv);
             }
@@ -1584,6 +1618,7 @@ mod expression_list {
     }
 
     fn draw_latex(
+        ctx: &Context,
         nodes: &LNodes,
         transform: &impl Fn(DVec2) -> DVec2,
         draw_quad: &mut impl FnMut(DVec2, DVec2, DVec2, DVec2),
@@ -1596,14 +1631,16 @@ mod expression_list {
                 LNode::Frac { line, num, den } => {
                     let l0 = transform(line.0);
                     let l1 = transform(line.1);
+                    let w = ctx.scale_width(1.0);
+                    let y = snap(l0.y, w);
                     draw_quad(
-                        dvec2(l0.x.floor(), l0.y.round() - 1.0),
-                        dvec2(l1.x.ceil(), l1.y.round() + 1.0),
+                        dvec2(l0.x.floor(), y - w as f64 / 2.0),
+                        dvec2(l1.x.ceil(), y + w as f64 / 2.0),
                         DVec2::splat(-1.0),
                         DVec2::splat(-1.0),
                     );
-                    draw_latex(num, transform, draw_quad);
-                    draw_latex(den, transform, draw_quad);
+                    draw_latex(ctx, num, transform, draw_quad);
+                    draw_latex(ctx, den, transform, draw_quad);
                 }
                 LNode::SumProd { .. } => todo!(),
                 LNode::Char(g) => {
@@ -1787,7 +1824,7 @@ mod expression_list {
             }
         }
 
-        const SEPARATOR_WIDTH: u32 = 2;
+        const SEPARATOR_WIDTH: f64 = 1.0;
 
         pub fn update(&mut self, ctx: &mut Context, event: &Event, bounds: Bounds) -> Response {
             let mut response = Response::default();
@@ -1795,7 +1832,7 @@ mod expression_list {
             let mut message = None;
 
             for (i, expression) in self.expressions.iter_mut().enumerate() {
-                let y_size = expression.size().y.ceil() as u32;
+                let y_size = expression.size(ctx).y.ceil() as u32;
                 let (r, m) = expression.update(
                     ctx,
                     event,
@@ -1810,7 +1847,7 @@ mod expression_list {
                 }
 
                 response = response.or(r);
-                y_offset += y_size + Self::SEPARATOR_WIDTH;
+                y_offset += y_size + ctx.scale_width(Self::SEPARATOR_WIDTH);
             }
 
             if let Some((i, m)) = message {
@@ -1864,6 +1901,7 @@ mod expression_list {
 
         pub fn render(
             &mut self,
+            ctx: &Context,
             device: &wgpu::Device,
             queue: &wgpu::Queue,
             view: &wgpu::TextureView,
@@ -1905,8 +1943,9 @@ mod expression_list {
             let mut y_offset = 0;
 
             for expression in &mut self.expressions {
-                let y_size = expression.size().y.ceil() as u32;
+                let y_size = expression.size(ctx).y.ceil() as u32;
                 expression.render(
+                    ctx,
                     bounds.intersect(&Bounds {
                         pos: bounds.pos + uvec2(0, y_offset),
                         size: uvec2(bounds.size.x, y_size),
@@ -1918,18 +1957,20 @@ mod expression_list {
                 let p0 = (bounds.pos + uvec2(0, y_offset)).as_dvec2();
                 let p1 = uvec2(
                     bounds.right(),
-                    bounds.top() + y_offset + Self::SEPARATOR_WIDTH,
+                    bounds.top() + y_offset + ctx.scale_width(Self::SEPARATOR_WIDTH),
                 )
                 .as_dvec2();
                 let uv = DVec2::splat(-3.0);
                 draw_quad(p0, p1, uv, uv);
 
-                y_offset += Self::SEPARATOR_WIDTH;
+                y_offset += ctx.scale_width(Self::SEPARATOR_WIDTH);
             }
 
             {
                 let p0 = uvec2(
-                    bounds.right().saturating_sub(Self::SEPARATOR_WIDTH),
+                    bounds
+                        .right()
+                        .saturating_sub(ctx.scale_width(Self::SEPARATOR_WIDTH)),
                     bounds.top(),
                 );
                 let p1 = uvec2(bounds.right(), bounds.bottom());
@@ -2303,7 +2344,9 @@ mod graph {
             };
             let mut zoom = |amount: f64| {
                 let origin = from_vp(&self.viewport, DVec2::ZERO);
-                let p = if amount > 1.0 && (ctx.cursor - origin).abs().max_element() < 50.0 {
+                let p = if amount > 1.0
+                    && (ctx.cursor - origin).abs().max_element() < 25.0 * ctx.scale_factor
+                {
                     origin
                 } else {
                     ctx.cursor
@@ -2350,6 +2393,7 @@ mod graph {
 
         pub fn render(
             &mut self,
+            ctx: &Context,
             device: &wgpu::Device,
             queue: &wgpu::Queue,
             view: &wgpu::TextureView,
@@ -2361,7 +2405,7 @@ mod graph {
                 return;
             }
 
-            let (shapes, vertices) = self.generate_geometry(bounds);
+            let (shapes, vertices) = self.generate_geometry(ctx, bounds);
 
             if vertices.is_empty() {
                 return;
@@ -2415,7 +2459,7 @@ mod graph {
             );
         }
 
-        fn generate_geometry(&self, bounds: Bounds) -> (Vec<Shape>, Vec<Vertex>) {
+        fn generate_geometry(&self, ctx: &Context, bounds: Bounds) -> (Vec<Shape>, Vec<Vertex>) {
             let mut shapes = vec![];
             let mut vertices = vec![];
             let bounds_pos = bounds.pos.as_dvec2();
@@ -2423,7 +2467,7 @@ mod graph {
             let vp = &self.viewport;
             let vp_size = dvec2(vp.width, vp.width * bounds_size.y / bounds_size.x);
 
-            let s = vp.width / bounds_size.x * 160.0;
+            let s = vp.width / bounds_size.x * (80.0 * ctx.scale_factor);
             let (mut major, mut minor) = (f64::INFINITY, 0.0);
             for (a, b) in [(1.0, 5.0), (2.0, 4.0), (5.0, 5.0)] {
                 let c = a * 10f64.powf((s / a).log10().ceil());
@@ -2433,9 +2477,9 @@ mod graph {
                 }
             }
 
-            let mut draw_grid = |step: f64, color: [f32; 4], width: f32| {
+            let mut draw_grid = |step: f64, color: [f32; 4], width: u32| {
                 let shape = shapes.len() as u32;
-                shapes.push(Shape::line(color, width));
+                shapes.push(Shape::line(color, width as f32));
                 let s = DVec2::splat(step);
                 let a = (0.5 * vp_size / step).ceil();
                 let n = 2 * a.as_uvec2() + 2;
@@ -2444,30 +2488,31 @@ mod graph {
                     + bounds_pos;
 
                 for i in 0..n.x {
-                    let x = (i as f64 * b.x + c.x).round() as f32;
+                    let x = snap(i as f64 * b.x + c.x, width) as f32;
                     vertices.push(Vertex::BREAK);
                     vertices.push(Vertex::new((x, bounds.top() as f32), shape));
                     vertices.push(Vertex::new((x, bounds.bottom() as f32), shape));
                 }
 
                 for i in 0..n.y {
-                    let y = (i as f64 * b.y + c.y).round() as f32;
+                    let y = snap(i as f64 * b.y + c.y, width) as f32;
                     vertices.push(Vertex::BREAK);
                     vertices.push(Vertex::new((bounds.left() as f32, y), shape));
                     vertices.push(Vertex::new((bounds.right() as f32, y), shape));
                 }
             };
 
-            draw_grid(minor, [0.88, 0.88, 0.88, 1.0], 2.0);
-            draw_grid(major, [0.6, 0.6, 0.6, 1.0], 2.0);
+            draw_grid(minor, [0.88, 0.88, 0.88, 1.0], ctx.scale_width(1.0));
+            draw_grid(major, [0.6, 0.6, 0.6, 1.0], ctx.scale_width(1.0));
 
             let to_frame = |p: DVec2| {
                 flip_y(p - vp.center) / vp.width * bounds_size.x + 0.5 * bounds_size + bounds_pos
             };
 
-            let origin = to_frame(DVec2::ZERO).floor().as_vec2() + 0.5;
+            let w = ctx.scale_width(1.5);
+            let origin = to_frame(DVec2::ZERO).map(|x| snap(x, w)).as_vec2();
             let shape = shapes.len() as u32;
-            shapes.push(Shape::line([0.098, 0.098, 0.098, 1.0], 3.0));
+            shapes.push(Shape::line([0.098, 0.098, 0.098, 1.0], w as f32));
             vertices.push(Vertex::new((origin.x, bounds.top() as f32), shape));
             vertices.push(Vertex::new((origin.x, bounds.bottom() as f32), shape));
             vertices.push(Vertex::BREAK);

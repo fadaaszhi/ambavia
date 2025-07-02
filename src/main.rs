@@ -95,8 +95,14 @@ struct App {
     config: wgpu::SurfaceConfiguration,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    clipboard: Clipboard,
+    context: Context,
     main_thing: MainThing,
+}
+
+struct Context {
+    clipboard: Clipboard,
+    prev_cursor: DVec2,
+    cursor: DVec2,
 }
 
 impl App {
@@ -135,7 +141,11 @@ impl App {
             config,
             device,
             queue,
-            clipboard,
+            context: Context {
+                clipboard,
+                prev_cursor: DVec2::ZERO,
+                cursor: DVec2::ZERO,
+            },
             main_thing,
         }
     }
@@ -151,11 +161,16 @@ impl App {
             size: self.window.inner_size().as_glam(),
         };
 
+        if let WindowEvent::CursorMoved { position, .. } = &event {
+            self.context.prev_cursor = self.context.cursor;
+            self.context.cursor = position.as_glam();
+        }
+
         'update: {
             let my_event = match event.clone() {
                 WindowEvent::KeyboardInput { event, .. } => Event::KeyboardInput(event),
                 WindowEvent::ModifiersChanged(modifiers) => Event::ModifiersChanged(modifiers),
-                WindowEvent::CursorMoved { position, .. } => Event::CursorMoved(position.as_glam()),
+                WindowEvent::CursorMoved { .. } => Event::CursorMoved,
                 WindowEvent::MouseWheel { delta, .. } => Event::MouseWheel(match delta {
                     winit::event::MouseScrollDelta::LineDelta(x, y) => vec2(x, y).as_dvec2() * 20.0,
                     winit::event::MouseScrollDelta::PixelDelta(delta) => delta.as_glam(),
@@ -164,9 +179,7 @@ impl App {
                 WindowEvent::PinchGesture { delta, .. } => Event::PinchGesture(delta),
                 _ => break 'update,
             };
-            let response = self
-                .main_thing
-                .update(&my_event, bounds, &mut self.clipboard);
+            let response = self.main_thing.update(&mut self.context, &my_event, bounds);
             if response.requested_redraw {
                 self.window.request_redraw();
             }
@@ -207,7 +220,7 @@ pub enum Event {
     // Resized(UVec2),
     KeyboardInput(KeyEvent),
     ModifiersChanged(Modifiers),
-    CursorMoved(DVec2),
+    CursorMoved,
     MouseWheel(DVec2),
     MouseInput(ElementState, MouseButton),
     PinchGesture(f64),
@@ -303,7 +316,6 @@ struct MainThing {
     resizer_width: f64,
     resizer_position: f64,
     dragging: Option<f64>,
-    cursor: DVec2,
     expression_list: expression_list::ExpressionList,
     graph_paper: graph::GraphPaper,
 }
@@ -318,30 +330,28 @@ impl MainThing {
             resizer_width: 50.0,
             resizer_position: 0.3,
             dragging: None,
-            cursor: DVec2::ZERO,
             expression_list: expression_list::ExpressionList::new(device, queue, config),
             graph_paper: graph::GraphPaper::new(device, config),
         }
     }
 
-    fn update(&mut self, event: &Event, bounds: Bounds, clipboard: &mut Clipboard) -> Response {
+    fn update(&mut self, ctx: &mut Context, event: &Event, bounds: Bounds) -> Response {
         let mut response = Response::default();
 
         let l = bounds.left() as f64;
         let r = bounds.right() as f64;
         let mut x = mix(l, r, self.resizer_position);
 
-        if let Event::CursorMoved(position) = event {
+        if let Event::CursorMoved = event {
             if let Some(offset) = self.dragging {
-                x = (self.cursor.x + offset).clamp(l, r);
+                x = (ctx.cursor.x + offset).clamp(l, r);
                 self.resizer_position = unmix(x, l, r);
                 response.consume_event();
                 response.request_redraw();
             }
-            self.cursor = *position;
         }
 
-        let offset = x - self.cursor.x;
+        let offset = x - ctx.cursor.x;
         let hovering = offset.abs() <= self.resizer_width / 2.0;
 
         if let Event::MouseInput(state, MouseButton::Left) = event {
@@ -379,8 +389,8 @@ impl MainThing {
         };
 
         response
-            .or_else(|| self.expression_list.update(event, left, clipboard))
-            .or_else(|| self.graph_paper.update(event, right))
+            .or_else(|| self.expression_list.update(ctx, event, left))
+            .or_else(|| self.graph_paper.update(ctx, event, right))
     }
 
     fn render(
@@ -632,7 +642,6 @@ mod expression_list {
 
         modifiers: ModifiersState,
         dragging: bool,
-        mouse_position: DVec2,
         selection: Option<UserSelection>,
     }
 
@@ -646,7 +655,6 @@ mod expression_list {
                 padding: 32.0,
                 modifiers: Default::default(),
                 dragging: false,
-                mouse_position: DVec2::ZERO,
                 selection: None,
             }
         }
@@ -843,20 +851,15 @@ mod expression_list {
 
         fn update(
             &mut self,
+            ctx: &mut Context,
             event: &Event,
             bounds: Bounds,
-            clipboard: &mut Clipboard,
         ) -> (Response, Option<Message>) {
             let mut response = Response::default();
             let mut message = None;
 
-            if let Event::CursorMoved(position) = event {
-                self.mouse_position = *position;
-            }
-
-            let hovered = (bounds.contains(self.mouse_position) || self.dragging).then(|| {
-                let position = (self.mouse_position - (bounds.pos.as_dvec2() + self.padding))
-                    / self.scale
+            let hovered = (bounds.contains(ctx.cursor) || self.dragging).then(|| {
+                let position = (ctx.cursor - (bounds.pos.as_dvec2() + self.padding)) / self.scale
                     - dvec2(0.0, self.layout.bounds.height);
                 get_hovered(&self.layout, vec![], position)
             });
@@ -1344,7 +1347,7 @@ mod expression_list {
                             {
                                 if let SelectionSpan::Range(r) = span {
                                     let latex = editor::to_latex(&self.editor.walk(&path)[r]);
-                                    if let Err(e) = clipboard.set_text(latex) {
+                                    if let Err(e) = ctx.clipboard.set_text(latex) {
                                         eprintln!("failed to set clipboard contents: {e}");
                                     }
                                 }
@@ -1356,7 +1359,7 @@ mod expression_list {
                                 if let SelectionSpan::Range(r) = span {
                                     let nodes = self.editor.walk(&path);
                                     let latex = editor::to_latex(&nodes[r.clone()]);
-                                    if let Err(e) = clipboard.set_text(latex) {
+                                    if let Err(e) = ctx.clipboard.set_text(latex) {
                                         eprintln!("failed to set clipboard contents: {e}");
                                     } else {
                                         nodes.drain(r.clone());
@@ -1370,7 +1373,7 @@ mod expression_list {
                             Some('v')
                                 if self.modifiers.control_key() || self.modifiers.super_key() =>
                             {
-                                let latex = clipboard.get_text().unwrap_or_default();
+                                let latex = ctx.clipboard.get_text().unwrap_or_default();
 
                                 match parse_latex(&latex) {
                                     Ok(tree) => {
@@ -1464,7 +1467,7 @@ mod expression_list {
                     }
                 }
                 Event::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
-                Event::CursorMoved(_) if self.dragging => {
+                Event::CursorMoved if self.dragging => {
                     if let Some(hovered) = hovered {
                         self.selection.as_mut().unwrap().focus = hovered;
                     } else {
@@ -1786,12 +1789,7 @@ mod expression_list {
 
         const SEPARATOR_WIDTH: u32 = 2;
 
-        pub fn update(
-            &mut self,
-            event: &Event,
-            bounds: Bounds,
-            clipboard: &mut Clipboard,
-        ) -> Response {
+        pub fn update(&mut self, ctx: &mut Context, event: &Event, bounds: Bounds) -> Response {
             let mut response = Response::default();
             let mut y_offset = 0;
             let mut message = None;
@@ -1799,12 +1797,12 @@ mod expression_list {
             for (i, expression) in self.expressions.iter_mut().enumerate() {
                 let y_size = expression.size().y.ceil() as u32;
                 let (r, m) = expression.update(
+                    ctx,
                     event,
                     bounds.intersect(&Bounds {
                         pos: bounds.pos + uvec2(0, y_offset),
                         size: uvec2(bounds.size.x, y_size),
                     }),
-                    clipboard,
                 );
 
                 if let Some(m) = m {
@@ -2000,7 +1998,6 @@ mod graph {
 
     pub struct GraphPaper {
         viewport: Viewport,
-        cursor: DVec2,
         dragging: bool,
 
         depth_texture: wgpu::Texture,
@@ -2276,7 +2273,6 @@ mod graph {
             );
             GraphPaper {
                 viewport: Default::default(),
-                cursor: DVec2::ZERO,
                 dragging: false,
 
                 depth_texture,
@@ -2291,7 +2287,7 @@ mod graph {
             }
         }
 
-        pub fn update(&mut self, event: &Event, bounds: Bounds) -> Response {
+        pub fn update(&mut self, ctx: &Context, event: &Event, bounds: Bounds) -> Response {
             let mut response = Response::default();
 
             let to_vp = |vp: &Viewport, p: DVec2| {
@@ -2307,10 +2303,10 @@ mod graph {
             };
             let mut zoom = |amount: f64| {
                 let origin = from_vp(&self.viewport, DVec2::ZERO);
-                let p = if amount > 1.0 && (self.cursor - origin).abs().max_element() < 50.0 {
+                let p = if amount > 1.0 && (ctx.cursor - origin).abs().max_element() < 50.0 {
                     origin
                 } else {
-                    self.cursor
+                    ctx.cursor
                 };
                 let p_vp = to_vp(&self.viewport, p);
                 self.viewport.width /= amount;
@@ -2321,7 +2317,7 @@ mod graph {
 
             match event {
                 Event::MouseInput(ElementState::Pressed, MouseButton::Left)
-                    if bounds.contains(self.cursor) =>
+                    if bounds.contains(ctx.cursor) =>
                 {
                     self.dragging = true;
                     response.consume_event();
@@ -2330,22 +2326,20 @@ mod graph {
                     self.dragging = false;
                     response.consume_event();
                 }
-                Event::CursorMoved(position) => {
+                Event::CursorMoved => {
                     if self.dragging {
-                        let diff =
-                            to_vp(&self.viewport, *position) - to_vp(&self.viewport, self.cursor);
+                        let diff = to_vp(&self.viewport, ctx.cursor)
+                            - to_vp(&self.viewport, ctx.prev_cursor);
 
                         self.viewport.center -= diff;
                         response.request_redraw();
                         response.consume_event();
                     }
-
-                    self.cursor = *position;
                 }
-                Event::MouseWheel(delta) if bounds.contains(self.cursor) => {
+                Event::MouseWheel(delta) if bounds.contains(ctx.cursor) => {
                     zoom((delta.y * 0.0015).exp2());
                 }
-                Event::PinchGesture(delta) if bounds.contains(self.cursor) => {
+                Event::PinchGesture(delta) if bounds.contains(ctx.cursor) => {
                     zoom(delta.exp());
                 }
                 _ => {}

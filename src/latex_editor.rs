@@ -1,6 +1,6 @@
 use std::iter::zip;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BracketKind {
     Paren,
     Bracket,
@@ -51,8 +51,8 @@ pub mod editor {
     #[derive(Debug, PartialEq)]
     pub enum Node {
         DelimitedGroup {
-            left: BracketKind,
-            right: BracketKind,
+            left: Option<BracketKind>,
+            right: Option<BracketKind>,
             inner: Nodes,
         },
         SubSup {
@@ -106,18 +106,20 @@ pub mod editor {
 
             match node {
                 Node::DelimitedGroup { left, right, inner } => {
-                    let left = match left {
-                        BracketKind::Paren => '(',
-                        BracketKind::Bracket => '[',
-                        BracketKind::Brace => '{',
-                        BracketKind::Pipe => '|',
-                    };
-                    let right = match right {
-                        BracketKind::Paren => ')',
-                        BracketKind::Bracket => ']',
-                        BracketKind::Brace => '}',
-                        BracketKind::Pipe => '|',
-                    };
+                    let (left, right) = (
+                        match left.or(*right).unwrap() {
+                            BracketKind::Paren => '(',
+                            BracketKind::Bracket => '[',
+                            BracketKind::Brace => '{',
+                            BracketKind::Pipe => '|',
+                        },
+                        match right.or(*left).unwrap() {
+                            BracketKind::Paren => ')',
+                            BracketKind::Bracket => ']',
+                            BracketKind::Brace => '}',
+                            BracketKind::Pipe => '|',
+                        },
+                    );
                     let inner = to_latex(inner);
                     write!(l, r"\left{left}{inner}\right{right}").unwrap();
                 }
@@ -219,8 +221,8 @@ pub mod editor {
                     let [LNode::Char(left), inner @ .., LNode::Char(right)] = &nodes[..] else {
                         unreachable!();
                     };
-                    let left = BracketKind::from(*left);
-                    let right = BracketKind::from(*right);
+                    let left = Some(BracketKind::from(*left));
+                    let right = Some(BracketKind::from(*right));
                     let inner = convert(inner);
                     Node::DelimitedGroup { left, right, inner }
                 }
@@ -317,6 +319,8 @@ pub mod layout {
     const BINOP_SPACE: f64 = 0.2;
     const COMMA_SPACE: f64 = 0.2;
     const COLON_SPACE: f64 = 0.2;
+    const BRACKET_JUT: f64 = 0.072;
+    const BRACKET_PADDING: f64 = 0.072;
     const SUB_SCALE: f64 = 0.73;
     const SUP_SCALE: f64 = 0.91;
     const SUB_SUP_MIDDLE: f64 = 0.02;
@@ -419,8 +423,8 @@ pub mod layout {
     #[derive(Debug)]
     pub enum Node {
         DelimitedGroup {
-            left: BracketKind,
-            right: BracketKind,
+            left: Glyph,
+            right: Glyph,
             inner: Nodes,
         },
         SubSup {
@@ -514,7 +518,54 @@ pub mod layout {
             }
 
             let (bounds, node) = match &tree[i] {
-                ENode::DelimitedGroup { .. } => todo!(),
+                ENode::DelimitedGroup { left, right, inner } => {
+                    let left_gray = left.is_none();
+                    let right_gray = right.is_none();
+                    let (left, right) = (
+                        match left.or(*right).unwrap() {
+                            BracketKind::Paren => (Font::Size1Regular, '('),
+                            BracketKind::Bracket => (Font::Size1Regular, '['),
+                            BracketKind::Brace => (Font::Size1Regular, '{'),
+                            BracketKind::Pipe => (Font::MainRegular, '|'),
+                        },
+                        match right.or(*left).unwrap() {
+                            BracketKind::Paren => (Font::Size1Regular, ')'),
+                            BracketKind::Bracket => (Font::Size1Regular, ']'),
+                            BracketKind::Brace => (Font::Size1Regular, '}'),
+                            BracketKind::Pipe => (Font::MainRegular, '|'),
+                        },
+                    );
+                    let make_gray = |mut glyph: Glyph, gray: bool| {
+                        if gray {
+                            glyph.atlas.left += 2.0;
+                            glyph.atlas.top += 2.0;
+                            glyph.atlas.right += 2.0;
+                            glyph.atlas.bottom += 2.0;
+                        }
+                        glyph
+                    };
+                    let mut left = make_gray(get_glyph(left.0, left.1), left_gray);
+                    let mut right = make_gray(get_glyph(right.0, right.1), right_gray);
+                    let mut inner = layout_relative(inner);
+                    inner.bounds.position.x = left.advance;
+                    let top = inner.bounds.top() - BRACKET_JUT;
+                    let bottom = inner.bounds.bottom() + BRACKET_JUT;
+                    left.plane.top = top;
+                    left.plane.bottom = bottom;
+                    right.plane.top = top;
+                    right.plane.bottom = bottom;
+                    right.plane.left += inner.bounds.right();
+                    right.plane.right += inner.bounds.right();
+                    (
+                        Bounds {
+                            width: inner.bounds.right() + right.advance,
+                            height: -top + BRACKET_PADDING,
+                            depth: bottom + BRACKET_PADDING,
+                            ..Default::default()
+                        },
+                        Node::DelimitedGroup { left, right, inner },
+                    )
+                }
                 ENode::SubSup { sub, sup } => {
                     let mut bounds = Bounds::default();
                     let sub = sub.as_ref().map(|sub| {
@@ -627,11 +678,22 @@ pub mod layout {
     }
 
     fn make_absolute(nodes: &mut Nodes, position: DVec2, scale: f64) {
+        let transform = |g: &mut Glyph, position: DVec2, scale: f64| {
+            g.advance *= scale;
+            g.plane.left = position.x + scale * g.plane.left;
+            g.plane.top = position.y + scale * g.plane.top;
+            g.plane.right = position.x + scale * g.plane.right;
+            g.plane.bottom = position.y + scale * g.plane.bottom;
+        };
         let (position, scale) = nodes.bounds.transform(position, scale);
         for (bounds, node) in &mut nodes.nodes {
             let (position, scale) = bounds.transform(position, scale);
             match node {
-                Node::DelimitedGroup { .. } => todo!(),
+                Node::DelimitedGroup { left, right, inner } => {
+                    transform(left, position, scale);
+                    transform(right, position, scale);
+                    make_absolute(inner, position, scale);
+                }
                 Node::SubSup { sub, sup } => {
                     sub.as_mut().map(|sub| make_absolute(sub, position, scale));
                     sup.as_mut().map(|sup| make_absolute(sup, position, scale));
@@ -644,13 +706,7 @@ pub mod layout {
                     make_absolute(den, position, scale);
                 }
                 Node::SumProd { .. } => todo!(),
-                Node::Char(glyph) => {
-                    glyph.advance *= scale;
-                    glyph.plane.left = position.x + scale * glyph.plane.left;
-                    glyph.plane.top = position.y + scale * glyph.plane.top;
-                    glyph.plane.right = position.x + scale * glyph.plane.right;
-                    glyph.plane.bottom = position.y + scale * glyph.plane.bottom;
-                }
+                Node::Char(glyph) => transform(glyph, position, scale),
             }
         }
     }

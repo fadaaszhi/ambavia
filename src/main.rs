@@ -470,9 +470,13 @@ mod expression_list {
     use bytemuck::{Zeroable, offset_of};
     use winit::keyboard::ModifiersState;
 
-    use crate::latex_editor::{
-        editor::{self, Node as ENode, Nodes as ENodes, ends_in_operatorname},
-        layout::{self, Node as LNode, Nodes as LNodes},
+    use crate::{
+        katex_font::Glyph,
+        latex_editor::{
+            BracketKind,
+            editor::{self, Node as ENode, Nodes as ENodes, ends_in_operatorname},
+            layout::{self, Node as LNode, Nodes as LNodes},
+        },
     };
 
     use super::*;
@@ -498,6 +502,7 @@ mod expression_list {
     /// nodes. Each tuple contains the child index and which structural
     /// component to enter.
     type NodePath = Vec<(usize, NodeField)>;
+    type NodePathSlice<'a> = &'a [(usize, NodeField)];
 
     /// Represents a cursor position within an expression tree. The cursor sits
     /// between nodes.
@@ -604,11 +609,11 @@ mod expression_list {
     }
 
     trait Walkable {
-        fn walk(self, path: &NodePath) -> Self;
+        fn walk(self, path: NodePathSlice) -> Self;
     }
 
     impl Walkable for &mut ENodes {
-        fn walk(self, path: &NodePath) -> Self {
+        fn walk(self, path: NodePathSlice) -> Self {
             let mut nodes = self;
             for (index, field) in path {
                 use ENode::*;
@@ -632,7 +637,7 @@ mod expression_list {
     }
 
     impl Walkable for &LNodes {
-        fn walk(self, path: &NodePath) -> Self {
+        fn walk(self, path: NodePathSlice) -> Self {
             let mut nodes = self;
             for (index, field) in path {
                 use LNode::*;
@@ -786,6 +791,40 @@ mod expression_list {
         }
     }
 
+    fn close_parentheses(nodes: &mut ENodes, close_all: bool) {
+        let n = nodes.len();
+        for (i, node) in nodes.iter_mut().enumerate() {
+            match node {
+                ENode::DelimitedGroup { left, right, inner } => {
+                    if left.is_none() && (i != 0 || close_all) {
+                        *left = *right;
+                    }
+                    if right.is_none() && (i != n - 1 || close_all) {
+                        *right = *left;
+                    }
+                    close_parentheses(inner, close_all);
+                }
+                ENode::SubSup { sub, sup } => {
+                    sub.as_mut().map(|sub| close_parentheses(sub, close_all));
+                    sup.as_mut().map(|sup| close_parentheses(sup, close_all));
+                }
+                ENode::Sqrt { root, arg } => {
+                    root.as_mut().map(|root| close_parentheses(root, close_all));
+                    close_parentheses(arg, close_all);
+                }
+                ENode::Frac { num, den } => {
+                    close_parentheses(num, close_all);
+                    close_parentheses(den, close_all);
+                }
+                ENode::SumProd { sub, sup, .. } => {
+                    close_parentheses(sub, close_all);
+                    close_parentheses(sup, close_all);
+                }
+                ENode::Char(_) => {}
+            }
+        }
+    }
+
     struct Expression {
         latex: String,
         editor: ENodes,
@@ -834,7 +873,19 @@ mod expression_list {
                 }
 
                 match node {
-                    LNode::DelimitedGroup { .. } => todo!(),
+                    LNode::DelimitedGroup { inner, .. } => {
+                        if position.x < (bounds.left() + inner.bounds.left()) / 2.0 {
+                            break 'index i;
+                        }
+
+                        if position.x >= (inner.bounds.right() + bounds.right()) / 2.0 {
+                            break 'index i + 1;
+                        }
+
+                        path.push((i, Nf::DelimitedGroup));
+                        nodes = inner;
+                        continue 'index;
+                    }
                     LNode::SubSup { sub, sup } => {
                         if position.x < bounds.left() {
                             break 'index i;
@@ -1035,6 +1086,8 @@ mod expression_list {
             let mut response = Response::default();
             if self.selection.is_some() {
                 self.selection = None;
+                close_parentheses(&mut self.editor, true);
+                self.layout = layout::layout(&self.editor);
                 response.request_redraw();
             }
             response
@@ -1065,12 +1118,11 @@ mod expression_list {
                 * (dvec2(1.0, 2.0) * self.padding + self.scale * dvec2(b.width, b.height + b.depth))
         }
 
-        /// This function removes consecutive `SubSup`s, updates
-        /// `self.selection`, `self.latex` and `self.layout`.
         fn editor_updated(&mut self, cursor: impl Into<Cursor>) {
             let mut cursor = cursor.into();
             join_consecutive_scripts(&mut self.editor, Some((&mut cursor, 0)));
             self.set_cursor(cursor);
+            close_parentheses(&mut self.editor, false);
             self.latex = editor::to_latex(&self.editor);
             self.layout = layout::layout(&self.editor);
         }
@@ -1148,7 +1200,11 @@ mod expression_list {
                                         if i > 0 {
                                             i -= 1;
                                             match &self.editor.walk(&path)[i] {
-                                                DelimitedGroup { .. } => todo!(),
+                                                DelimitedGroup { inner, .. } => {
+                                                    path.push((i, Nf::DelimitedGroup));
+                                                    let index = inner.len();
+                                                    self.set_cursor((path, index));
+                                                }
                                                 SubSup { sup: Some(sup), .. } => {
                                                     path.push((i, Nf::SubSupSup));
                                                     let index = sup.len();
@@ -1167,10 +1223,10 @@ mod expression_list {
                                             }
                                         } else if let Some((index, field)) = path.pop() {
                                             match field {
-                                                Nf::DelimitedGroup => todo!(),
                                                 Nf::SqrtRoot => todo!(),
                                                 Nf::SqrtArg => todo!(),
-                                                Nf::SubSupSub
+                                                Nf::DelimitedGroup
+                                                | Nf::SubSupSub
                                                 | Nf::SubSupSup
                                                 | Nf::FracNum
                                                 | Nf::FracDen => {
@@ -1217,7 +1273,10 @@ mod expression_list {
                                         let nodes = self.editor.walk(&path);
                                         if i < nodes.len() {
                                             match &nodes[i] {
-                                                DelimitedGroup { .. } => todo!(),
+                                                DelimitedGroup { .. } => {
+                                                    path.push((i, Nf::DelimitedGroup));
+                                                    self.set_cursor((path, 0));
+                                                }
                                                 SubSup { sup: Some(_), .. } => {
                                                     path.push((i, Nf::SubSupSup));
                                                     self.set_cursor((path, 0));
@@ -1234,10 +1293,10 @@ mod expression_list {
                                             }
                                         } else if let Some((index, field)) = path.pop() {
                                             match field {
-                                                Nf::DelimitedGroup => todo!(),
                                                 Nf::SqrtRoot => todo!(),
                                                 Nf::SqrtArg => todo!(),
-                                                Nf::SubSupSub
+                                                Nf::DelimitedGroup
+                                                | Nf::SubSupSub
                                                 | Nf::SubSupSup
                                                 | Nf::FracNum
                                                 | Nf::FracDen => {
@@ -1282,7 +1341,7 @@ mod expression_list {
                                     let nodes = self.editor.walk(&path);
                                     if i < nodes.len() {
                                         match nodes[i] {
-                                            DelimitedGroup { .. } => todo!(),
+                                            DelimitedGroup { .. } => {}
                                             SubSup { sub: Some(_), .. } => {
                                                 path.push((i, Nf::SubSupSub));
                                                 self.set_cursor((path, 0));
@@ -1302,7 +1361,7 @@ mod expression_list {
 
                                     if i > 0 {
                                         match &nodes[i - 1] {
-                                            DelimitedGroup { .. } => todo!(),
+                                            DelimitedGroup { .. } => {}
                                             SubSup { sub: Some(sub), .. } => {
                                                 path.push((i - 1, Nf::SubSupSub));
                                                 let index = sub.len();
@@ -1331,7 +1390,7 @@ mod expression_list {
                                     loop {
                                         if let Some((index, field)) = path.pop() {
                                             match field {
-                                                Nf::DelimitedGroup => todo!(),
+                                                Nf::DelimitedGroup => {}
                                                 Nf::SubSupSub => {}
                                                 Nf::SubSupSup => {
                                                     let SubSup { sub, .. } =
@@ -1401,7 +1460,7 @@ mod expression_list {
                                     let nodes = self.editor.walk(&path);
                                     if i < nodes.len() {
                                         match nodes[i] {
-                                            DelimitedGroup { .. } => todo!(),
+                                            DelimitedGroup { .. } => {}
                                             SubSup { sup: Some(_), .. } => {
                                                 path.push((i, Nf::SubSupSup));
                                                 self.set_cursor((path, 0));
@@ -1421,7 +1480,7 @@ mod expression_list {
 
                                     if i > 0 {
                                         match &nodes[i - 1] {
-                                            DelimitedGroup { .. } => todo!(),
+                                            DelimitedGroup { .. } => {}
                                             SubSup { sup: Some(sup), .. } => {
                                                 path.push((i - 1, Nf::SubSupSup));
                                                 let index = sup.len();
@@ -1450,7 +1509,7 @@ mod expression_list {
                                     loop {
                                         if let Some((index, field)) = path.pop() {
                                             match field {
-                                                Nf::DelimitedGroup => todo!(),
+                                                Nf::DelimitedGroup => {}
                                                 Nf::SubSupSub => {
                                                     let SubSup { sup, .. } =
                                                         &self.editor.walk(&path)[index]
@@ -1499,7 +1558,31 @@ mod expression_list {
                                     if i > 0 {
                                         i -= 1;
                                         match &mut nodes[i] {
-                                            DelimitedGroup { .. } => todo!(),
+                                            DelimitedGroup { left, .. } => {
+                                                if left.is_none() {
+                                                    let DelimitedGroup { inner, .. } =
+                                                        nodes.remove(i)
+                                                    else {
+                                                        unreachable!()
+                                                    };
+                                                    let index = i + inner.len();
+                                                    nodes.splice(i..i, inner);
+                                                    self.editor_updated((path, index));
+                                                } else {
+                                                    let rest =
+                                                        nodes.drain(i + 1..).collect::<Vec<_>>();
+                                                    let DelimitedGroup { right, inner, .. } =
+                                                        &mut nodes[i]
+                                                    else {
+                                                        unreachable!()
+                                                    };
+                                                    let index = inner.len();
+                                                    inner.extend(rest);
+                                                    *right = None;
+                                                    path.push((i, Nf::DelimitedGroup));
+                                                    self.editor_updated((path, index));
+                                                }
+                                            }
                                             SubSup { sup: Some(sup), .. } => {
                                                 path.push((i, Nf::SubSupSup));
                                                 let index = sup.len();
@@ -1526,7 +1609,21 @@ mod expression_list {
                                     } else if let Some((index, field)) = path.pop() {
                                         let nodes = self.editor.walk(&path);
                                         match field {
-                                            Nf::DelimitedGroup => todo!(),
+                                            Nf::DelimitedGroup => {
+                                                if let DelimitedGroup { left: None, .. } =
+                                                    &nodes[index]
+                                                {
+                                                    self.set_cursor((path, index));
+                                                } else {
+                                                    let DelimitedGroup { inner, .. } =
+                                                        nodes.remove(index)
+                                                    else {
+                                                        unreachable!()
+                                                    };
+                                                    nodes.splice(index..index, inner);
+                                                    self.editor_updated((path, index));
+                                                }
+                                            }
                                             Nf::SubSupSub => {
                                                 let SubSup {
                                                     sub: Some(sub),
@@ -1604,7 +1701,30 @@ mod expression_list {
                                     let nodes = self.editor.walk(&path);
                                     if i < nodes.len() {
                                         match &nodes[i] {
-                                            DelimitedGroup { .. } => todo!(),
+                                            DelimitedGroup { right, .. } => {
+                                                if right.is_none() {
+                                                    let DelimitedGroup { inner, .. } =
+                                                        nodes.remove(i)
+                                                    else {
+                                                        unreachable!()
+                                                    };
+                                                    nodes.splice(i..i, inner);
+                                                    self.editor_updated((path, i));
+                                                } else {
+                                                    let mut rest =
+                                                        nodes.drain(0..i).collect::<Vec<_>>();
+                                                    let DelimitedGroup { left, inner, .. } =
+                                                        &mut nodes[0]
+                                                    else {
+                                                        unreachable!()
+                                                    };
+                                                    std::mem::swap(&mut rest, inner);
+                                                    inner.extend(rest);
+                                                    *left = None;
+                                                    path.push((0, Nf::DelimitedGroup));
+                                                    self.editor_updated((path, i));
+                                                }
+                                            }
                                             SubSup { sub: Some(_), .. } => {
                                                 path.push((i, Nf::SubSupSub));
                                                 self.set_cursor((path, 0));
@@ -1628,7 +1748,22 @@ mod expression_list {
                                     } else if let Some((index, field)) = path.pop() {
                                         let nodes = self.editor.walk(&path);
                                         match field {
-                                            Nf::DelimitedGroup => todo!(),
+                                            Nf::DelimitedGroup => {
+                                                if let DelimitedGroup { right: None, .. } =
+                                                    &nodes[index]
+                                                {
+                                                    self.set_cursor((path, index + 1));
+                                                } else {
+                                                    let DelimitedGroup { inner, .. } =
+                                                        nodes.remove(index)
+                                                    else {
+                                                        unreachable!()
+                                                    };
+                                                    let i = index + inner.len();
+                                                    nodes.splice(index..index, inner);
+                                                    self.editor_updated((path, i));
+                                                }
+                                            }
                                             Nf::SubSupSub => {
                                                 let SubSup {
                                                     sub: Some(sub),
@@ -1763,6 +1898,204 @@ mod expression_list {
                                 }
                                 response.consume_event();
                             }
+                            Some(b @ ('(' | '[' | '{')) => {
+                                let b = Some(BracketKind::from(b));
+                                match span {
+                                    SelectionSpan::Cursor(i) => {
+                                        let nodes = self.editor.walk(&path);
+                                        if let Some(DelimitedGroup {
+                                            left: left @ None,
+                                            right,
+                                            ..
+                                        }) = nodes.get_mut(i)
+                                            && *right == b
+                                        {
+                                            *left = b;
+                                            path.push((i, Nf::DelimitedGroup));
+                                        } else if let Some((index, Nf::DelimitedGroup)) =
+                                            path.last().cloned()
+                                            && let nodes =
+                                                self.editor.walk(&path[0..path.len() - 1])
+                                            && let DelimitedGroup {
+                                                left: left @ None,
+                                                right,
+                                                inner,
+                                            } = &mut nodes[index]
+                                            && *right == b
+                                        {
+                                            *left = b;
+                                            let rest = inner.drain(..i).collect::<Vec<_>>();
+                                            nodes.splice(index..index, rest);
+                                            path.last_mut().unwrap().0 += i;
+                                        } else {
+                                            let nodes = self.editor.walk(&path);
+                                            let inner = nodes.drain(i..).collect();
+                                            nodes.push(DelimitedGroup {
+                                                left: b,
+                                                right: None,
+                                                inner,
+                                            });
+                                            path.push((i, Nf::DelimitedGroup));
+                                        }
+                                        self.editor_updated((path, 0));
+                                    }
+                                    SelectionSpan::Range(r) => {
+                                        let nodes = self.editor.walk(&path);
+                                        let inner = nodes.drain(r.clone()).collect();
+                                        nodes.insert(
+                                            r.start,
+                                            DelimitedGroup {
+                                                left: b,
+                                                right: b,
+                                                inner,
+                                            },
+                                        );
+                                        path.push((r.start, Nf::DelimitedGroup));
+                                        self.editor_updated((path, 0));
+                                    }
+                                }
+                                response.request_redraw();
+                                response.consume_event();
+                            }
+                            Some(b @ (')' | ']' | '}')) => {
+                                let b = Some(BracketKind::from(b));
+                                match span {
+                                    SelectionSpan::Cursor(i) => {
+                                        if i > 0
+                                            && let nodes = self.editor.walk(&path)
+                                            && let DelimitedGroup {
+                                                left,
+                                                right: right @ None,
+                                                ..
+                                            } = &mut nodes[i - 1]
+                                            && *left == b
+                                        {
+                                            *right = b;
+                                            self.editor_updated((path, i));
+                                        } else if let Some((index, Nf::DelimitedGroup)) =
+                                            path.last().cloned()
+                                            && let nodes =
+                                                self.editor.walk(&path[0..path.len() - 1])
+                                            && let DelimitedGroup {
+                                                left,
+                                                right: right @ None,
+                                                inner,
+                                            } = &mut nodes[index]
+                                            && *left == b
+                                        {
+                                            *right = b;
+                                            let rest = inner.drain(i..).collect::<Vec<_>>();
+                                            path.pop();
+                                            nodes.splice(index + 1..index + 1, rest);
+                                            self.editor_updated((path, index + 1));
+                                        } else {
+                                            let nodes = self.editor.walk(&path);
+                                            let inner = nodes.drain(..i).collect::<Vec<_>>();
+                                            nodes.insert(
+                                                0,
+                                                DelimitedGroup {
+                                                    left: None,
+                                                    right: b,
+                                                    inner,
+                                                },
+                                            );
+                                            self.editor_updated((path, 1));
+                                        }
+                                    }
+                                    SelectionSpan::Range(r) => {
+                                        let nodes = self.editor.walk(&path);
+                                        let inner = nodes.drain(r.clone()).collect::<Vec<_>>();
+                                        nodes.insert(
+                                            r.start,
+                                            DelimitedGroup {
+                                                left: b,
+                                                right: b,
+                                                inner,
+                                            },
+                                        );
+                                        self.editor_updated((path, r.start + 1));
+                                    }
+                                }
+                                response.request_redraw();
+                                response.consume_event();
+                            }
+                            Some('|') => {
+                                let b = Some(BracketKind::Pipe);
+                                match span {
+                                    SelectionSpan::Cursor(i) => {
+                                        let nodes = self.editor.walk(&path);
+                                        if let Some(DelimitedGroup {
+                                            left: left @ None,
+                                            right,
+                                            ..
+                                        }) = nodes.get_mut(i)
+                                            && *right == b
+                                        {
+                                            *left = b;
+                                            path.push((i, Nf::DelimitedGroup));
+                                            self.editor_updated((path, 0));
+                                        } else if i > 0
+                                            && let Some(DelimitedGroup {
+                                                left,
+                                                right: right @ None,
+                                                ..
+                                            }) = nodes.get_mut(i - 1)
+                                            && *left == b
+                                        {
+                                            *right = b;
+                                            self.editor_updated((path, i));
+                                        } else if let Some((index, Nf::DelimitedGroup)) =
+                                            path.last().cloned()
+                                            && let nodes =
+                                                self.editor.walk(&path[0..path.len() - 1])
+                                            && let DelimitedGroup { left, right, inner } =
+                                                &mut nodes[index]
+                                            && (left.is_none() && *right == b
+                                                || *left == b && right.is_none())
+                                        {
+                                            if left.is_none() {
+                                                *left = b;
+                                                let rest = inner.drain(..i).collect::<Vec<_>>();
+                                                nodes.splice(index..index, rest);
+                                                path.last_mut().unwrap().0 += i;
+                                                self.editor_updated((path, 0));
+                                            } else {
+                                                *right = b;
+                                                let rest = inner.drain(i..).collect::<Vec<_>>();
+                                                path.pop();
+                                                nodes.splice(index + 1..index + 1, rest);
+                                                self.editor_updated((path, index + 1));
+                                            }
+                                        } else {
+                                            let nodes = self.editor.walk(&path);
+                                            let inner = nodes.drain(i..).collect();
+                                            nodes.push(DelimitedGroup {
+                                                left: b,
+                                                right: None,
+                                                inner,
+                                            });
+                                            path.push((i, Nf::DelimitedGroup));
+                                            self.editor_updated((path, 0));
+                                        }
+                                    }
+                                    SelectionSpan::Range(r) => {
+                                        let nodes = self.editor.walk(&path);
+                                        let inner = nodes.drain(r.clone()).collect();
+                                        nodes.insert(
+                                            r.start,
+                                            DelimitedGroup {
+                                                left: b,
+                                                right: b,
+                                                inner,
+                                            },
+                                        );
+                                        path.push((r.start, Nf::DelimitedGroup));
+                                        self.editor_updated((path, 0));
+                                    }
+                                }
+                                response.request_redraw();
+                                response.consume_event();
+                            }
                             Some('_') => {
                                 let nodes = self.editor.walk(&path);
                                 let r = span.as_range();
@@ -1893,8 +2226,7 @@ mod expression_list {
                         response.consume_event();
                         response.request_redraw();
                     } else if self.selection.is_some() {
-                        self.selection = None;
-                        response.request_redraw();
+                        response = response.or(self.unfocus());
                     }
                 }
                 Event::MouseInput(ElementState::Released, MouseButton::Left) if self.dragging => {
@@ -2001,6 +2333,18 @@ mod expression_list {
         }
     }
 
+    fn draw_glyph(
+        glyph: &Glyph,
+        transform: &impl Fn(DVec2) -> DVec2,
+        draw_quad: &mut impl FnMut(DVec2, DVec2, DVec2, DVec2),
+    ) {
+        let p0 = transform(dvec2(glyph.plane.left, glyph.plane.top));
+        let p1 = transform(dvec2(glyph.plane.right, glyph.plane.bottom));
+        let uv0 = dvec2(glyph.atlas.left, glyph.atlas.top);
+        let uv1 = dvec2(glyph.atlas.right, glyph.atlas.bottom);
+        draw_quad(p0, p1, uv0, uv1);
+    }
+
     fn draw_latex(
         ctx: &Context,
         nodes: &LNodes,
@@ -2009,7 +2353,11 @@ mod expression_list {
     ) {
         for (_, node) in &nodes.nodes {
             match node {
-                LNode::DelimitedGroup { .. } => todo!(),
+                LNode::DelimitedGroup { left, right, inner } => {
+                    draw_glyph(left, transform, draw_quad);
+                    draw_latex(ctx, inner, transform, draw_quad);
+                    draw_glyph(right, transform, draw_quad);
+                }
                 LNode::SubSup { sub, sup } => {
                     sub.as_ref()
                         .map(|sub| draw_latex(ctx, sub, transform, draw_quad));
@@ -2032,13 +2380,7 @@ mod expression_list {
                     draw_latex(ctx, den, transform, draw_quad);
                 }
                 LNode::SumProd { .. } => todo!(),
-                LNode::Char(g) => {
-                    let p0 = transform(dvec2(g.plane.left, g.plane.top));
-                    let p1 = transform(dvec2(g.plane.right, g.plane.bottom));
-                    let uv0 = dvec2(g.atlas.left, g.atlas.top);
-                    let uv1 = dvec2(g.atlas.right, g.atlas.bottom);
-                    draw_quad(p0, p1, uv0, uv1);
-                }
+                LNode::Char(g) => draw_glyph(g, transform, draw_quad),
             }
         }
     }
@@ -2204,8 +2546,12 @@ mod expression_list {
 
             Self {
                 // expressions: vec![Expression::from_latex(r"\frac{a}{\frac{b}{c}+\alpha\operatorname{count}\frac{\frac{4}{7}}{\frac{4}{\frac{4}{4}}}}+\frac{\sin\frac{5}{6}}{6}").unwrap()],
+                // expressions: vec![Expression::from_latex(
+                //     r"p_{11}^{4}+6_{\frac{3}{\frac{4}{5}}}^{\frac{4}{\frac{4}{\frac{4}{4}}}}+lkjdsf_{kljf}+alskdfj^{kljasdf}+asdf",
+                // )
+                // .unwrap()],
                 expressions: vec![Expression::from_latex(
-                    r"p_{11}^{4}+6_{\frac{3}{\frac{4}{5}}}^{\frac{4}{\frac{4}{\frac{4}{4}}}}+lkjdsf_{kljf}+alskdfj^{kljasdf}+asdf",
+                    r"\left|\left|d\right|+\frac{\left|4\right|}{\left|\left(\left|\left(\left|f\right|\right)\right|\right)\right|}\right|",
                 )
                 .unwrap()],
 

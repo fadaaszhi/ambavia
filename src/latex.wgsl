@@ -36,7 +36,9 @@ fn fs_latex(in: VertexOutput) -> @location(0) vec4f {
     let unit_range = 4.0 / vec2f(textureDimensions(msdf, 0));
     let screen_tex_size = 1.0 / fwidth(in.uv);
     let screen_px_range = max(0.5 * dot(unit_range, screen_tex_size), 1.0);
-    let msd = textureSample(msdf, bilinear, in.uv).rgb;
+    let gray = in.uv.x > 1.5;
+    let uv = select(in.uv, in.uv - 2.0, gray);
+    let msd = textureSample(msdf, bilinear, uv).rgb;
 
     if all(in.uv == vec2(-1.0)) {
         // Cursor
@@ -56,5 +58,5 @@ fn fs_latex(in: VertexOutput) -> @location(0) vec4f {
     let sd = median(msd.r, msd.g, msd.b);
     let screen_px_distance = screen_px_range * (sd - 0.5);
     let opacity = saturate(screen_px_distance + 0.5);
-    return vec4(0.0, 0.0, 0.0, opacity);
+    return vec4(0.0, 0.0, 0.0, select(1.0, 0.2, gray) * opacity);
 }

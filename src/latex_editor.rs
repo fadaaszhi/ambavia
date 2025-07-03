@@ -21,9 +21,21 @@ impl From<char> for BracketKind {
 }
 
 #[derive(Debug, PartialEq)]
-pub enum SumProdKind {
+pub enum SumProdIntKind {
     Sum,
     Prod,
+    Int,
+}
+
+impl From<&str> for SumProdIntKind {
+    fn from(value: &str) -> Self {
+        match value {
+            "sum" => SumProdIntKind::Sum,
+            "prod" => SumProdIntKind::Prod,
+            "int" => SumProdIntKind::Int,
+            _ => panic!("{value:?} is not \"sum\", \"prod\" or \"int\""),
+        }
+    }
 }
 
 // Reverse alphabetical order makes it so "tan" doesn't stop "tanh" from being chosen.
@@ -67,8 +79,8 @@ pub mod editor {
             num: Nodes,
             den: Nodes,
         },
-        SumProd {
-            kind: SumProdKind,
+        SumProdInt {
+            kind: SumProdIntKind,
             sub: Nodes,
             sup: Nodes,
         },
@@ -141,10 +153,11 @@ pub mod editor {
                 Node::Frac { num, den } => {
                     write!(l, r"\frac{{{}}}{{{}}}", to_latex(num), to_latex(den)).unwrap();
                 }
-                Node::SumProd { kind, sub, sup } => {
+                Node::SumProdInt { kind, sub, sup } => {
                     let kind = match kind {
-                        SumProdKind::Sum => r"sum",
-                        SumProdKind::Prod => r"prod",
+                        SumProdIntKind::Sum => r"sum",
+                        SumProdIntKind::Prod => r"prod",
+                        SumProdIntKind::Int => r"int",
                     };
                     write!(l, r"\{kind}_{{{}}}^{{{}}}", to_latex(sub), to_latex(sup)).unwrap();
                 }
@@ -215,7 +228,8 @@ pub mod editor {
 
     pub fn convert(tree: &[LNode]) -> Nodes {
         let mut nodes = vec![];
-        for node in tree {
+        let mut tree = tree.iter().peekable();
+        while let Some(node) = tree.next() {
             let node = match node {
                 LNode::DelimitedGroup(nodes) => {
                     let [LNode::Char(left), inner @ .., LNode::Char(right)] = &nodes[..] else {
@@ -241,6 +255,19 @@ pub mod editor {
                 LNode::Operatorname(inner) => {
                     nodes.append(&mut convert(inner));
                     continue;
+                }
+                LNode::CtrlSeq(kind @ ("sum" | "prod" | "int")) => {
+                    let (sub, sup) = if let Some(LNode::SubSup { sub, sup }) = tree.peek() {
+                        tree.next();
+                        (sub.as_ref(), sup.as_ref())
+                    } else {
+                        (None, None)
+                    };
+                    Node::SumProdInt {
+                        kind: (*kind).into(),
+                        sub: sub.map_or(vec![], |sub| convert(sub)),
+                        sup: sup.map_or(vec![], |sup| convert(sup)),
+                    }
                 }
                 LNode::CtrlSeq(seq) => Node::Char(match *seq {
                     " " => ' ',
@@ -338,6 +365,17 @@ pub mod layout {
     const FRAC_SIDE_PADDING: f64 = 0.18;
     const FRAC_TOP_PADDING: f64 = 0.0;
     const FRAC_BOTTOM_PADDING: f64 = 0.09;
+    const SUM_PROD_PADDING: f64 = 0.193;
+    const SUM_PROD_GLYPH_SCALE: f64 = 1.2;
+    const SUM_PROD_GLYPH_OFFSET_Y: f64 = -0.1;
+    const SUM_PROD_SUB_SUP_SCALE: f64 = 0.8;
+    const SUM_PROD_SUB_OFFSET: f64 = 0.152;
+    const SUM_PROD_SUP_OFFSET: f64 = 0.144;
+    const INT_SUB_SUP_SCALE: f64 = 0.8;
+    const INT_MIDDLE: f64 = 0.55;
+    const INT_SUB_POSITION: DVec2 = dvec2(0.55, 0.98);
+    const INT_SUP_POSITION: DVec2 = dvec2(1.04, -1.0);
+    const INT_RIGHT_PADDING: f64 = 0.1;
     const CHAR_CENTER: f64 = -0.249;
     const CHAR_HEIGHT: f64 = 0.526;
     const CHAR_DEPTH: f64 = 0.462;
@@ -451,8 +489,8 @@ pub mod layout {
             num: Nodes,
             den: Nodes,
         },
-        SumProd {
-            kind: SumProdKind,
+        SumProdInt {
+            glyph: Glyph,
             sub: Nodes,
             sup: Nodes,
         },
@@ -462,17 +500,6 @@ pub mod layout {
     fn layout_relative(tree: &[ENode]) -> Nodes {
         let mut nodes = Nodes::default();
         let mut i = 0;
-
-        fn expand_if_empty(mut nodes: Nodes) -> Nodes {
-            if nodes.nodes.is_empty() {
-                nodes.bounds = Bounds {
-                    width: EMPTY_WIDTH,
-                    ..Default::default()
-                };
-                nodes.gray = true;
-            }
-            nodes
-        }
 
         'outer: while i < tree.len() {
             for &name in OPERATORNAMES {
@@ -492,7 +519,7 @@ pub mod layout {
                                 ENode::SubSup { .. } => true,
                                 ENode::Sqrt { .. } => true,
                                 ENode::Frac { .. } => true,
-                                ENode::SumProd { .. } => false,
+                                ENode::SumProdInt { .. } => false,
                                 ENode::Char(
                                     '.' | '+' | '-' | '*' | '=' | '<' | '>' | ',' | ':' | '×' | '÷'
                                     | '→' | '⋅',
@@ -512,7 +539,7 @@ pub mod layout {
                                 ENode::SubSup { .. } => false,
                                 ENode::Sqrt { .. } => true,
                                 ENode::Frac { .. } => true,
-                                ENode::SumProd { .. } => false,
+                                ENode::SumProdInt { .. } => false,
                                 ENode::Char(
                                     '.' | '+' | '-' | '*' | '=' | '<' | '>' | ',' | ':' | '×' | '÷'
                                     | '→' | '⋅',
@@ -568,7 +595,7 @@ pub mod layout {
                     };
                     let mut left = make_gray(get_glyph(left.0, left.1), left_gray);
                     let mut right = make_gray(get_glyph(right.0, right.1), right_gray);
-                    let mut inner = expand_if_empty(layout_relative(inner));
+                    let mut inner = layout_relative(inner);
                     inner.gray = false;
                     inner.bounds.position.x = left.advance;
                     let top = inner.bounds.top() - BRACKET_JUT;
@@ -592,14 +619,14 @@ pub mod layout {
                 ENode::SubSup { sub, sup } => {
                     let mut bounds = Bounds::default();
                     let sub = sub.as_ref().map(|sub| {
-                        let mut sub = expand_if_empty(layout_relative(sub));
+                        let mut sub = layout_relative(sub);
                         sub.bounds.scale(SUB_SCALE);
                         sub.bounds.position.y = SUB_SUP_MIDDLE + sub.bounds.height;
                         bounds.union(&sub.bounds);
                         sub
                     });
                     let sup = sup.as_ref().map(|sup| {
-                        let mut sup = expand_if_empty(layout_relative(sup));
+                        let mut sup = layout_relative(sup);
                         sup.bounds.scale(SUP_SCALE);
                         sup.bounds.position.y = SUB_SUP_MIDDLE - sup.bounds.depth;
                         bounds.union(&sup.bounds);
@@ -609,10 +636,10 @@ pub mod layout {
                 }
                 ENode::Sqrt { root, arg } => {
                     let mut bounds = Bounds::default();
-                    let mut arg = expand_if_empty(layout_relative(arg));
+                    let mut arg = layout_relative(arg);
                     let mut radical = get_glyph(Font::Size1Regular, '√');
                     let root = root.as_ref().map(|root| {
-                        let mut root = expand_if_empty(layout_relative(root));
+                        let mut root = layout_relative(root);
                         root.bounds.scale(SQRT_ROOT_SCALE);
                         root.bounds.position.y = SQRT_ROOT_MIDDLE;
                         let offset =
@@ -651,8 +678,8 @@ pub mod layout {
                     )
                 }
                 ENode::Frac { num, den } => {
-                    let mut num = expand_if_empty(layout_relative(num));
-                    let mut den = expand_if_empty(layout_relative(den));
+                    let mut num = layout_relative(num);
+                    let mut den = layout_relative(den);
                     num.bounds.scale(FRAC_SCALE);
                     den.bounds.scale(FRAC_SCALE);
                     let max_width = num.bounds.width.max(den.bounds.width);
@@ -682,7 +709,62 @@ pub mod layout {
                     );
                     (bounds, Node::Frac { line, num, den })
                 }
-                ENode::SumProd { .. } => todo!(),
+                ENode::SumProdInt { kind, sub, sup } => {
+                    let c = match kind {
+                        SumProdIntKind::Sum => '∑',
+                        SumProdIntKind::Prod => '∏',
+                        SumProdIntKind::Int => '∫',
+                    };
+                    let mut glyph = get_glyph(Font::Size2Regular, c);
+                    glyph.plane.top -= CHAR_CENTER;
+                    glyph.plane.bottom -= CHAR_CENTER;
+                    let mut sub = layout_relative(sub);
+                    let mut sup = layout_relative(sup);
+                    let bounds = if kind == &SumProdIntKind::Int {
+                        sub.bounds.scale(INT_SUB_SUP_SCALE);
+                        sup.bounds.scale(INT_SUB_SUP_SCALE);
+                        sub.bounds.position = INT_SUB_POSITION;
+                        sup.bounds.position = INT_SUP_POSITION;
+                        sub.bounds.position.y =
+                            sub.bounds.position.y.max(INT_MIDDLE + sub.bounds.height);
+                        sup.bounds.position.y =
+                            sup.bounds.position.y.min(INT_MIDDLE - sup.bounds.depth);
+                        Bounds {
+                            width: sub.bounds.right().max(sup.bounds.right()) + INT_RIGHT_PADDING,
+                            height: -sup.bounds.top(),
+                            depth: sub.bounds.bottom(),
+                            ..Default::default()
+                        }
+                    } else {
+                        glyph.plane.left *= SUM_PROD_GLYPH_SCALE;
+                        glyph.plane.top *= SUM_PROD_GLYPH_SCALE;
+                        glyph.plane.right *= SUM_PROD_GLYPH_SCALE;
+                        glyph.plane.bottom *= SUM_PROD_GLYPH_SCALE;
+                        glyph.advance *= SUM_PROD_GLYPH_SCALE;
+                        glyph.plane.top += SUM_PROD_GLYPH_OFFSET_Y;
+                        glyph.plane.bottom += SUM_PROD_GLYPH_OFFSET_Y;
+                        sub.bounds.scale(SUM_PROD_SUB_SUP_SCALE);
+                        sup.bounds.scale(SUM_PROD_SUB_SUP_SCALE);
+                        let width = glyph
+                            .advance
+                            .max(sub.bounds.width.max(sup.bounds.width) + 2.0 * SUM_PROD_PADDING);
+                        glyph.plane.left += (width - glyph.advance) / 2.0;
+                        glyph.plane.right += (width - glyph.advance) / 2.0;
+                        sub.bounds.position.x = (width - sub.bounds.width) / 2.0;
+                        sup.bounds.position.x = (width - sup.bounds.width) / 2.0;
+                        sub.bounds.position.y =
+                            glyph.plane.bottom + SUM_PROD_SUB_OFFSET + sub.bounds.height;
+                        sup.bounds.position.y =
+                            glyph.plane.top - SUM_PROD_SUP_OFFSET - sup.bounds.depth;
+                        Bounds {
+                            width,
+                            height: -sup.bounds.top() + SUM_PROD_PADDING,
+                            depth: sub.bounds.bottom() + SUM_PROD_PADDING,
+                            ..Default::default()
+                        }
+                    };
+                    (bounds, Node::SumProdInt { glyph, sub, sup })
+                }
                 ENode::Char(c) => {
                     let (space_before, space_after) = match *c {
                         '+' | '-'
@@ -751,6 +833,15 @@ pub mod layout {
 
             i += 1;
         }
+
+        if nodes.nodes.is_empty() {
+            nodes.bounds = Bounds {
+                width: EMPTY_WIDTH,
+                ..Default::default()
+            };
+            nodes.gray = true;
+        }
+
         nodes
     }
 
@@ -801,7 +892,11 @@ pub mod layout {
                     make_absolute(num, position, scale);
                     make_absolute(den, position, scale);
                 }
-                Node::SumProd { .. } => todo!(),
+                Node::SumProdInt { glyph, sub, sup } => {
+                    transform_glyph(glyph, position, scale);
+                    make_absolute(sub, position, scale);
+                    make_absolute(sup, position, scale);
+                }
                 Node::Char(glyph) => transform_glyph(glyph, position, scale),
             }
         }
@@ -809,6 +904,7 @@ pub mod layout {
 
     pub fn layout(tree: &[ENode]) -> Nodes {
         let mut nodes = layout_relative(tree);
+        nodes.gray = false;
         make_absolute(&mut nodes, DVec2::ZERO, 1.0);
         nodes
     }

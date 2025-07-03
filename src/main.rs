@@ -492,8 +492,8 @@ mod expression_list {
         SqrtArg,
         FracNum,
         FracDen,
-        SumProdSub,
-        SumProdSup,
+        SumProdIntSub,
+        SumProdIntSup,
     }
 
     use NodeField as Nf;
@@ -625,8 +625,8 @@ mod expression_list {
                     (Sqrt { arg, .. }, Nf::SqrtArg) => arg,
                     (Frac { num, .. }, Nf::FracNum) => num,
                     (Frac { den, .. }, Nf::FracDen) => den,
-                    (SumProd { sub, .. }, Nf::SumProdSub) => sub,
-                    (SumProd { sup, .. }, Nf::SumProdSup) => sup,
+                    (SumProdInt { sub, .. }, Nf::SumProdIntSub) => sub,
+                    (SumProdInt { sup, .. }, Nf::SumProdIntSup) => sup,
                     (node, field) => {
                         panic!("mismatched node/field:\n  node = {node:?}\n  field = {field:?}")
                     }
@@ -649,8 +649,8 @@ mod expression_list {
                     (Sqrt { arg, .. }, Nf::SqrtArg) => arg,
                     (Frac { num, .. }, Nf::FracNum) => num,
                     (Frac { den, .. }, Nf::FracDen) => den,
-                    (SumProd { sub, .. }, Nf::SumProdSub) => sub,
-                    (SumProd { sup, .. }, Nf::SumProdSup) => sup,
+                    (SumProdInt { sub, .. }, Nf::SumProdIntSub) => sub,
+                    (SumProdInt { sup, .. }, Nf::SumProdIntSup) => sup,
                     (node, field) => {
                         panic!("mismatched node/field:\n  node = {node:?}\n  field = {field:?}")
                     }
@@ -673,8 +673,8 @@ mod expression_list {
                     (Sqrt { arg, .. }, Nf::SqrtArg) => arg,
                     (Frac { num, .. }, Nf::FracNum) => num,
                     (Frac { den, .. }, Nf::FracDen) => den,
-                    (SumProd { sub, .. }, Nf::SumProdSub) => sub,
-                    (SumProd { sup, .. }, Nf::SumProdSup) => sup,
+                    (SumProdInt { sub, .. }, Nf::SumProdIntSub) => sub,
+                    (SumProdInt { sup, .. }, Nf::SumProdIntSup) => sup,
                     (node, field) => {
                         panic!("mismatched node/field:\n  node = {node:?}\n  field = {field:?}")
                     }
@@ -802,10 +802,10 @@ mod expression_list {
                     join_consecutive_scripts(num, num_cursor);
                     join_consecutive_scripts(den, den_cursor);
                 }
-                ENode::SumProd { sub, sup, .. } => {
+                ENode::SumProdInt { sub, sup, .. } => {
                     let (sub_cursor, sup_cursor) = match field_cursor {
-                        Some((Nf::SumProdSub, cursor)) => (Some(cursor), None),
-                        Some((Nf::SumProdSup, cursor)) => (None, Some(cursor)),
+                        Some((Nf::SumProdIntSub, cursor)) => (Some(cursor), None),
+                        Some((Nf::SumProdIntSup, cursor)) => (None, Some(cursor)),
                         _ => (None, None),
                     };
                     join_consecutive_scripts(sub, sub_cursor);
@@ -847,7 +847,7 @@ mod expression_list {
                     close_parentheses(num, close_all);
                     close_parentheses(den, close_all);
                 }
-                ENode::SumProd { sub, sup, .. } => {
+                ENode::SumProdInt { sub, sup, .. } => {
                     close_parentheses(sub, close_all);
                     close_parentheses(sup, close_all);
                 }
@@ -991,7 +991,23 @@ mod expression_list {
                         };
                         continue 'index;
                     }
-                    LNode::SumProd { .. } => todo!(),
+                    LNode::SumProdInt { sub, sup, .. } => {
+                        let middle = (sub.bounds.top() + sup.bounds.bottom()) / 2.0;
+                        let (script, field) = if position.y < middle {
+                            (sup, Nf::SumProdIntSup)
+                        } else {
+                            (sub, Nf::SumProdIntSub)
+                        };
+                        if position.x < (bounds.left() + script.bounds.left()) / 2.0 {
+                            break 'index i;
+                        }
+                        if position.x >= (script.bounds.right() + bounds.right()) / 2.0 {
+                            break 'index i + 1;
+                        }
+                        path.push((i, field));
+                        nodes = script;
+                        continue 'index;
+                    }
                     LNode::Char(_) => {
                         if position.x < bounds.left() + 0.5 * bounds.width {
                             break 'index i;
@@ -1067,6 +1083,9 @@ mod expression_list {
             ("sqrt", ' '),
             ("cbrt", ' '),
             ("nthroot", ' '),
+            ("sum", ' '),
+            ("prod", ' '),
+            ("int", ' '),
             ("cross", '×'),
             ("Gamma", 'Γ'),
             ("Delta", 'Δ'),
@@ -1164,6 +1183,24 @@ mod expression_list {
                         );
                         path.push((index, Nf::SqrtRoot));
                         (path, 0)
+                    }
+                    kind @ ("sum" | "prod" | "int") => {
+                        let sub = if kind == "int" {
+                            vec![]
+                        } else {
+                            vec![ENode::Char('n'), ENode::Char('=')]
+                        };
+                        let i = sub.len();
+                        nodes.insert(
+                            index,
+                            ENode::SumProdInt {
+                                kind: kind.into(),
+                                sub,
+                                sup: vec![],
+                            },
+                        );
+                        path.push((index, Nf::SumProdIntSub));
+                        (path, i)
                     }
                     _ => {
                         nodes.insert(index, ENode::Char(replace));
@@ -1325,7 +1362,11 @@ mod expression_list {
                                                     let index = num.len();
                                                     self.set_cursor((path, index));
                                                 }
-                                                SumProd { .. } => todo!(),
+                                                SumProdInt { sup, .. } => {
+                                                    path.push((i, Nf::SumProdIntSup));
+                                                    let index = sup.len();
+                                                    self.set_cursor((path, index));
+                                                }
                                                 SubSup { .. } | Char(_) => {
                                                     self.set_cursor((path, i))
                                                 }
@@ -1351,11 +1392,11 @@ mod expression_list {
                                                 | Nf::SubSupSup
                                                 | Nf::SqrtRoot
                                                 | Nf::FracNum
-                                                | Nf::FracDen => {
+                                                | Nf::FracDen
+                                                | Nf::SumProdIntSub
+                                                | Nf::SumProdIntSup => {
                                                     self.set_cursor((path, index));
                                                 }
-                                                Nf::SumProdSub => todo!(),
-                                                Nf::SumProdSup => todo!(),
                                             }
                                         }
                                     }
@@ -1415,7 +1456,10 @@ mod expression_list {
                                                     path.push((i, Nf::FracNum));
                                                     self.set_cursor((path, 0));
                                                 }
-                                                SumProd { .. } => todo!(),
+                                                SumProdInt { .. } => {
+                                                    path.push((i, Nf::SumProdIntSup));
+                                                    self.set_cursor((path, 0));
+                                                }
                                                 SubSup { .. } | Char(_) => {
                                                     self.set_cursor((path, i + 1))
                                                 }
@@ -1431,11 +1475,11 @@ mod expression_list {
                                                 | Nf::SubSupSup
                                                 | Nf::SqrtArg
                                                 | Nf::FracNum
-                                                | Nf::FracDen => {
+                                                | Nf::FracDen
+                                                | Nf::SumProdIntSub
+                                                | Nf::SumProdIntSup => {
                                                     self.set_cursor((path, index + 1));
                                                 }
-                                                Nf::SumProdSub => todo!(),
-                                                Nf::SumProdSup => todo!(),
                                             }
                                         }
                                     }
@@ -1486,7 +1530,11 @@ mod expression_list {
                                                 self.set_cursor((path, 0));
                                                 break 'stuff;
                                             }
-                                            SumProd { .. } => todo!(),
+                                            SumProdInt { .. } => {
+                                                path.push((i, Nf::SumProdIntSub));
+                                                self.set_cursor((path, 0));
+                                                break 'stuff;
+                                            }
                                             Char(_) => {}
                                         }
                                     }
@@ -1508,7 +1556,12 @@ mod expression_list {
                                                 self.set_cursor((path, index));
                                                 break 'stuff;
                                             }
-                                            SumProd { .. } => todo!(),
+                                            SumProdInt { sub, .. } => {
+                                                path.push((i - 1, Nf::SumProdIntSub));
+                                                let index = sub.len();
+                                                self.set_cursor((path, index));
+                                                break 'stuff;
+                                            }
                                             Char(_) => {}
                                         }
                                     }
@@ -1545,8 +1598,11 @@ mod expression_list {
                                                     break;
                                                 }
                                                 Nf::FracDen => {}
-                                                Nf::SumProdSub => todo!(),
-                                                Nf::SumProdSup => todo!(),
+                                                Nf::SumProdIntSub => {}
+                                                Nf::SumProdIntSup => {
+                                                    path.push((index, Nf::SumProdIntSub));
+                                                    break;
+                                                }
                                             }
                                         } else {
                                             message = Some(Message::Down);
@@ -1610,7 +1666,11 @@ mod expression_list {
                                                 self.set_cursor((path, 0));
                                                 break 'stuff;
                                             }
-                                            SumProd { .. } => todo!(),
+                                            SumProdInt { .. } => {
+                                                path.push((i, Nf::SumProdIntSup));
+                                                self.set_cursor((path, 0));
+                                                break 'stuff;
+                                            }
                                             Char(_) => {}
                                         }
                                     }
@@ -1632,7 +1692,12 @@ mod expression_list {
                                                 self.set_cursor((path, index));
                                                 break 'stuff;
                                             }
-                                            SumProd { .. } => todo!(),
+                                            SumProdInt { sup, .. } => {
+                                                path.push((i - 1, Nf::SumProdIntSup));
+                                                let index = sup.len();
+                                                self.set_cursor((path, index));
+                                                break 'stuff;
+                                            }
                                             Char(_) => {}
                                         }
                                     }
@@ -1669,8 +1734,11 @@ mod expression_list {
                                                     path.push((index, Nf::FracNum));
                                                     break;
                                                 }
-                                                Nf::SumProdSub => todo!(),
-                                                Nf::SumProdSup => todo!(),
+                                                Nf::SumProdIntSub => {
+                                                    path.push((index, Nf::SumProdIntSup));
+                                                    break;
+                                                }
+                                                Nf::SumProdIntSup => {}
                                             }
                                         } else {
                                             message = Some(Message::Up);
@@ -1741,7 +1809,11 @@ mod expression_list {
                                                 let index = den.len();
                                                 self.set_cursor((path, index));
                                             }
-                                            SumProd { .. } => todo!(),
+                                            SumProdInt { sup, .. } => {
+                                                path.push((i, Nf::SumProdIntSup));
+                                                let index = sup.len();
+                                                self.set_cursor((path, index));
+                                            }
                                             Char(_) => {
                                                 nodes.remove(i);
                                                 self.editor_updated((path, i));
@@ -1834,8 +1906,23 @@ mod expression_list {
                                                 );
                                                 self.editor_updated((path, i));
                                             }
-                                            Nf::SumProdSub => todo!(),
-                                            Nf::SumProdSup => todo!(),
+                                            Nf::SumProdIntSub | Nf::SumProdIntSup => {
+                                                let SumProdInt { sub, sup, .. } =
+                                                    nodes.remove(index)
+                                                else {
+                                                    unreachable!()
+                                                };
+                                                let i = if field == Nf::SumProdIntSub {
+                                                    index
+                                                } else {
+                                                    index + sub.len()
+                                                };
+                                                nodes.splice(
+                                                    index..index,
+                                                    sub.into_iter().chain(sup),
+                                                );
+                                                self.editor_updated((path, i));
+                                            }
                                         }
                                     } else if self.editor.is_empty() {
                                         message = Some(Message::Remove);
@@ -1904,7 +1991,10 @@ mod expression_list {
                                                 path.push((i, Nf::FracNum));
                                                 self.set_cursor((path, 0));
                                             }
-                                            SumProd { .. } => todo!(),
+                                            SumProdInt { .. } => {
+                                                path.push((i, Nf::SumProdIntSub));
+                                                self.set_cursor((path, 0));
+                                            }
                                             Char(_) => {
                                                 nodes.remove(i);
                                                 self.editor_updated((path, i));
@@ -2003,8 +2093,23 @@ mod expression_list {
                                                 );
                                                 self.editor_updated((path, i));
                                             }
-                                            Nf::SumProdSub => todo!(),
-                                            Nf::SumProdSup => todo!(),
+                                            Nf::SumProdIntSub | Nf::SumProdIntSup => {
+                                                let SumProdInt { sub, sup, .. } =
+                                                    nodes.remove(index)
+                                                else {
+                                                    unreachable!()
+                                                };
+                                                let i = if field == Nf::SumProdIntSub {
+                                                    index + sub.len()
+                                                } else {
+                                                    index + sub.len() + sup.len()
+                                                };
+                                                nodes.splice(
+                                                    index..index,
+                                                    sub.into_iter().chain(sup),
+                                                );
+                                                self.editor_updated((path, i));
+                                            }
                                         }
                                     }
                                 }
@@ -2325,7 +2430,7 @@ mod expression_list {
                                             .find_map(|(i, n)| {
                                                 matches!(
                                                     n,
-                                                    SumProd { .. }
+                                                    SumProdInt { .. }
                                                         | Char(
                                                             '+' | '-'
                                                                 | '*'
@@ -2599,7 +2704,11 @@ mod expression_list {
                     draw_latex(ctx, num, transform, draw_quad);
                     draw_latex(ctx, den, transform, draw_quad);
                 }
-                LNode::SumProd { .. } => todo!(),
+                LNode::SumProdInt { glyph, sub, sup } => {
+                    draw_glyph(glyph, transform, draw_quad);
+                    draw_latex(ctx, sub, transform, draw_quad);
+                    draw_latex(ctx, sup, transform, draw_quad);
+                }
                 LNode::Char(g) => draw_glyph(g, transform, draw_quad),
             }
         }
@@ -2764,8 +2873,11 @@ mod expression_list {
                 ],
             });
 
+            let s = r"f\left(x,y,\beta_{1}\right)=\sum_{n=\prod_{n=4}^{5}}^{10}\prod_{n=\frac{\frac{3}{4}}{5}}^{\frac{23ojlkjaf}{dlfj}}ljk";
+            // let s = r"f\left(x,y,\beta_{1}\right)=\sum_{n=\frac{\frac{1}{1}}{\frac{1}{1}}}^{10}abc";
             Self {
-                expressions: vec![Expression::from_latex(r"\sqrt{a^2+b^2}").unwrap()],
+                // expressions: vec![Expression::from_latex(r"\sqrt{a^2+b^2}").unwrap()],
+                expressions: vec![Expression::from_latex(s).unwrap()],
                 pipeline,
                 vertex_buffer,
                 index_buffer,

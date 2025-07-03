@@ -714,7 +714,7 @@ impl TypeChecker {
                             if expected == 1 {
                                 "1 argument".into()
                             } else {
-                                format!("{} arguments", expected)
+                                format!("{expected} arguments")
                             }
                         ))
                     } else {
@@ -737,7 +737,7 @@ impl TypeChecker {
                                 Expression::BuiltIn(BuiltIn::CountPointList(Box::new(arg))),
                             )),
                             Type::EmptyList => Ok(te(Type::Number, Expression::Number(0.0))),
-                            t => Err(format!("function 'count' cannot be applied to {}", t)),
+                            t => Err(format!("function 'count' cannot be applied to {t}")),
                         }
                     }
                     nr::BuiltIn::Total => {
@@ -754,7 +754,7 @@ impl TypeChecker {
                                 Expression::BuiltIn(BuiltIn::TotalPointList(Box::new(arg))),
                             )),
                             Type::EmptyList => Ok(te(Type::Number, Expression::Number(0.0))),
-                            t => Err(format!("function 'total' cannot be applied to {}", t)),
+                            t => Err(format!("function 'total' cannot be applied to {t}")),
                         }
                     }
                 }

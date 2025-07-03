@@ -53,7 +53,7 @@ pub enum Token<'a> {
 impl<'a> Token<'a> {
     pub fn to_small_string(&self) -> String {
         match self {
-            Token::IdentFrag(string) | Token::Number(string) => format!("'{}'", string),
+            Token::IdentFrag(string) | Token::Number(string) => format!("'{string}'"),
             other => match other {
                 Token::IdentFrag(_) | Token::Number(_) => unreachable!(),
                 Token::SubSup { sub: Some(_), .. } => r"'_'",

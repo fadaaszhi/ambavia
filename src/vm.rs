@@ -191,10 +191,10 @@ impl<'a> Vm<'a> {
 
         if matches!(value, Value::Number(UNINITIALIZED)) {
             let mut msg: String = "".into();
-            write!(msg, "variable is uninitialized: {}", index).unwrap();
+            write!(msg, "variable is uninitialized: {index}").unwrap();
 
             if let Some(name) = self.name(index) {
-                write!(msg, " ({})", name).unwrap();
+                write!(msg, " ({name})").unwrap();
             }
 
             panic!("{}", msg);
@@ -224,7 +224,7 @@ impl<'a> Vm<'a> {
                     | Instruction::Store(index)
                     | Instruction::Store2(index) => {
                         if let Some(name) = self.name(index) {
-                            print!(" ({})", name);
+                            print!(" ({name})");
                         }
                     }
                     _ => {}

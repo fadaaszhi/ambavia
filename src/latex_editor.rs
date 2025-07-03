@@ -202,9 +202,9 @@ pub mod editor {
                     };
 
                     if seq.is_empty() {
-                        write!(l, r"{}", c).unwrap();
+                        write!(l, r"{c}").unwrap();
                     } else {
-                        write!(l, r"\{} ", seq).unwrap();
+                        write!(l, r"\{seq} ").unwrap();
                     }
                 }
             }
@@ -622,13 +622,25 @@ pub mod layout {
                     let (space_before, space_after) = match *c {
                         '+' | '-'
                             if i > 0
-                                && match &tree[i - 1] {
+                                && !matches!(
+                                    &tree[i - 1],
                                     ENode::Char(
-                                        '.' | '+' | '-' | '*' | '=' | '<' | '>' | '≤' | '≥' | ','
-                                        | ':' | '×' | '÷' | '→' | '⋅',
-                                    ) => false,
-                                    _ => true,
-                                } =>
+                                        '.' | '+'
+                                            | '-'
+                                            | '*'
+                                            | '='
+                                            | '<'
+                                            | '>'
+                                            | '≤'
+                                            | '≥'
+                                            | ','
+                                            | ':'
+                                            | '×'
+                                            | '÷'
+                                            | '→'
+                                            | '⋅',
+                                    ),
+                                ) =>
                         {
                             (BINOP_SPACE, BINOP_SPACE)
                         }
@@ -695,8 +707,12 @@ pub mod layout {
                     make_absolute(inner, position, scale);
                 }
                 Node::SubSup { sub, sup } => {
-                    sub.as_mut().map(|sub| make_absolute(sub, position, scale));
-                    sup.as_mut().map(|sup| make_absolute(sup, position, scale));
+                    if let Some(sub) = sub {
+                        make_absolute(sub, position, scale);
+                    }
+                    if let Some(sup) = sup {
+                        make_absolute(sup, position, scale);
+                    }
                 }
                 Node::Sqrt { .. } => todo!(),
                 Node::Frac { line, num, den } => {

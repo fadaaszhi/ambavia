@@ -693,18 +693,16 @@ mod expression_list {
                                     .sum::<usize>();
                                 }
                             }
-                        } else {
-                            if cursor.index > i {
-                                cursor.index -= 1;
-                                if cursor.index == i {
-                                    if !superscripts.is_empty() {
-                                        cursor.path.push((cursor.index, Nf::SubSupSup));
-                                        cursor.index = superscripts.iter().map(|s| s.len()).sum();
-                                    } else {
-                                        assert!(!subscripts.is_empty());
-                                        cursor.path.push((cursor.index, Nf::SubSupSub));
-                                        cursor.index = subscripts.iter().map(|s| s.len()).sum();
-                                    }
+                        } else if cursor.index > i {
+                            cursor.index -= 1;
+                            if cursor.index == i {
+                                if !superscripts.is_empty() {
+                                    cursor.path.push((cursor.index, Nf::SubSupSup));
+                                    cursor.index = superscripts.iter().map(|s| s.len()).sum();
+                                } else {
+                                    assert!(!subscripts.is_empty());
+                                    cursor.path.push((cursor.index, Nf::SubSupSub));
+                                    cursor.index = subscripts.iter().map(|s| s.len()).sum();
                                 }
                             }
                         }
@@ -753,10 +751,12 @@ mod expression_list {
                         Some((Nf::SubSupSup, cursor)) => (None, Some(cursor)),
                         _ => (None, None),
                     };
-                    sub.as_mut()
-                        .map(|sub| join_consecutive_scripts(sub, sub_cursor));
-                    sup.as_mut()
-                        .map(|sup| join_consecutive_scripts(sup, sup_cursor));
+                    if let Some(sub) = sub {
+                        join_consecutive_scripts(sub, sub_cursor);
+                    }
+                    if let Some(sup) = sup {
+                        join_consecutive_scripts(sup, sup_cursor);
+                    }
                 }
                 ENode::Sqrt { root, arg } => {
                     let (root_cursor, arg_cursor) = match field_cursor {
@@ -764,8 +764,9 @@ mod expression_list {
                         Some((Nf::SqrtArg, cursor)) => (None, Some(cursor)),
                         _ => (None, None),
                     };
-                    root.as_mut()
-                        .map(|root| join_consecutive_scripts(root, root_cursor));
+                    if let Some(root) = root {
+                        join_consecutive_scripts(root, root_cursor);
+                    }
                     join_consecutive_scripts(arg, arg_cursor);
                 }
                 ENode::Frac { num, den } => {
@@ -805,11 +806,17 @@ mod expression_list {
                     close_parentheses(inner, close_all);
                 }
                 ENode::SubSup { sub, sup } => {
-                    sub.as_mut().map(|sub| close_parentheses(sub, close_all));
-                    sup.as_mut().map(|sup| close_parentheses(sup, close_all));
+                    if let Some(sub) = sub {
+                        close_parentheses(sub, close_all);
+                    }
+                    if let Some(sup) = sup {
+                        close_parentheses(sup, close_all);
+                    }
                 }
                 ENode::Sqrt { root, arg } => {
-                    root.as_mut().map(|root| close_parentheses(root, close_all));
+                    if let Some(root) = root {
+                        close_parentheses(root, close_all);
+                    }
                     close_parentheses(arg, close_all);
                 }
                 ENode::Frac { num, den } => {
@@ -952,7 +959,7 @@ mod expression_list {
                 r.start
             }
         };
-        if matches!(c, '0'..='9') {
+        if c.is_ascii_digit() {
             let is_letter = |n: &ENode| {
                 matches!(
                     n,
@@ -2359,10 +2366,12 @@ mod expression_list {
                     draw_glyph(right, transform, draw_quad);
                 }
                 LNode::SubSup { sub, sup } => {
-                    sub.as_ref()
-                        .map(|sub| draw_latex(ctx, sub, transform, draw_quad));
-                    sup.as_ref()
-                        .map(|sup| draw_latex(ctx, sup, transform, draw_quad));
+                    if let Some(sub) = sub {
+                        draw_latex(ctx, sub, transform, draw_quad);
+                    }
+                    if let Some(sup) = sup {
+                        draw_latex(ctx, sup, transform, draw_quad);
+                    }
                 }
                 LNode::Sqrt { .. } => todo!(),
                 LNode::Frac { line, num, den } => {

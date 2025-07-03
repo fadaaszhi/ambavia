@@ -324,6 +324,13 @@ pub mod layout {
     const SUB_SCALE: f64 = 0.73;
     const SUP_SCALE: f64 = 0.91;
     const SUB_SUP_MIDDLE: f64 = 0.02;
+    const SQRT_ROOT_SCALE: f64 = 0.802;
+    const SQRT_ROOT_MIDDLE: f64 = -0.526;
+    const SQRT_ROOT_RIGHT: f64 = 0.485;
+    const SQRT_INNER_TOP_PADDING: f64 = 0.073;
+    const SQRT_LINE_JUT: f64 = 0.15;
+    const SQRT_OUTER_TOP_PADDING: f64 = 0.073;
+    const SQRT_OUTER_RIGHT_PADDING: f64 = 0.098;
     const FRAC_SCALE: f64 = 0.91;
     const FRAC_NUM_OFFSET: f64 = 0.0;
     const FRAC_DEN_OFFSET: f64 = 0.079;
@@ -334,6 +341,7 @@ pub mod layout {
     const CHAR_CENTER: f64 = -0.249;
     const CHAR_HEIGHT: f64 = 0.526;
     const CHAR_DEPTH: f64 = 0.462;
+    const EMPTY_WIDTH: f64 = 0.5;
 
     #[derive(Debug, Clone, Copy)]
     pub struct Bounds {
@@ -410,6 +418,7 @@ pub mod layout {
     pub struct Nodes {
         pub bounds: Bounds,
         pub nodes: Vec<(Bounds, Node)>,
+        pub gray: bool,
     }
 
     impl Nodes {
@@ -432,6 +441,8 @@ pub mod layout {
             sup: Option<Nodes>,
         },
         Sqrt {
+            radical: Glyph,
+            line: (DVec2, DVec2),
             root: Option<Nodes>,
             arg: Nodes,
         },
@@ -451,6 +462,17 @@ pub mod layout {
     fn layout_relative(tree: &[ENode]) -> Nodes {
         let mut nodes = Nodes::default();
         let mut i = 0;
+
+        fn expand_if_empty(mut nodes: Nodes) -> Nodes {
+            if nodes.nodes.is_empty() {
+                nodes.bounds = Bounds {
+                    width: EMPTY_WIDTH,
+                    ..Default::default()
+                };
+                nodes.gray = true;
+            }
+            nodes
+        }
 
         'outer: while i < tree.len() {
             for &name in OPERATORNAMES {
@@ -546,7 +568,8 @@ pub mod layout {
                     };
                     let mut left = make_gray(get_glyph(left.0, left.1), left_gray);
                     let mut right = make_gray(get_glyph(right.0, right.1), right_gray);
-                    let mut inner = layout_relative(inner);
+                    let mut inner = expand_if_empty(layout_relative(inner));
+                    inner.gray = false;
                     inner.bounds.position.x = left.advance;
                     let top = inner.bounds.top() - BRACKET_JUT;
                     let bottom = inner.bounds.bottom() + BRACKET_JUT;
@@ -569,14 +592,14 @@ pub mod layout {
                 ENode::SubSup { sub, sup } => {
                     let mut bounds = Bounds::default();
                     let sub = sub.as_ref().map(|sub| {
-                        let mut sub = layout_relative(sub);
+                        let mut sub = expand_if_empty(layout_relative(sub));
                         sub.bounds.scale(SUB_SCALE);
                         sub.bounds.position.y = SUB_SUP_MIDDLE + sub.bounds.height;
                         bounds.union(&sub.bounds);
                         sub
                     });
                     let sup = sup.as_ref().map(|sup| {
-                        let mut sup = layout_relative(sup);
+                        let mut sup = expand_if_empty(layout_relative(sup));
                         sup.bounds.scale(SUP_SCALE);
                         sup.bounds.position.y = SUB_SUP_MIDDLE - sup.bounds.depth;
                         bounds.union(&sup.bounds);
@@ -584,10 +607,52 @@ pub mod layout {
                     });
                     (bounds, Node::SubSup { sub, sup })
                 }
-                ENode::Sqrt { .. } => todo!(),
+                ENode::Sqrt { root, arg } => {
+                    let mut bounds = Bounds::default();
+                    let mut arg = expand_if_empty(layout_relative(arg));
+                    let mut radical = get_glyph(Font::Size1Regular, '√');
+                    let root = root.as_ref().map(|root| {
+                        let mut root = expand_if_empty(layout_relative(root));
+                        root.bounds.scale(SQRT_ROOT_SCALE);
+                        root.bounds.position.y = SQRT_ROOT_MIDDLE;
+                        let offset =
+                            (root.bounds.position.x + root.bounds.width - SQRT_ROOT_RIGHT).max(0.0);
+                        root.bounds.position.x = offset + SQRT_ROOT_RIGHT - root.bounds.width;
+                        radical.plane.left += offset;
+                        radical.plane.right += offset;
+                        radical.advance += offset;
+                        bounds.union(&root.bounds);
+                        root
+                    });
+                    // The glyphs have padding on top but we want the true top.
+                    // The magic value found manually by measuring.
+                    radical.atlas.top += (radical.atlas.bottom - radical.atlas.top) * 0.02759835584;
+                    radical.plane.bottom = arg.bounds.bottom();
+                    radical.plane.top = arg.bounds.top() - SQRT_INNER_TOP_PADDING;
+                    arg.bounds.position.x = radical.advance + SQRT_LINE_JUT;
+                    let line = (
+                        dvec2(radical.advance, radical.plane.top),
+                        dvec2(arg.bounds.right() + SQRT_LINE_JUT, radical.plane.top),
+                    );
+                    bounds.union(&Bounds {
+                        width: line.1.x + SQRT_OUTER_RIGHT_PADDING,
+                        height: -line.1.y + SQRT_OUTER_TOP_PADDING,
+                        depth: arg.bounds.bottom(),
+                        ..Default::default()
+                    });
+                    (
+                        bounds,
+                        Node::Sqrt {
+                            radical,
+                            line,
+                            root,
+                            arg,
+                        },
+                    )
+                }
                 ENode::Frac { num, den } => {
-                    let mut num = layout_relative(num);
-                    let mut den = layout_relative(den);
+                    let mut num = expand_if_empty(layout_relative(num));
+                    let mut den = expand_if_empty(layout_relative(den));
                     num.bounds.scale(FRAC_SCALE);
                     den.bounds.scale(FRAC_SCALE);
                     let max_width = num.bounds.width.max(den.bounds.width);
@@ -690,20 +755,24 @@ pub mod layout {
     }
 
     fn make_absolute(nodes: &mut Nodes, position: DVec2, scale: f64) {
-        let transform = |g: &mut Glyph, position: DVec2, scale: f64| {
+        let transform_glyph = |g: &mut Glyph, position: DVec2, scale: f64| {
             g.advance *= scale;
             g.plane.left = position.x + scale * g.plane.left;
             g.plane.top = position.y + scale * g.plane.top;
             g.plane.right = position.x + scale * g.plane.right;
             g.plane.bottom = position.y + scale * g.plane.bottom;
         };
+        let transform_line = |l: &mut (DVec2, DVec2), position: DVec2, scale: f64| {
+            l.0 = position + scale * l.0;
+            l.1 = position + scale * l.1;
+        };
         let (position, scale) = nodes.bounds.transform(position, scale);
         for (bounds, node) in &mut nodes.nodes {
             let (position, scale) = bounds.transform(position, scale);
             match node {
                 Node::DelimitedGroup { left, right, inner } => {
-                    transform(left, position, scale);
-                    transform(right, position, scale);
+                    transform_glyph(left, position, scale);
+                    transform_glyph(right, position, scale);
                     make_absolute(inner, position, scale);
                 }
                 Node::SubSup { sub, sup } => {
@@ -714,15 +783,26 @@ pub mod layout {
                         make_absolute(sup, position, scale);
                     }
                 }
-                Node::Sqrt { .. } => todo!(),
+                Node::Sqrt {
+                    radical,
+                    line,
+                    root,
+                    arg,
+                } => {
+                    transform_glyph(radical, position, scale);
+                    transform_line(line, position, scale);
+                    if let Some(root) = root {
+                        make_absolute(root, position, scale);
+                    }
+                    make_absolute(arg, position, scale);
+                }
                 Node::Frac { line, num, den } => {
-                    line.0 = position + scale * line.0;
-                    line.1 = position + scale * line.1;
+                    transform_line(line, position, scale);
                     make_absolute(num, position, scale);
                     make_absolute(den, position, scale);
                 }
                 Node::SumProd { .. } => todo!(),
-                Node::Char(glyph) => transform(glyph, position, scale),
+                Node::Char(glyph) => transform_glyph(glyph, position, scale),
             }
         }
     }

@@ -636,6 +636,30 @@ mod expression_list {
         }
     }
 
+    impl Walkable for &mut LNodes {
+        fn walk(self, path: NodePathSlice) -> Self {
+            let mut nodes = self;
+            for (index, field) in path {
+                use LNode::*;
+                nodes = match (&mut nodes.nodes[*index].1, field) {
+                    (DelimitedGroup { inner, .. }, Nf::DelimitedGroup) => inner,
+                    (SubSup { sub: Some(s), .. }, Nf::SubSupSub) => s,
+                    (SubSup { sup: Some(s), .. }, Nf::SubSupSup) => s,
+                    (Sqrt { root: Some(r), .. }, Nf::SqrtRoot) => r,
+                    (Sqrt { arg, .. }, Nf::SqrtArg) => arg,
+                    (Frac { num, .. }, Nf::FracNum) => num,
+                    (Frac { den, .. }, Nf::FracDen) => den,
+                    (SumProd { sub, .. }, Nf::SumProdSub) => sub,
+                    (SumProd { sup, .. }, Nf::SumProdSup) => sup,
+                    (node, field) => {
+                        panic!("mismatched node/field:\n  node = {node:?}\n  field = {field:?}")
+                    }
+                };
+            }
+            nodes
+        }
+    }
+
     impl Walkable for &LNodes {
         fn walk(self, path: NodePathSlice) -> Self {
             let mut nodes = self;
@@ -919,7 +943,38 @@ mod expression_list {
                         };
                         continue 'index;
                     }
-                    LNode::Sqrt { .. } => todo!(),
+                    LNode::Sqrt {
+                        root: Some(root),
+                        arg,
+                        ..
+                    } => {
+                        if position.x < (bounds.left() + root.bounds.left()) / 2.0 {
+                            break 'index i;
+                        }
+                        if position.x >= (arg.bounds.right() + bounds.right()) / 2.0 {
+                            break 'index i + 1;
+                        }
+
+                        nodes = if position.x < (root.bounds.right() + arg.bounds.left()) / 2.0 {
+                            path.push((i, Nf::SqrtRoot));
+                            root
+                        } else {
+                            path.push((i, Nf::SqrtArg));
+                            arg
+                        };
+                        continue 'index;
+                    }
+                    LNode::Sqrt { arg, .. } => {
+                        if position.x < (bounds.left() + arg.bounds.left()) / 2.0 {
+                            break 'index i;
+                        }
+                        if position.x >= (arg.bounds.right() + bounds.right()) / 2.0 {
+                            break 'index i + 1;
+                        }
+                        path.push((i, Nf::SqrtArg));
+                        nodes = arg;
+                        continue 'index;
+                    }
                     LNode::Frac { line, num, den } => {
                         if position.x < line.0.x {
                             break 'index i;
@@ -951,8 +1006,13 @@ mod expression_list {
         Cursor { path, index }
     }
 
-    fn add_char(nodes: &mut ENodes, span: SelectionSpan, c: char) -> usize {
-        let cursor = match span {
+    fn add_char(
+        nodes: &mut ENodes,
+        mut path: NodePath,
+        span: SelectionSpan,
+        c: char,
+    ) -> impl Into<Cursor> {
+        let i = match span {
             SelectionSpan::Cursor(c) => c,
             SelectionSpan::Range(r) => {
                 nodes.drain(r.clone());
@@ -986,95 +1046,133 @@ mod expression_list {
                     )
                 )
             };
-            if cursor > 0
-                && is_letter(&nodes[cursor - 1])
-                && !ends_in_operatorname(&nodes[..cursor])
-                || cursor > 1
-                    && is_letter(&nodes[cursor - 2])
-                    && !ends_in_operatorname(&nodes[..cursor - 1])
-                    && matches!(&nodes[cursor - 1], ENode::SubSup { sup: None, .. })
+            if i > 0 && is_letter(&nodes[i - 1]) && !ends_in_operatorname(&nodes[..i])
+                || i > 1
+                    && is_letter(&nodes[i - 2])
+                    && !ends_in_operatorname(&nodes[..i - 1])
+                    && matches!(&nodes[i - 1], ENode::SubSup { sup: None, .. })
             {
                 nodes.insert(
-                    cursor,
+                    i,
                     ENode::SubSup {
                         sub: Some(vec![ENode::Char(c)]),
                         sup: None,
                     },
                 );
-                return cursor + 1;
+                return (path, i + 1);
             }
         }
-        nodes.insert(cursor, ENode::Char(c));
+        nodes.insert(i, ENode::Char(c));
         let replacements = [
-            ("cross", "×"),
-            ("Gamma", "Γ"),
-            ("Delta", "Δ"),
-            ("Theta", "Θ"),
-            ("Lambda", "Λ"),
-            ("Xi", "Ξ"),
-            ("Pi", "Π"),
-            ("Sigma", "Σ"),
-            ("Upsilon", "Υ"),
-            ("Uψlon", "Υ"),
-            ("Phi", "Φ"),
-            ("Psi", "Ψ"),
-            ("Omega", "Ω"),
-            ("alpha", "α"),
-            ("beta", "β"),
-            ("gamma", "γ"),
-            ("delta", "δ"),
-            ("varepsilon", "ε"),
-            ("vareψlon", "ε"),
-            ("zeta", "ζ"),
-            ("vartheta", "ϑ"),
-            ("theta", "θ"),
-            ("eta", "η"),
-            ("iota", "ι"),
-            ("kappa", "κ"),
-            ("lambda", "λ"),
-            ("mu", "μ"),
-            ("nu", "ν"),
-            ("xi", "ξ"),
-            ("varpi", "ϖ"),
-            ("pi", "π"),
-            ("varrho", "ϱ"),
-            ("rho", "ρ"),
-            ("varsigma", "ς"),
-            ("sigma", "σ"),
-            ("tau", "τ"),
-            ("upsilon", "υ"),
-            ("uψlon", "υ"),
-            ("varphi", "φ"),
-            ("chi", "χ"),
-            ("psi", "ψ"),
-            ("omega", "ω"),
-            ("phi", "ϕ"),
-            ("epsilon", "ϵ"),
-            ("eψlon", "ϵ"),
-            ("->", "→"),
-            ("infty", "∞"),
-            ("infinity", "∞"),
-            ("<=", "≤"),
-            (">=", "≥"),
-            ("*", "⋅"),
+            ("sqrt", ' '),
+            ("cbrt", ' '),
+            ("nthroot", ' '),
+            ("cross", '×'),
+            ("Gamma", 'Γ'),
+            ("Delta", 'Δ'),
+            ("Theta", 'Θ'),
+            ("Lambda", 'Λ'),
+            ("Xi", 'Ξ'),
+            ("Pi", 'Π'),
+            ("Sigma", 'Σ'),
+            ("Upsilon", 'Υ'),
+            ("Uψlon", 'Υ'),
+            ("Phi", 'Φ'),
+            ("Psi", 'Ψ'),
+            ("Omega", 'Ω'),
+            ("alpha", 'α'),
+            ("beta", 'β'),
+            ("gamma", 'γ'),
+            ("delta", 'δ'),
+            ("varepsilon", 'ε'),
+            ("vareψlon", 'ε'),
+            ("zeta", 'ζ'),
+            ("vartheta", 'ϑ'),
+            ("theta", 'θ'),
+            ("eta", 'η'),
+            ("iota", 'ι'),
+            ("kappa", 'κ'),
+            ("lambda", 'λ'),
+            ("mu", 'μ'),
+            ("nu", 'ν'),
+            ("xi", 'ξ'),
+            ("varpi", 'ϖ'),
+            ("pi", 'π'),
+            ("varrho", 'ϱ'),
+            ("rho", 'ρ'),
+            ("varsigma", 'ς'),
+            ("sigma", 'σ'),
+            ("tau", 'τ'),
+            ("upsilon", 'υ'),
+            ("uψlon", 'υ'),
+            ("varphi", 'φ'),
+            ("chi", 'χ'),
+            ("psi", 'ψ'),
+            ("omega", 'ω'),
+            ("phi", 'ϕ'),
+            ("epsilon", 'ϵ'),
+            ("eψlon", 'ϵ'),
+            ("->", '→'),
+            ("infty", '∞'),
+            ("infinity", '∞'),
+            ("<=", '≤'),
+            (">=", '≥'),
+            ("*", '⋅'),
         ];
         for (find, replace) in replacements {
             let char_count = find.chars().count();
-            if cursor + 1 >= char_count
+            if i + 1 >= char_count
                 && find
                     .chars()
                     .rev()
                     .enumerate()
-                    .all(|(i, c)| nodes[cursor - i] == ENode::Char(c))
+                    .all(|(j, c)| nodes[i - j] == ENode::Char(c))
             {
-                nodes.splice(
-                    cursor + 1 - char_count..cursor + 1,
-                    replace.chars().map(ENode::Char),
-                );
-                return cursor + 1 + replace.chars().count() - char_count;
+                let index = i + 1 - char_count;
+                nodes.drain(index..i + 1);
+
+                return match find {
+                    "sqrt" => {
+                        nodes.insert(
+                            index,
+                            ENode::Sqrt {
+                                root: None,
+                                arg: vec![],
+                            },
+                        );
+                        path.push((index, Nf::SqrtArg));
+                        (path, 0)
+                    }
+                    "cbrt" => {
+                        nodes.insert(
+                            index,
+                            ENode::Sqrt {
+                                root: Some(vec![ENode::Char('3')]),
+                                arg: vec![],
+                            },
+                        );
+                        path.push((index, Nf::SqrtArg));
+                        (path, 0)
+                    }
+                    "nthroot" => {
+                        nodes.insert(
+                            index,
+                            ENode::Sqrt {
+                                root: Some(vec![]),
+                                arg: vec![],
+                            },
+                        );
+                        path.push((index, Nf::SqrtRoot));
+                        (path, 0)
+                    }
+                    _ => {
+                        nodes.insert(index, ENode::Char(replace));
+                        (path, index + 1)
+                    }
+                };
             }
         }
-        cursor + 1
+        (path, i + 1)
     }
 
     impl Expression {
@@ -1175,8 +1273,8 @@ mod expression_list {
                             response.consume_event();
                         }
                         Key::Named(NamedKey::Space) => {
-                            let index = add_char(self.editor.walk(&path), span, ' ');
-                            self.editor_updated((path, index));
+                            let cursor = add_char(self.editor.walk(&path), path, span, ' ').into();
+                            self.editor_updated(cursor);
                             response.request_redraw();
                             response.consume_event();
                         }
@@ -1217,7 +1315,11 @@ mod expression_list {
                                                     let index = sup.len();
                                                     self.set_cursor((path, index));
                                                 }
-                                                Sqrt { .. } => todo!(),
+                                                Sqrt { arg, .. } => {
+                                                    path.push((i, Nf::SqrtArg));
+                                                    let index = arg.len();
+                                                    self.set_cursor((path, index));
+                                                }
                                                 Frac { num, .. } => {
                                                     path.push((i, Nf::FracNum));
                                                     let index = num.len();
@@ -1230,11 +1332,24 @@ mod expression_list {
                                             }
                                         } else if let Some((index, field)) = path.pop() {
                                             match field {
-                                                Nf::SqrtRoot => todo!(),
-                                                Nf::SqrtArg => todo!(),
+                                                Nf::SqrtArg => {
+                                                    let Sqrt { root, .. } =
+                                                        &self.editor.walk(&path)[index]
+                                                    else {
+                                                        unreachable!()
+                                                    };
+                                                    if let Some(root) = root {
+                                                        path.push((index, Nf::SqrtRoot));
+                                                        let index = root.len();
+                                                        self.set_cursor((path, index));
+                                                    } else {
+                                                        self.set_cursor((path, index));
+                                                    }
+                                                }
                                                 Nf::DelimitedGroup
                                                 | Nf::SubSupSub
                                                 | Nf::SubSupSup
+                                                | Nf::SqrtRoot
                                                 | Nf::FracNum
                                                 | Nf::FracDen => {
                                                     self.set_cursor((path, index));
@@ -1288,7 +1403,14 @@ mod expression_list {
                                                     path.push((i, Nf::SubSupSup));
                                                     self.set_cursor((path, 0));
                                                 }
-                                                Sqrt { .. } => todo!(),
+                                                Sqrt { root: Some(_), .. } => {
+                                                    path.push((i, Nf::SqrtRoot));
+                                                    self.set_cursor((path, 0));
+                                                }
+                                                Sqrt { .. } => {
+                                                    path.push((i, Nf::SqrtArg));
+                                                    self.set_cursor((path, 0));
+                                                }
                                                 Frac { .. } => {
                                                     path.push((i, Nf::FracNum));
                                                     self.set_cursor((path, 0));
@@ -1300,11 +1422,14 @@ mod expression_list {
                                             }
                                         } else if let Some((index, field)) = path.pop() {
                                             match field {
-                                                Nf::SqrtRoot => todo!(),
-                                                Nf::SqrtArg => todo!(),
+                                                Nf::SqrtRoot => {
+                                                    path.push((index, Nf::SqrtArg));
+                                                    self.set_cursor((path, 0));
+                                                }
                                                 Nf::DelimitedGroup
                                                 | Nf::SubSupSub
                                                 | Nf::SubSupSup
+                                                | Nf::SqrtArg
                                                 | Nf::FracNum
                                                 | Nf::FracDen => {
                                                     self.set_cursor((path, index + 1));
@@ -1355,7 +1480,7 @@ mod expression_list {
                                                 break 'stuff;
                                             }
                                             SubSup { .. } => {}
-                                            Sqrt { .. } => todo!(),
+                                            Sqrt { .. } => {}
                                             Frac { .. } => {
                                                 path.push((i, Nf::FracDen));
                                                 self.set_cursor((path, 0));
@@ -1376,7 +1501,7 @@ mod expression_list {
                                                 break 'stuff;
                                             }
                                             SubSup { .. } => {}
-                                            Sqrt { .. } => todo!(),
+                                            Sqrt { .. } => {}
                                             Frac { den, .. } => {
                                                 path.push((i - 1, Nf::FracDen));
                                                 let index = den.len();
@@ -1413,8 +1538,8 @@ mod expression_list {
                                                         break 'stuff;
                                                     }
                                                 }
-                                                Nf::SqrtRoot => todo!(),
-                                                Nf::SqrtArg => todo!(),
+                                                Nf::SqrtRoot => {}
+                                                Nf::SqrtArg => {}
                                                 Nf::FracNum => {
                                                     path.push((index, Nf::FracDen));
                                                     break;
@@ -1474,7 +1599,12 @@ mod expression_list {
                                                 break 'stuff;
                                             }
                                             SubSup { .. } => {}
-                                            Sqrt { .. } => todo!(),
+                                            Sqrt { root: Some(_), .. } => {
+                                                path.push((i, Nf::SqrtRoot));
+                                                self.set_cursor((path, 0));
+                                                break 'stuff;
+                                            }
+                                            Sqrt { .. } => {}
                                             Frac { .. } => {
                                                 path.push((i, Nf::FracNum));
                                                 self.set_cursor((path, 0));
@@ -1495,7 +1625,7 @@ mod expression_list {
                                                 break 'stuff;
                                             }
                                             SubSup { .. } => {}
-                                            Sqrt { .. } => todo!(),
+                                            Sqrt { .. } => {}
                                             Frac { num, .. } => {
                                                 path.push((i - 1, Nf::FracNum));
                                                 let index = num.len();
@@ -1532,8 +1662,8 @@ mod expression_list {
                                                     }
                                                 }
                                                 Nf::SubSupSup => {}
-                                                Nf::SqrtRoot => todo!(),
-                                                Nf::SqrtArg => todo!(),
+                                                Nf::SqrtRoot => {}
+                                                Nf::SqrtArg => {}
                                                 Nf::FracNum => {}
                                                 Nf::FracDen => {
                                                     path.push((index, Nf::FracNum));
@@ -1601,7 +1731,11 @@ mod expression_list {
                                                 self.set_cursor((path, index));
                                             }
                                             SubSup { .. } => unreachable!(),
-                                            Sqrt { .. } => todo!(),
+                                            Sqrt { arg, .. } => {
+                                                path.push((i, Nf::SqrtArg));
+                                                let index = arg.len();
+                                                self.set_cursor((path, index));
+                                            }
                                             Frac { den, .. } => {
                                                 path.push((i, Nf::FracDen));
                                                 let index = den.len();
@@ -1669,8 +1803,22 @@ mod expression_list {
                                                 );
                                                 self.editor_updated((path, i));
                                             }
-                                            Nf::SqrtRoot => todo!(),
-                                            Nf::SqrtArg => todo!(),
+                                            Nf::SqrtRoot | Nf::SqrtArg => {
+                                                let Sqrt { root, arg } = nodes.remove(index) else {
+                                                    unreachable!();
+                                                };
+                                                let i = if field == Nf::SqrtRoot {
+                                                    index
+                                                } else {
+                                                    index
+                                                        + root.as_ref().map_or(0, |root| root.len())
+                                                };
+                                                nodes.splice(
+                                                    index..index,
+                                                    root.into_iter().flatten().chain(arg),
+                                                );
+                                                self.editor_updated((path, i));
+                                            }
                                             Nf::FracNum | Nf::FracDen => {
                                                 let Frac { num, den } = nodes.remove(index) else {
                                                     unreachable!()
@@ -1741,7 +1889,17 @@ mod expression_list {
                                                 self.set_cursor((path, 0));
                                             }
                                             SubSup { .. } => unreachable!(),
-                                            Sqrt { .. } => todo!(),
+                                            Sqrt { root: Some(_), .. } => {
+                                                path.push((i, Nf::SqrtRoot));
+                                                self.set_cursor((path, 0));
+                                            }
+                                            Sqrt { .. } => {
+                                                let Sqrt { arg, .. } = nodes.remove(i) else {
+                                                    unreachable!()
+                                                };
+                                                nodes.splice(i..i, arg);
+                                                self.editor_updated((path, i));
+                                            }
                                             Frac { .. } => {
                                                 path.push((i, Nf::FracNum));
                                                 self.set_cursor((path, 0));
@@ -1813,8 +1971,23 @@ mod expression_list {
                                                 );
                                                 self.editor_updated((path, i));
                                             }
-                                            Nf::SqrtRoot => todo!(),
-                                            Nf::SqrtArg => todo!(),
+                                            Nf::SqrtRoot | Nf::SqrtArg => {
+                                                let Sqrt { root, arg } = nodes.remove(index) else {
+                                                    unreachable!();
+                                                };
+                                                let i = index
+                                                    + root.as_ref().map_or(0, |root| root.len())
+                                                    + if field == Nf::SqrtArg {
+                                                        arg.len()
+                                                    } else {
+                                                        0
+                                                    };
+                                                nodes.splice(
+                                                    index..index,
+                                                    root.into_iter().flatten().chain(arg),
+                                                );
+                                                self.editor_updated((path, i));
+                                            }
                                             Nf::FracNum | Nf::FracDen => {
                                                 let Frac { num, den } = nodes.remove(index) else {
                                                     unreachable!()
@@ -2206,8 +2379,9 @@ mod expression_list {
                                 | '%'
                                 | '\''),
                             ) => {
-                                let index = add_char(self.editor.walk(&path), span, c);
-                                self.editor_updated((path, index));
+                                let cursor =
+                                    add_char(self.editor.walk(&path), path, span, c).into();
+                                self.editor_updated(cursor);
                                 response.request_redraw();
                                 response.consume_event();
                             }
@@ -2247,20 +2421,28 @@ mod expression_list {
         }
 
         fn render(
-            &self,
+            &mut self,
             ctx: &Context,
             bounds: Bounds,
             draw_quad: &mut impl FnMut(DVec2, DVec2, DVec2, DVec2),
         ) {
+            let height = self.layout.bounds.height;
             let transform = &|p| {
                 bounds.pos.as_dvec2()
-                    + ctx.scale_factor
-                        * (self.padding + self.scale * (p + dvec2(0.0, self.layout.bounds.height)))
+                    + ctx.scale_factor * (self.padding + self.scale * (p + dvec2(0.0, height)))
             };
-            if let Some(selection) = &self.selection {
-                draw_selection(ctx, &self.layout, selection.into(), transform, draw_quad);
+            match &self.selection {
+                Some(selection) => {
+                    let selection: Selection = selection.into();
+                    let nodes = (&mut self.layout).walk(&selection.path);
+                    let original_gray = nodes.gray;
+                    nodes.gray = false;
+                    draw_selection(ctx, &self.layout, &selection, transform, draw_quad);
+                    draw_latex(ctx, &self.layout, transform, draw_quad);
+                    (&mut self.layout).walk(&selection.path).gray = original_gray;
+                }
+                None => draw_latex(ctx, &self.layout, transform, draw_quad),
             }
-            draw_latex(ctx, &self.layout, transform, draw_quad);
         }
     }
 
@@ -2308,17 +2490,21 @@ mod expression_list {
     fn draw_selection(
         ctx: &Context,
         nodes: &LNodes,
-        selection: Selection,
+        selection: &Selection,
         transform: &impl Fn(DVec2) -> DVec2,
         draw_quad: &mut impl FnMut(DVec2, DVec2, DVec2, DVec2),
     ) {
         let nodes = nodes.walk(&selection.path);
-        match selection.span {
+        match &selection.span {
             SelectionSpan::Cursor(index) => {
-                let position = nodes.nodes.get(index).map_or(
-                    nodes.bounds.position + dvec2(nodes.bounds.width, 0.0),
-                    |(b, _)| b.position,
-                );
+                let position = if nodes.nodes.is_empty() {
+                    nodes.bounds.position
+                } else {
+                    nodes.nodes.get(*index).map_or(
+                        nodes.bounds.position + dvec2(nodes.bounds.width, 0.0),
+                        |(b, _)| b.position,
+                    )
+                };
                 let b = layout::Bounds::default();
                 let p0 = transform(position - dvec2(0.0, nodes.bounds.scale * b.height));
                 let p1 = transform(position + dvec2(0.0, nodes.bounds.scale * b.depth));
@@ -2330,7 +2516,7 @@ mod expression_list {
                 draw_quad(p0, p1, uv, uv);
             }
             SelectionSpan::Range(r) => {
-                for (b, _) in &nodes.nodes[r] {
+                for (b, _) in &nodes.nodes[r.clone()] {
                     let p0 = transform(b.top_left()).floor();
                     let p1 = transform(b.bottom_right()).ceil();
                     let uv = DVec2::splat(-2.0);
@@ -2358,6 +2544,15 @@ mod expression_list {
         transform: &impl Fn(DVec2) -> DVec2,
         draw_quad: &mut impl FnMut(DVec2, DVec2, DVec2, DVec2),
     ) {
+        if nodes.gray {
+            let uv = DVec2::splat(-4.0);
+            draw_quad(
+                transform(nodes.bounds.top_left()),
+                transform(nodes.bounds.bottom_right()),
+                uv,
+                uv,
+            );
+        }
         for (_, node) in &nodes.nodes {
             match node {
                 LNode::DelimitedGroup { left, right, inner } => {
@@ -2373,7 +2568,23 @@ mod expression_list {
                         draw_latex(ctx, sup, transform, draw_quad);
                     }
                 }
-                LNode::Sqrt { .. } => todo!(),
+                LNode::Sqrt {
+                    radical,
+                    line,
+                    root,
+                    arg,
+                } => {
+                    draw_glyph(radical, transform, draw_quad);
+                    let mut l0 = transform(line.0);
+                    let mut l1 = transform(line.1);
+                    l0.y = l0.y.floor();
+                    l1.y = l0.y + ctx.scale_width(1.0) as f64;
+                    draw_quad(l0, l1, DVec2::splat(-1.0), DVec2::splat(-1.0));
+                    if let Some(root) = root {
+                        draw_latex(ctx, root, transform, draw_quad);
+                    }
+                    draw_latex(ctx, arg, transform, draw_quad);
+                }
                 LNode::Frac { line, num, den } => {
                     let l0 = transform(line.0);
                     let l1 = transform(line.1);
@@ -2554,16 +2765,7 @@ mod expression_list {
             });
 
             Self {
-                // expressions: vec![Expression::from_latex(r"\frac{a}{\frac{b}{c}+\alpha\operatorname{count}\frac{\frac{4}{7}}{\frac{4}{\frac{4}{4}}}}+\frac{\sin\frac{5}{6}}{6}").unwrap()],
-                // expressions: vec![Expression::from_latex(
-                //     r"p_{11}^{4}+6_{\frac{3}{\frac{4}{5}}}^{\frac{4}{\frac{4}{\frac{4}{4}}}}+lkjdsf_{kljf}+alskdfj^{kljasdf}+asdf",
-                // )
-                // .unwrap()],
-                expressions: vec![Expression::from_latex(
-                    r"\left|\left|d\right|+\frac{\left|4\right|}{\left|\left(\left|\left(\left|f\right|\right)\right|\right)\right|}\right|",
-                )
-                .unwrap()],
-
+                expressions: vec![Expression::from_latex(r"\sqrt{a^2+b^2}").unwrap()],
                 pipeline,
                 vertex_buffer,
                 index_buffer,

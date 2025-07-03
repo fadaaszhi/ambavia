@@ -55,6 +55,11 @@ fn fs_latex(in: VertexOutput) -> @location(0) vec4f {
         return vec4(0.847, 0.847, 0.847, 1.0);
     }
 
+    if all(in.uv == vec2(-4.0)) {
+        // Empty box
+        return vec4(0.0, 0.0, 0.0, 0.2);
+    }
+
     let sd = median(msd.r, msd.g, msd.b);
     let screen_px_distance = screen_px_range * (sd - 0.5);
     let opacity = saturate(screen_px_distance + 0.5);

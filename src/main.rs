@@ -134,10 +134,42 @@ impl Context {
         }
     }
 
-    /// Convert a logical line width into a physical one by rounding and then
-    /// clamping to be positive.
-    fn scale_width(&self, width: f64) -> u32 {
-        (self.scale_factor * width).round().max(1.0) as u32
+    /// Round a logical value to an integer physical value, returning a logical
+    /// value.
+    fn round(&self, x: f64) -> f64 {
+        (x * self.scale_factor).round() / self.scale_factor
+    }
+
+    /// Ceil a logical value to an integer physical value, returning a logical
+    /// value.
+    fn ceil(&self, x: f64) -> f64 {
+        (x * self.scale_factor).ceil() / self.scale_factor
+    }
+
+    /// Round a logical value to an integer physical value greater than 0,
+    /// returning a logical value.
+    fn round_nonzero(&self, x: f64) -> f64 {
+        (x * self.scale_factor).round().max(1.0) / self.scale_factor
+    }
+
+    /// Round a logical value to an integer physical value greater than 0,
+    /// returning a physical value.
+    fn round_nonzero_as_physical(&self, x: f64) -> u32 {
+        (x * self.scale_factor).round().max(1.0) as u32
+    }
+
+    fn to_physical(&self, logical: Bounds) -> Bounds {
+        Bounds {
+            pos: logical.pos * self.scale_factor,
+            size: logical.size * self.scale_factor,
+        }
+    }
+
+    fn set_scissor_rect(&self, pass: &mut wgpu::RenderPass, logical: Bounds) {
+        let b = self.to_physical(logical);
+        let q = b.pos.max(DVec2::ZERO).round();
+        let s = ((b.size + b.pos).round() - q).max(DVec2::ZERO).round();
+        pass.set_scissor_rect(q.x as u32, q.y as u32, s.x as u32, s.y as u32);
     }
 }
 
@@ -203,12 +235,11 @@ impl App {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
-        let bounds = Bounds {
-            pos: UVec2::ZERO,
-            size: self.window.inner_size().as_glam(),
-        };
-
         self.context.update(&event);
+        let bounds = Bounds {
+            pos: DVec2::ZERO,
+            size: self.window.inner_size().as_glam().as_dvec2() / self.context.scale_factor,
+        };
 
         'update: {
             let my_event = match event.clone() {
@@ -239,6 +270,9 @@ impl App {
                 self.config.width = new_size.width.max(1);
                 self.config.height = new_size.height.max(1);
                 self.surface.configure(&self.device, &self.config);
+            }
+            WindowEvent::ScaleFactorChanged { .. } => {
+                self.window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
                 let surface_texture = self
@@ -277,43 +311,34 @@ pub enum Event {
 
 #[derive(Debug, Clone, Copy)]
 struct Bounds {
-    pos: UVec2,
-    size: UVec2,
+    pos: DVec2,
+    size: DVec2,
 }
 
 impl Bounds {
-    fn left(&self) -> u32 {
+    fn left(&self) -> f64 {
         self.pos.x
     }
 
-    fn right(&self) -> u32 {
+    fn right(&self) -> f64 {
         self.pos.x + self.size.x
     }
 
-    fn top(&self) -> u32 {
+    fn top(&self) -> f64 {
         self.pos.y
     }
 
-    fn bottom(&self) -> u32 {
+    fn bottom(&self) -> f64 {
         self.pos.y + self.size.y
     }
 
     fn is_empty(&self) -> bool {
-        self.size.x == 0 || self.size.y == 0
-    }
-
-    fn intersect(&self, other: &Bounds) -> Bounds {
-        let p0 = uvec2(self.left(), self.top()).max(uvec2(other.left(), other.top()));
-        let p1 = uvec2(self.right(), self.bottom()).min(uvec2(other.right(), other.bottom()));
-        Bounds {
-            pos: p0,
-            size: p1.saturating_sub(p0),
-        }
+        self.size.x <= 0.0 || self.size.y <= 0.0
     }
 
     fn contains(&self, position: DVec2) -> bool {
-        (self.left() as f64 <= position.x && position.x < self.right() as f64)
-            && (self.top() as f64 <= position.y && position.y < self.bottom() as f64)
+        (self.left() <= position.x && position.x < self.right())
+            && (self.top() <= position.y && position.y < self.bottom())
     }
 }
 
@@ -387,14 +412,12 @@ impl MainThing {
     fn update(&mut self, ctx: &mut Context, event: &Event, bounds: Bounds) -> Response {
         let mut response = Response::default();
 
-        let l = bounds.left() as f64 / ctx.scale_factor;
-        let r = bounds.right() as f64 / ctx.scale_factor;
-        let mut x = mix(l, r, self.resizer_position);
+        let mut x = mix(bounds.left(), bounds.right(), self.resizer_position);
         let resized = if let Event::CursorMoved = event
             && let Some(offset) = self.dragging
         {
-            x = (ctx.cursor.x + offset).clamp(l, r);
-            self.resizer_position = unmix(x, l, r);
+            x = (ctx.cursor.x + offset).clamp(bounds.left(), bounds.right());
+            self.resizer_position = unmix(x, bounds.left(), bounds.right());
             response.consume_event();
             response.request_redraw();
             true
@@ -429,14 +452,14 @@ impl MainThing {
             }
         }
 
-        let x = (x * ctx.scale_factor).round() as u32;
+        let x = ctx.round(x);
         let left = Bounds {
             pos: bounds.pos,
-            size: uvec2(x - bounds.left(), bounds.size.y),
+            size: dvec2(x - bounds.left(), bounds.size.y),
         };
         let right = Bounds {
-            pos: uvec2(x, bounds.pos.y),
-            size: uvec2(bounds.right() - x, bounds.size.y),
+            pos: dvec2(x, bounds.pos.y),
+            size: dvec2(bounds.right() - x, bounds.size.y),
         };
 
         if resized {
@@ -476,19 +499,14 @@ impl MainThing {
             ..Default::default()
         });
 
-        let x = mix(
-            bounds.left() as f64,
-            bounds.right() as f64,
-            self.resizer_position,
-        )
-        .round() as u32;
+        let x = ctx.round(mix(bounds.left(), bounds.right(), self.resizer_position));
         let left = Bounds {
             pos: bounds.pos,
-            size: uvec2(x - bounds.left(), bounds.size.y),
+            size: dvec2(x - bounds.left(), bounds.size.y),
         };
         let right = Bounds {
-            pos: uvec2(x, bounds.pos.y),
-            size: uvec2(bounds.right() - x, bounds.size.y),
+            pos: dvec2(x, bounds.pos.y),
+            size: dvec2(bounds.right() - x, bounds.size.y),
         };
         self.expression_list
             .render(ctx, device, queue, view, config, &mut encoder, left);
@@ -725,20 +743,20 @@ mod expression_list {
 
         pub fn update(&mut self, ctx: &mut Context, event: &Event, bounds: Bounds) -> Response {
             let mut response = Response::default();
-            let mut y_offset = 0;
+            let mut y_offset = 0.0;
             let mut message = None;
-            let padding = ctx.scale_width(Self::PADDING);
-            let separator_width = ctx.scale_width(Self::SEPARATOR_WIDTH);
+            let padding = ctx.round(Self::PADDING);
+            let separator_width = ctx.round_nonzero(Self::SEPARATOR_WIDTH);
 
             for (i, expression) in self.expressions.iter_mut().enumerate() {
-                let y_size = (expression.expression_size().y * ctx.scale_factor).ceil() as u32;
+                let y_size = ctx.ceil(expression.expression_size().y);
                 let (r, m) = expression.update(
                     ctx,
                     event,
-                    bounds.intersect(&Bounds {
-                        pos: bounds.pos + uvec2(0, y_offset) + padding,
-                        size: uvec2(bounds.size.x.saturating_sub(separator_width), y_size),
-                    }),
+                    Bounds {
+                        pos: bounds.pos + dvec2(0.0, y_offset) + padding,
+                        size: dvec2(bounds.size.x - padding - separator_width, y_size),
+                    },
                 );
 
                 if let Some(m) = m {
@@ -746,7 +764,7 @@ mod expression_list {
                 }
 
                 response = response.or(r);
-                y_offset += y_size + 2 * padding + separator_width;
+                y_offset += y_size + 2.0 * padding + separator_width;
             }
 
             if let Some((i, m)) = message {
@@ -839,36 +857,35 @@ mod expression_list {
                     uv: uv1,
                 });
             };
-            let mut y_offset = 0;
-            let padding = ctx.scale_width(Self::PADDING);
-            let separator_width = ctx.scale_width(Self::SEPARATOR_WIDTH);
+            let mut y_offset = 0.0;
+            let padding = ctx.round(Self::PADDING);
+            let separator_width = ctx.round_nonzero(Self::SEPARATOR_WIDTH);
 
             for expression in &mut self.expressions {
-                let y_size = (expression.expression_size().y * ctx.scale_factor).ceil() as u32;
+                let y_size = ctx.ceil(expression.expression_size().y);
                 expression.render(
                     ctx,
-                    bounds.intersect(&Bounds {
-                        pos: bounds.pos + uvec2(0, y_offset) + padding,
-                        size: uvec2(bounds.size.x, y_size),
-                    }),
+                    Bounds {
+                        pos: bounds.pos + dvec2(0.0, y_offset) + padding,
+                        size: dvec2(bounds.size.x - padding - separator_width, y_size),
+                    },
                     draw_quad,
                 );
-                y_offset += y_size + 2 * padding;
+                y_offset += y_size + 2.0 * padding;
 
-                let p0 = (bounds.pos + uvec2(0, y_offset)).as_dvec2();
-                let p1 =
-                    uvec2(bounds.right(), bounds.top() + y_offset + separator_width).as_dvec2();
+                let p0 = bounds.pos + dvec2(0.0, y_offset);
+                let p1 = dvec2(bounds.right(), bounds.top() + y_offset + separator_width);
                 let uv = DVec2::splat(-3.0);
-                draw_quad(p0, p1, uv, uv);
+                draw_quad(ctx.scale_factor * p0, ctx.scale_factor * p1, uv, uv);
 
                 y_offset += separator_width;
             }
 
             {
-                let p0 = uvec2(bounds.right().saturating_sub(separator_width), bounds.top());
-                let p1 = uvec2(bounds.right(), bounds.bottom());
+                let p0 = dvec2(bounds.right() - separator_width, bounds.top());
+                let p1 = dvec2(bounds.right(), bounds.bottom());
                 let uv = DVec2::splat(-3.0);
-                draw_quad(p0.as_dvec2(), p1.as_dvec2(), uv, uv);
+                draw_quad(ctx.scale_factor * p0, ctx.scale_factor * p1, uv, uv);
             }
 
             let indices_size = size_of_val(&indices[..]) as u64;
@@ -903,7 +920,7 @@ mod expression_list {
                 })],
                 ..Default::default()
             });
-            pass.set_scissor_rect(bounds.pos.x, bounds.pos.y, bounds.size.x, bounds.size.y);
+            ctx.set_scissor_rect(&mut pass, bounds);
             pass.set_bind_group(0, &self.bind_group, &[]);
             pass.set_pipeline(&self.pipeline);
             pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
@@ -1225,16 +1242,10 @@ mod graph {
             let mut response = Response::default();
 
             let to_vp = |vp: &Viewport, p: DVec2| {
-                flip_y(p * ctx.scale_factor - bounds.pos.as_dvec2() - 0.5 * bounds.size.as_dvec2())
-                    / bounds.size.x as f64
-                    * vp.width
-                    + vp.center
+                flip_y(p - bounds.pos - 0.5 * bounds.size) / bounds.size.x * vp.width + vp.center
             };
             let from_vp = |vp: &Viewport, p: DVec2| {
-                (flip_y(p - vp.center) / vp.width * bounds.size.x as f64
-                    + bounds.pos.as_dvec2()
-                    + 0.5 * bounds.size.as_dvec2())
-                    / ctx.scale_factor
+                flip_y(p - vp.center) / vp.width * bounds.size.x + bounds.pos + 0.5 * bounds.size
             };
             let mut zoom = |amount: f64| {
                 let origin = from_vp(&self.viewport, DVec2::ZERO);
@@ -1252,7 +1263,7 @@ mod graph {
 
             match event {
                 Event::MouseInput(ElementState::Pressed, MouseButton::Left)
-                    if bounds.contains(ctx.cursor * ctx.scale_factor) =>
+                    if bounds.contains(ctx.cursor) =>
                 {
                     self.dragging = true;
                     response.consume_event();
@@ -1271,10 +1282,10 @@ mod graph {
                         response.consume_event();
                     }
                 }
-                Event::MouseWheel(delta) if bounds.contains(ctx.cursor * ctx.scale_factor) => {
+                Event::MouseWheel(delta) if bounds.contains(ctx.cursor) => {
                     zoom((delta.y * 0.0015).exp2());
                 }
-                Event::PinchGesture(delta) if bounds.contains(ctx.cursor * ctx.scale_factor) => {
+                Event::PinchGesture(delta) if bounds.contains(ctx.cursor) => {
                     zoom(delta.exp());
                 }
                 _ => {}
@@ -1338,7 +1349,7 @@ mod graph {
                 }),
                 ..Default::default()
             });
-            pass.set_scissor_rect(bounds.pos.x, bounds.pos.y, bounds.size.x, bounds.size.y);
+            ctx.set_scissor_rect(&mut pass, bounds);
             pass.set_bind_group(0, &self.bind_group, &[]);
             pass.set_pipeline(&self.pipeline);
             pass.draw(
@@ -1354,12 +1365,11 @@ mod graph {
         fn generate_geometry(&self, ctx: &Context, bounds: Bounds) -> (Vec<Shape>, Vec<Vertex>) {
             let mut shapes = vec![];
             let mut vertices = vec![];
-            let bounds_pos = bounds.pos.as_dvec2();
-            let bounds_size = bounds.size.as_dvec2();
             let vp = &self.viewport;
-            let vp_size = dvec2(vp.width, vp.width * bounds_size.y / bounds_size.x);
+            let vp_size = dvec2(vp.width, vp.width * bounds.size.y / bounds.size.x);
+            let physical = ctx.to_physical(bounds);
 
-            let s = vp.width / bounds_size.x * (80.0 * ctx.scale_factor);
+            let s = vp.width / bounds.size.x * 80.0;
             let (mut major, mut minor) = (f64::INFINITY, 0.0);
             for (a, b) in [(1.0, 5.0), (2.0, 4.0), (5.0, 5.0)] {
                 let c = a * 10f64.powf((s / a).log10().ceil());
@@ -1375,41 +1385,51 @@ mod graph {
                 let s = DVec2::splat(step);
                 let a = (0.5 * vp_size / step).ceil();
                 let n = 2 * a.as_uvec2() + 2;
-                let b = flip_y(s / vp_size * bounds_size);
-                let c = (0.5 - flip_y(vp.center.rem_euclid(s) + a * s) / vp_size) * bounds_size
-                    + bounds_pos;
+                let b = flip_y(s / vp_size * physical.size);
+                let c = (0.5 - flip_y(vp.center.rem_euclid(s) + a * s) / vp_size) * physical.size
+                    + physical.pos;
 
                 for i in 0..n.x {
                     let x = snap(i as f64 * b.x + c.x, width) as f32;
                     vertices.push(Vertex::BREAK);
-                    vertices.push(Vertex::new((x, bounds.top() as f32), shape));
-                    vertices.push(Vertex::new((x, bounds.bottom() as f32), shape));
+                    vertices.push(Vertex::new((x, physical.top() as f32), shape));
+                    vertices.push(Vertex::new((x, physical.bottom() as f32), shape));
                 }
 
                 for i in 0..n.y {
                     let y = snap(i as f64 * b.y + c.y, width) as f32;
                     vertices.push(Vertex::BREAK);
-                    vertices.push(Vertex::new((bounds.left() as f32, y), shape));
-                    vertices.push(Vertex::new((bounds.right() as f32, y), shape));
+                    vertices.push(Vertex::new((physical.left() as f32, y), shape));
+                    vertices.push(Vertex::new((physical.right() as f32, y), shape));
                 }
             };
 
-            draw_grid(minor, [0.88, 0.88, 0.88, 1.0], ctx.scale_width(1.0));
-            draw_grid(major, [0.6, 0.6, 0.6, 1.0], ctx.scale_width(1.0));
+            draw_grid(
+                minor,
+                [0.88, 0.88, 0.88, 1.0],
+                ctx.round_nonzero_as_physical(1.0),
+            );
+            draw_grid(
+                major,
+                [0.6, 0.6, 0.6, 1.0],
+                ctx.round_nonzero_as_physical(1.0),
+            );
 
-            let to_frame = |p: DVec2| {
-                flip_y(p - vp.center) / vp.width * bounds_size.x + 0.5 * bounds_size + bounds_pos
+            let to_physical = |p: DVec2| {
+                flip_y(p - vp.center) / vp.width * physical.size.x
+                    + 0.5 * physical.size
+                    + physical.pos
             };
 
-            let w = ctx.scale_width(1.5);
-            let origin = to_frame(DVec2::ZERO).map(|x| snap(x, w)).as_vec2();
+            let w = ctx.round_nonzero_as_physical(1.5);
+            let origin = to_physical(DVec2::ZERO).map(|x| snap(x, w)).as_vec2();
             let shape = shapes.len() as u32;
             shapes.push(Shape::line([0.098, 0.098, 0.098, 1.0], w as f32));
-            vertices.push(Vertex::new((origin.x, bounds.top() as f32), shape));
-            vertices.push(Vertex::new((origin.x, bounds.bottom() as f32), shape));
+            vertices.push(Vertex::new((origin.x, physical.top() as f32), shape));
+            vertices.push(Vertex::new((origin.x, physical.bottom() as f32), shape));
             vertices.push(Vertex::BREAK);
-            vertices.push(Vertex::new((bounds.left() as f32, origin.y), shape));
-            vertices.push(Vertex::new((bounds.right() as f32, origin.y), shape));
+            vertices.push(Vertex::new((physical.left() as f32, origin.y), shape));
+            vertices.push(Vertex::new((physical.right() as f32, origin.y), shape));
 
             (shapes, vertices)
         }

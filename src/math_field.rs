@@ -6,7 +6,7 @@ use ambavia::{
     latex_parser::parse_latex,
     latex_tree::{self, ToString},
 };
-use glam::{DVec2, UVec2, dvec2};
+use glam::{DVec2, dvec2};
 use winit::{
     event::{ElementState, KeyEvent, MouseButton},
     window::CursorIcon,
@@ -753,17 +753,17 @@ impl Tree {
                 let b = tree::Bounds::default();
                 let p0 = transform(position - dvec2(0.0, tree.bounds.scale * b.height));
                 let p1 = transform(position + dvec2(0.0, tree.bounds.scale * b.depth));
-                let w = ctx.scale_width(1.0);
+                let w = ctx.round_nonzero_as_physical(1.0);
                 let x = snap(p0.x, w);
                 let p0 = dvec2(x - w as f64 / 2.0, p0.y.floor());
-                let p1 = dvec2(x + w as f64 / 2.0, p1.y.floor() + 1.0);
+                let p1 = dvec2(x + w as f64 / 2.0, p1.y.ceil());
                 let uv = DVec2::splat(-1.0);
                 draw_quad(p0, p1, uv, uv);
             }
             SelectionSpan::Range(r) => {
                 for (b, _) in &tree.nodes[r.clone()] {
-                    let p0 = transform(b.top_left()).floor();
-                    let p1 = transform(b.bottom_right()).ceil();
+                    let p0 = transform(b.top_left());
+                    let p1 = transform(b.bottom_right());
                     let uv = DVec2::splat(-2.0);
                     draw_quad(p0, p1, uv, uv);
                 }
@@ -820,7 +820,7 @@ impl Tree {
                     let mut l0 = transform(dvec2(line.x_min, line.y));
                     let mut l1 = transform(dvec2(line.x_max, line.y));
                     l0.y = l0.y.floor();
-                    l1.y = l0.y + ctx.scale_width(1.0) as f64;
+                    l1.y = l0.y + ctx.round_nonzero_as_physical(1.0) as f64;
                     draw_quad(l0, l1, DVec2::splat(-1.0), DVec2::splat(-1.0));
                 }
                 Frac { num, den, line } => {
@@ -828,7 +828,7 @@ impl Tree {
                     den.render(ctx, transform, draw_quad);
                     let l0 = transform(dvec2(line.x_min, line.y));
                     let l1 = transform(dvec2(line.x_max, line.y));
-                    let w = ctx.scale_width(1.0);
+                    let w = ctx.round_nonzero_as_physical(1.0);
                     let y = snap(l0.y, w);
                     draw_quad(
                         dvec2(l0.x.floor(), y - w as f64 / 2.0),
@@ -989,14 +989,11 @@ impl MathField {
         let mut response = Response::default();
         let mut message = None;
 
-        let hovered =
-            (bounds.contains(ctx.cursor * ctx.scale_factor) || self.dragging).then(|| {
-                let position = (ctx.cursor - bounds.pos.as_dvec2() / ctx.scale_factor
-                    + dvec2(self.scroll, 0.0))
-                    / self.scale
-                    - dvec2(self.left_padding, self.tree.bounds.height);
-                self.tree.get_hovered(vec![], position)
-            });
+        let hovered = (bounds.contains(ctx.cursor) || self.dragging).then(|| {
+            let position = (ctx.cursor - bounds.pos + dvec2(self.scroll, 0.0)) / self.scale
+                - dvec2(self.left_padding, self.tree.bounds.height);
+            self.tree.get_hovered(vec![], position)
+        });
 
         if hovered.is_some() {
             response.cursor_icon = CursorIcon::Text;
@@ -2109,8 +2106,6 @@ impl MathField {
             _ => {}
         }
 
-        let width = bounds.size.x as f64 / ctx.scale_factor;
-
         if self.selection_was_set {
             self.selection_was_set = false;
             let focus = &self.selection.as_ref().unwrap().focus;
@@ -2125,15 +2120,18 @@ impl MathField {
             let x = -self.scroll + self.scale * (self.left_padding + x);
             const CURSOR_EDGE: f64 = 0.8;
             let cursor_edge = self.scale * CURSOR_EDGE;
-            let x1 = if width < 2.0 * cursor_edge {
-                width / 2.0
+            let x1 = if bounds.size.x < 2.0 * cursor_edge {
+                bounds.size.x / 2.0
             } else {
-                x.clamp(cursor_edge, width - cursor_edge)
+                x.clamp(cursor_edge, bounds.size.x - cursor_edge)
             };
             self.scroll += x - x1;
         }
 
-        self.scroll = self.scroll.min(self.expression_size().x - width).max(0.0);
+        self.scroll = self
+            .scroll
+            .min(self.expression_size().x - bounds.size.x)
+            .max(0.0);
 
         (response, message)
     }
@@ -2144,8 +2142,8 @@ impl MathField {
         bounds: Bounds,
         draw_quad: &mut impl FnMut(DVec2, DVec2, DVec2, DVec2),
     ) {
-        let top_left = bounds.pos.as_dvec2();
-        let bottom_right = (bounds.pos + bounds.size).as_dvec2();
+        let top_left = bounds.pos * ctx.scale_factor;
+        let bottom_right = (bounds.pos + bounds.size) * ctx.scale_factor;
         let draw_quad = &mut |p0: DVec2, p1: DVec2, uv0: DVec2, uv1: DVec2| {
             let q0 = p0.clamp(top_left, bottom_right);
             let q1 = p1.clamp(top_left, bottom_right);
@@ -2158,10 +2156,9 @@ impl MathField {
         };
         let height = self.tree.bounds.height;
         let transform = &|p| {
-            bounds.pos.as_dvec2()
-                + ctx.scale_factor
-                    * (self.scale * (p + dvec2(self.left_padding, height))
-                        - dvec2(self.scroll, 0.0))
+            (bounds.pos - dvec2(self.scroll, 0.0)
+                + self.scale * (p + dvec2(self.left_padding, height)))
+                * ctx.scale_factor
         };
         match &self.selection {
             Some(selection) => {

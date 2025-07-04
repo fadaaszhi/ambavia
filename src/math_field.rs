@@ -552,12 +552,15 @@ impl Tree {
     fn join_consecutive_scripts(&mut self, mut cursor: Option<(&mut Cursor, usize)>) {
         let mut i = 0;
         while i < self.len() {
-            let mut lowerscripts: Vec<Vec<_>> = vec![];
-            let mut upperscripts: Vec<Vec<_>> = vec![];
-            let mut first = true;
-            while let Some(Script { .. }) = self.get(i) {
+            if let Script { .. } = &self[i].1 {
                 let (lower, upper) = self.remove_script(i);
-                if !first {
+                let mut lowers: Vec<Vec<_>> = vec![];
+                let mut uppers: Vec<Vec<_>> = vec![];
+                lowers.extend(lower.map(|x| x.nodes));
+                uppers.extend(upper.map(|x| x.nodes));
+
+                while let Some(Script { .. }) = self.get(i) {
+                    let (lower, upper) = self.remove_script(i);
                     if let Some((cursor, offset)) = &mut cursor {
                         if let Some((index, field)) = cursor.path.get_mut(*offset) {
                             if *index > i {
@@ -569,10 +572,10 @@ impl Tree {
                                         .get_mut(*offset + 1)
                                         .map_or(&mut cursor.index, |(index, _)| index);
                                     *index += if field == ScriptLower {
-                                        &lowerscripts
+                                        &lowers
                                     } else {
                                         assert_eq!(field, ScriptUpper);
-                                        &upperscripts
+                                        &uppers
                                     }
                                     .iter()
                                     .map(|s| s.len())
@@ -582,34 +585,33 @@ impl Tree {
                         } else if cursor.index > i {
                             cursor.index -= 1;
                             if cursor.index == i {
-                                if !upperscripts.is_empty() {
+                                if !uppers.is_empty() {
                                     cursor.path.push((cursor.index, ScriptUpper));
-                                    cursor.index = upperscripts.iter().map(|s| s.len()).sum();
+                                    cursor.index = uppers.iter().map(|s| s.len()).sum();
                                 } else {
-                                    assert!(!lowerscripts.is_empty());
+                                    assert!(!lowers.is_empty());
                                     cursor.path.push((cursor.index, ScriptLower));
-                                    cursor.index = lowerscripts.iter().map(|s| s.len()).sum();
+                                    cursor.index = lowers.iter().map(|s| s.len()).sum();
                                 }
                             }
                         }
                     }
+                    lowers.extend(lower.map(|x| x.nodes));
+                    uppers.extend(upper.map(|x| x.nodes));
                 }
 
-                first = false;
-                lowerscripts.extend(lower.map(|x| x.nodes));
-                upperscripts.extend(upper.map(|x| x.nodes));
-            }
-            let lower = lowerscripts.into_iter().reduce(|mut x, mut y| {
-                x.append(&mut y);
-                x
-            });
-            let upper = upperscripts.into_iter().reduce(|mut x, mut y| {
-                x.append(&mut y);
-                x
-            });
-            if lower.is_some() || upper.is_some() {
+                let lower = lowers.into_iter().reduce(|mut x, mut y| {
+                    x.append(&mut y);
+                    x
+                });
+                let upper = uppers.into_iter().reduce(|mut x, mut y| {
+                    x.append(&mut y);
+                    x
+                });
+                assert!(lower.is_some() || upper.is_some());
                 self.insert(i, new_script(lower, upper));
             }
+
             i += 1;
         }
 

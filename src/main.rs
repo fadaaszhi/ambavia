@@ -108,8 +108,11 @@ struct App {
 
 struct Context {
     clipboard: Clipboard,
+    /// The cursor's previous logical position
     prev_cursor: DVec2,
+    /// The cursor's current logical position
     cursor: DVec2,
+    /// The window's scale factor
     scale_factor: f64,
     modifiers: ModifiersState,
 }
@@ -121,7 +124,9 @@ impl Context {
 
         match &event {
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
-            WindowEvent::CursorMoved { position, .. } => self.cursor = position.as_glam(),
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor = position.as_glam() / self.scale_factor
+            }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 self.scale_factor = *scale_factor
             }
@@ -129,6 +134,8 @@ impl Context {
         }
     }
 
+    /// Convert a logical line width into a physical one by rounding and then
+    /// clamping to be positive.
     fn scale_width(&self, width: f64) -> u32 {
         (self.scale_factor * width).round().max(1.0) as u32
     }
@@ -205,9 +212,13 @@ impl App {
 
         'update: {
             let my_event = match event.clone() {
+                WindowEvent::Resized { .. } => Event::Resized,
                 WindowEvent::KeyboardInput { event, .. } => Event::KeyboardInput(event),
                 WindowEvent::ModifiersChanged(modifiers) => Event::ModifiersChanged(modifiers),
                 WindowEvent::CursorMoved { .. } => Event::CursorMoved,
+                // Is this delta a physical size? Do we need to convert it to
+                // logical? I think it's already logical because my trackpad
+                // feels less sensitive when I decrease my Mac's scale factor.
                 WindowEvent::MouseWheel { delta, .. } => Event::MouseWheel(match delta {
                     winit::event::MouseScrollDelta::LineDelta(x, y) => vec2(x, y).as_dvec2() * 20.0,
                     winit::event::MouseScrollDelta::PixelDelta(delta) => delta.as_glam(),
@@ -255,7 +266,7 @@ impl App {
 
 #[derive(Debug)]
 pub enum Event {
-    // Resized(UVec2),
+    Resized,
     KeyboardInput(KeyEvent),
     ModifiersChanged(Modifiers),
     CursorMoved,
@@ -376,21 +387,23 @@ impl MainThing {
     fn update(&mut self, ctx: &mut Context, event: &Event, bounds: Bounds) -> Response {
         let mut response = Response::default();
 
-        let l = bounds.left() as f64;
-        let r = bounds.right() as f64;
+        let l = bounds.left() as f64 / ctx.scale_factor;
+        let r = bounds.right() as f64 / ctx.scale_factor;
         let mut x = mix(l, r, self.resizer_position);
-
-        if let Event::CursorMoved = event {
-            if let Some(offset) = self.dragging {
-                x = (ctx.cursor.x + offset).clamp(l, r);
-                self.resizer_position = unmix(x, l, r);
-                response.consume_event();
-                response.request_redraw();
-            }
-        }
+        let resized = if let Event::CursorMoved = event
+            && let Some(offset) = self.dragging
+        {
+            x = (ctx.cursor.x + offset).clamp(l, r);
+            self.resizer_position = unmix(x, l, r);
+            response.consume_event();
+            response.request_redraw();
+            true
+        } else {
+            false
+        };
 
         let offset = x - ctx.cursor.x;
-        let hovering = offset.abs() <= ctx.scale_factor * self.resizer_width / 2.0;
+        let hovering = offset.abs() <= self.resizer_width / 2.0;
 
         if let Event::MouseInput(state, MouseButton::Left) = event {
             match state {
@@ -416,7 +429,7 @@ impl MainThing {
             }
         }
 
-        let x = x.round() as u32;
+        let x = (x * ctx.scale_factor).round() as u32;
         let left = Bounds {
             pos: bounds.pos,
             size: uvec2(x - bounds.left(), bounds.size.y),
@@ -425,6 +438,11 @@ impl MainThing {
             pos: uvec2(x, bounds.pos.y),
             size: uvec2(bounds.right() - x, bounds.size.y),
         };
+
+        if resized {
+            self.expression_list.update(ctx, &Event::Resized, left);
+            self.graph_paper.update(ctx, &Event::Resized, right);
+        }
 
         response
             .or_else(|| self.expression_list.update(ctx, event, left))
@@ -710,15 +728,16 @@ mod expression_list {
             let mut y_offset = 0;
             let mut message = None;
             let padding = ctx.scale_width(Self::PADDING);
+            let separator_width = ctx.scale_width(Self::SEPARATOR_WIDTH);
 
             for (i, expression) in self.expressions.iter_mut().enumerate() {
-                let y_size = expression.size(ctx).y.ceil() as u32;
+                let y_size = (expression.expression_size().y * ctx.scale_factor).ceil() as u32;
                 let (r, m) = expression.update(
                     ctx,
                     event,
                     bounds.intersect(&Bounds {
                         pos: bounds.pos + uvec2(0, y_offset) + padding,
-                        size: uvec2(bounds.size.x, y_size),
+                        size: uvec2(bounds.size.x.saturating_sub(separator_width), y_size),
                     }),
                 );
 
@@ -727,7 +746,7 @@ mod expression_list {
                 }
 
                 response = response.or(r);
-                y_offset += y_size + 2 * padding + ctx.scale_width(Self::SEPARATOR_WIDTH);
+                y_offset += y_size + 2 * padding + separator_width;
             }
 
             if let Some((i, m)) = message {
@@ -822,9 +841,10 @@ mod expression_list {
             };
             let mut y_offset = 0;
             let padding = ctx.scale_width(Self::PADDING);
+            let separator_width = ctx.scale_width(Self::SEPARATOR_WIDTH);
 
             for expression in &mut self.expressions {
-                let y_size = expression.size(ctx).y.ceil() as u32;
+                let y_size = (expression.expression_size().y * ctx.scale_factor).ceil() as u32;
                 expression.render(
                     ctx,
                     bounds.intersect(&Bounds {
@@ -836,24 +856,16 @@ mod expression_list {
                 y_offset += y_size + 2 * padding;
 
                 let p0 = (bounds.pos + uvec2(0, y_offset)).as_dvec2();
-                let p1 = uvec2(
-                    bounds.right(),
-                    bounds.top() + y_offset + ctx.scale_width(Self::SEPARATOR_WIDTH),
-                )
-                .as_dvec2();
+                let p1 =
+                    uvec2(bounds.right(), bounds.top() + y_offset + separator_width).as_dvec2();
                 let uv = DVec2::splat(-3.0);
                 draw_quad(p0, p1, uv, uv);
 
-                y_offset += ctx.scale_width(Self::SEPARATOR_WIDTH);
+                y_offset += separator_width;
             }
 
             {
-                let p0 = uvec2(
-                    bounds
-                        .right()
-                        .saturating_sub(ctx.scale_width(Self::SEPARATOR_WIDTH)),
-                    bounds.top(),
-                );
+                let p0 = uvec2(bounds.right().saturating_sub(separator_width), bounds.top());
                 let p1 = uvec2(bounds.right(), bounds.bottom());
                 let uv = DVec2::splat(-3.0);
                 draw_quad(p0.as_dvec2(), p1.as_dvec2(), uv, uv);
@@ -1213,21 +1225,20 @@ mod graph {
             let mut response = Response::default();
 
             let to_vp = |vp: &Viewport, p: DVec2| {
-                flip_y(p - bounds.pos.as_dvec2() - 0.5 * bounds.size.as_dvec2())
+                flip_y(p * ctx.scale_factor - bounds.pos.as_dvec2() - 0.5 * bounds.size.as_dvec2())
                     / bounds.size.x as f64
                     * vp.width
                     + vp.center
             };
             let from_vp = |vp: &Viewport, p: DVec2| {
-                flip_y(p - vp.center) / vp.width * bounds.size.x as f64
+                (flip_y(p - vp.center) / vp.width * bounds.size.x as f64
                     + bounds.pos.as_dvec2()
-                    + 0.5 * bounds.size.as_dvec2()
+                    + 0.5 * bounds.size.as_dvec2())
+                    / ctx.scale_factor
             };
             let mut zoom = |amount: f64| {
                 let origin = from_vp(&self.viewport, DVec2::ZERO);
-                let p = if amount > 1.0
-                    && (ctx.cursor - origin).abs().max_element() < 25.0 * ctx.scale_factor
-                {
+                let p = if amount > 1.0 && (ctx.cursor - origin).abs().max_element() < 25.0 {
                     origin
                 } else {
                     ctx.cursor
@@ -1241,7 +1252,7 @@ mod graph {
 
             match event {
                 Event::MouseInput(ElementState::Pressed, MouseButton::Left)
-                    if bounds.contains(ctx.cursor) =>
+                    if bounds.contains(ctx.cursor * ctx.scale_factor) =>
                 {
                     self.dragging = true;
                     response.consume_event();
@@ -1260,10 +1271,10 @@ mod graph {
                         response.consume_event();
                     }
                 }
-                Event::MouseWheel(delta) if bounds.contains(ctx.cursor) => {
+                Event::MouseWheel(delta) if bounds.contains(ctx.cursor * ctx.scale_factor) => {
                     zoom((delta.y * 0.0015).exp2());
                 }
-                Event::PinchGesture(delta) if bounds.contains(ctx.cursor) => {
+                Event::PinchGesture(delta) if bounds.contains(ctx.cursor * ctx.scale_factor) => {
                     zoom(delta.exp());
                 }
                 _ => {}

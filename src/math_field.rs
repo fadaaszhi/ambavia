@@ -875,11 +875,11 @@ pub struct MathField {
     left_padding: f64,
     right_padding: f64,
     scale: f64,
-    bounds: Bounds,
-    scale_factor: f64,
+    /// Logical
     scroll: f64,
     dragging: bool,
     selection: Option<UserSelection>,
+    selection_was_set: bool,
 }
 
 impl Default for MathField {
@@ -893,14 +893,11 @@ impl Default for MathField {
             left_padding: -j_glyph.plane.left,
             right_padding: v_glyph.plane.right - v_glyph.advance,
             scale: 20.0,
-            bounds: Bounds {
-                pos: UVec2::ZERO,
-                size: UVec2::ZERO,
-            },
-            scale_factor: 1.0,
             scroll: 0.0,
             dragging: false,
             selection: None,
+
+            selection_was_set: false,
         }
     }
 }
@@ -931,59 +928,19 @@ pub enum Message {
 }
 
 impl MathField {
-    pub fn size(&self, ctx: &Context) -> DVec2 {
-        self.size_impl(ctx.scale_factor)
-    }
-
-    fn size_impl(&self, scale_factor: f64) -> DVec2 {
+    /// Logical
+    pub fn expression_size(&self) -> DVec2 {
         let b = &self.tree.bounds;
-        scale_factor
-            * self.scale
+        self.scale
             * dvec2(
                 self.left_padding + b.width + self.right_padding,
                 b.height + b.depth,
             )
     }
 
-    /// `delta > 0` pushes content to the right.
-    fn scroll(&mut self, scale_factor: f64, bounds: Bounds, delta: f64) {
-        self.scroll -= delta;
-        self.scroll = self
-            .scroll
-            .min(self.size_impl(scale_factor).x - bounds.size.x as f64);
-        self.scroll = self.scroll.max(0.0);
-    }
-
     fn set_selection(&mut self, selection: impl Into<UserSelection>) {
-        let selection: UserSelection = selection.into();
-        let focus = &selection.focus;
-        let tree = self.tree.walk(&focus.path);
-        let x = if tree.is_empty() {
-            tree.bounds.left()
-        } else {
-            tree.nodes
-                .get(focus.index)
-                .map_or(tree.bounds.right(), |(b, _)| b.left())
-        };
-        let x = -self.scroll + self.scale_factor * self.scale * (self.left_padding + x);
-        const CURSOR_EDGE: f64 = 0.8;
-        let cursor_edge = self.scale_factor * self.scale * CURSOR_EDGE;
-        let x1 = if x < cursor_edge && self.bounds.size.x as f64 - cursor_edge <= x {
-            self.bounds.size.x as f64 / 2.0
-        } else if x < cursor_edge {
-            if x >= self.bounds.size.x as f64 - cursor_edge {
-                self.bounds.size.x as f64 / 2.0
-            } else {
-                cursor_edge
-            }
-        } else if x >= self.bounds.size.x as f64 - cursor_edge {
-            self.bounds.size.x as f64 - cursor_edge
-        } else {
-            x
-        };
-        self.scroll(self.scale_factor, self.bounds, x1 - x);
-
-        self.selection = Some(selection);
+        self.selection = Some(selection.into());
+        self.selection_was_set = true;
     }
 
     fn set_cursor(&mut self, cursor: impl Into<Cursor>) {
@@ -1029,17 +986,17 @@ impl MathField {
         event: &Event,
         bounds: Bounds,
     ) -> (Response, Option<Message>) {
-        self.bounds = bounds;
-        self.scale_factor = ctx.scale_factor;
         let mut response = Response::default();
         let mut message = None;
 
-        let hovered = (bounds.contains(ctx.cursor) || self.dragging).then(|| {
-            let position = (ctx.cursor - bounds.pos.as_dvec2() + dvec2(self.scroll, 0.0))
-                / (ctx.scale_factor * self.scale)
-                - dvec2(self.left_padding, self.tree.bounds.height);
-            self.tree.get_hovered(vec![], position)
-        });
+        let hovered =
+            (bounds.contains(ctx.cursor * ctx.scale_factor) || self.dragging).then(|| {
+                let position = (ctx.cursor - bounds.pos.as_dvec2() / ctx.scale_factor
+                    + dvec2(self.scroll, 0.0))
+                    / self.scale
+                    - dvec2(self.left_padding, self.tree.bounds.height);
+                self.tree.get_hovered(vec![], position)
+            });
 
         if hovered.is_some() {
             response.cursor_icon = CursorIcon::Text;
@@ -2130,7 +2087,7 @@ impl MathField {
             }
             Event::MouseWheel(DVec2 { x, y }) if hovered.is_some() => {
                 if x.abs() > y.abs() {
-                    self.scroll(ctx.scale_factor, bounds, *x);
+                    self.scroll -= x;
                     response.consume_event();
                     response.request_redraw();
                 }
@@ -2152,6 +2109,32 @@ impl MathField {
             _ => {}
         }
 
+        let width = bounds.size.x as f64 / ctx.scale_factor;
+
+        if self.selection_was_set {
+            self.selection_was_set = false;
+            let focus = &self.selection.as_ref().unwrap().focus;
+            let tree = self.tree.walk(&focus.path);
+            let x = if tree.is_empty() {
+                tree.bounds.left()
+            } else {
+                tree.nodes
+                    .get(focus.index)
+                    .map_or(tree.bounds.right(), |(b, _)| b.left())
+            };
+            let x = -self.scroll + self.scale * (self.left_padding + x);
+            const CURSOR_EDGE: f64 = 0.8;
+            let cursor_edge = self.scale * CURSOR_EDGE;
+            let x1 = if width < 2.0 * cursor_edge {
+                width / 2.0
+            } else {
+                x.clamp(cursor_edge, width - cursor_edge)
+            };
+            self.scroll += x - x1;
+        }
+
+        self.scroll = self.scroll.min(self.expression_size().x - width).max(0.0);
+
         (response, message)
     }
 
@@ -2161,7 +2144,6 @@ impl MathField {
         bounds: Bounds,
         draw_quad: &mut impl FnMut(DVec2, DVec2, DVec2, DVec2),
     ) {
-        self.scroll(ctx.scale_factor, bounds, 0.0);
         let top_left = bounds.pos.as_dvec2();
         let bottom_right = (bounds.pos + bounds.size).as_dvec2();
         let draw_quad = &mut |p0: DVec2, p1: DVec2, uv0: DVec2, uv1: DVec2| {
@@ -2176,8 +2158,10 @@ impl MathField {
         };
         let height = self.tree.bounds.height;
         let transform = &|p| {
-            bounds.pos.as_dvec2() - dvec2(self.scroll, 0.0)
-                + ctx.scale_factor * self.scale * (p + dvec2(self.left_padding, height))
+            bounds.pos.as_dvec2()
+                + ctx.scale_factor
+                    * (self.scale * (p + dvec2(self.left_padding, height))
+                        - dvec2(self.scroll, 0.0))
         };
         match &self.selection {
             Some(selection) => {

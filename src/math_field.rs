@@ -1020,10 +1020,10 @@ impl MathField {
                                                 self.set_cursor((path, index));
                                             }
                                             Script {
-                                                lower: Some(lower), ..
+                                                upper: Some(upper), ..
                                             } => {
                                                 path.push((i, ScriptUpper));
-                                                let index = lower.len();
+                                                let index = upper.len();
                                                 self.set_cursor((path, index));
                                             }
                                             Radical { arg, .. } => {
@@ -1106,7 +1106,7 @@ impl MathField {
                                                 path.push((i, BracketInner));
                                                 self.set_cursor((path, 0));
                                             }
-                                            Script { lower: Some(_), .. } => {
+                                            Script { upper: Some(_), .. } => {
                                                 path.push((i, ScriptUpper));
                                                 self.set_cursor((path, 0));
                                             }
@@ -1309,7 +1309,7 @@ impl MathField {
                                 if i < nodes.len() {
                                     match nodes[i].1 {
                                         Bracket { .. } => {}
-                                        Script { lower: Some(_), .. } => {
+                                        Script { upper: Some(_), .. } => {
                                             path.push((i, ScriptUpper));
                                             self.set_cursor((path, 0));
                                             break 'stuff;
@@ -1339,10 +1339,10 @@ impl MathField {
                                     match &nodes[i - 1].1 {
                                         Bracket { .. } => {}
                                         Script {
-                                            lower: Some(lower), ..
+                                            upper: Some(upper), ..
                                         } => {
                                             path.push((i - 1, ScriptUpper));
-                                            let index = lower.len();
+                                            let index = upper.len();
                                             self.set_cursor((path, index));
                                             break 'stuff;
                                         }
@@ -1354,9 +1354,9 @@ impl MathField {
                                             self.set_cursor((path, index));
                                             break 'stuff;
                                         }
-                                        BigOp { lower, .. } => {
+                                        BigOp { upper, .. } => {
                                             path.push((i - 1, BigOpUpper));
-                                            let index = lower.len();
+                                            let index = upper.len();
                                             self.set_cursor((path, index));
                                             break 'stuff;
                                         }

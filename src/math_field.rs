@@ -1038,9 +1038,9 @@ impl MathField {
                                                 let index = num.len();
                                                 self.set_cursor((path, index));
                                             }
-                                            BigOp { lower, .. } => {
+                                            BigOp { upper, .. } => {
                                                 path.push((i, BigOpUpper));
-                                                let index = lower.len();
+                                                let index = upper.len();
                                                 self.set_cursor((path, index));
                                             }
                                             Script { .. } | Char { .. } => {

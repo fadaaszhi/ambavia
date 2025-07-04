@@ -1620,7 +1620,7 @@ impl MathField {
                                         Bracket { right, .. } => {
                                             if right.is_none() {
                                                 let (_, _, inner) = nodes.remove_bracket(i);
-                                                nodes.splice(i..i, inner.nodes.into_iter());
+                                                nodes.splice(i..i, inner.nodes);
                                                 self.tree_updated((path, i));
                                             } else {
                                                 let mut rest =
@@ -1648,7 +1648,7 @@ impl MathField {
                                         }
                                         Radical { .. } => {
                                             let (_, arg) = nodes.remove_radical(i);
-                                            nodes.splice(i..i, arg.nodes.into_iter());
+                                            nodes.splice(i..i, arg.nodes);
                                             self.tree_updated((path, i));
                                         }
                                         Frac { .. } => {
@@ -1673,7 +1673,7 @@ impl MathField {
                                             } else {
                                                 let (_, _, inner) = nodes.remove_bracket(index);
                                                 let i = index + inner.len();
-                                                nodes.splice(index..index, inner.nodes.into_iter());
+                                                nodes.splice(index..index, inner.nodes);
                                                 self.tree_updated((path, i));
                                             }
                                         }
@@ -1714,7 +1714,7 @@ impl MathField {
                                                         })
                                                     })
                                                     .into_iter()
-                                                    .chain(upper.nodes.into_iter()),
+                                                    .chain(upper.nodes),
                                             );
                                             self.tree_updated((path, i));
                                         }
@@ -1728,7 +1728,7 @@ impl MathField {
                                                 root.map(|root| root.nodes)
                                                     .into_iter()
                                                     .flatten()
-                                                    .chain(arg.nodes.into_iter()),
+                                                    .chain(arg.nodes),
                                             );
                                             self.tree_updated((path, i));
                                         }
@@ -1741,7 +1741,7 @@ impl MathField {
                                             };
                                             nodes.splice(
                                                 index..index,
-                                                num.nodes.into_iter().chain(den.nodes.into_iter()),
+                                                num.nodes.into_iter().chain(den.nodes),
                                             );
                                             self.tree_updated((path, i));
                                         }
@@ -1754,10 +1754,7 @@ impl MathField {
                                             };
                                             nodes.splice(
                                                 index..index,
-                                                lower
-                                                    .nodes
-                                                    .into_iter()
-                                                    .chain(upper.nodes.into_iter()),
+                                                lower.nodes.into_iter().chain(upper.nodes),
                                             );
                                             self.tree_updated((path, i));
                                         }
@@ -1817,9 +1814,7 @@ impl MathField {
                                     let nodes = Tree::from(&latex);
                                     let r = span.as_range();
                                     let pasted_len = nodes.len();
-                                    self.tree
-                                        .walk_mut(&path)
-                                        .splice(r.clone(), nodes.nodes.into_iter());
+                                    self.tree.walk_mut(&path).splice(r.clone(), nodes.nodes);
                                     self.tree_updated((path, r.start + pasted_len));
                                     response.request_redraw();
                                 }

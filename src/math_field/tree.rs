@@ -64,7 +64,7 @@ const OPERATORNAMES: &[&str] = &[
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Bracket {
     Paren,
-    Bracket,
+    Square,
     Brace,
     Pipe,
 }
@@ -73,7 +73,7 @@ impl From<char> for Bracket {
     fn from(value: char) -> Self {
         match value {
             '(' | ')' => Bracket::Paren,
-            '[' | ']' => Bracket::Bracket,
+            '[' | ']' => Bracket::Square,
             '{' | '}' => Bracket::Brace,
             '|' => Bracket::Pipe,
             _ => panic!("{value:?} is not a bracket"),
@@ -381,13 +381,13 @@ pub fn to_latex(tree: &[(Bounds, Node)]) -> latex_tree::Nodes<'static> {
                 let (left, right) = (
                     match left.or(*right).unwrap() {
                         Bracket::Paren => '(',
-                        Bracket::Bracket => '[',
+                        Bracket::Square => '[',
                         Bracket::Brace => '{',
                         Bracket::Pipe => '|',
                     },
                     match right.or(*left).unwrap() {
                         Bracket::Paren => ')',
-                        Bracket::Bracket => ']',
+                        Bracket::Square => ']',
                         Bracket::Brace => '}',
                         Bracket::Pipe => '|',
                     },
@@ -746,13 +746,13 @@ impl Tree {
                 } => {
                     *left_quad = match left.or(*right).unwrap() {
                         Bracket::Paren => get_quad(Font::Size1Regular, '('),
-                        Bracket::Bracket => get_quad(Font::Size1Regular, '['),
+                        Bracket::Square => get_quad(Font::Size1Regular, '['),
                         Bracket::Brace => get_quad(Font::Size1Regular, '{'),
                         Bracket::Pipe => get_quad(Font::MainRegular, '|'),
                     };
                     *right_quad = match right.or(*left).unwrap() {
                         Bracket::Paren => get_quad(Font::Size1Regular, ')'),
-                        Bracket::Bracket => get_quad(Font::Size1Regular, ']'),
+                        Bracket::Square => get_quad(Font::Size1Regular, ']'),
                         Bracket::Brace => get_quad(Font::Size1Regular, '}'),
                         Bracket::Pipe => get_quad(Font::MainRegular, '|'),
                     };

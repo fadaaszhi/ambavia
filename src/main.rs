@@ -86,6 +86,12 @@ impl Mix<f64> for DVec2 {
     }
 }
 
+impl Mix<DVec2> for DVec2 {
+    fn mix(self, other: Self, t: DVec2) -> Self {
+        dvec2(mix(self.x, other.x, t.x), mix(self.y, other.y, t.y))
+    }
+}
+
 fn unmix(t: f64, x: f64, y: f64) -> f64 {
     (t - x) / (y - x)
 }

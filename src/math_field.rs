@@ -6,7 +6,7 @@ use ambavia::{
     latex_parser::parse_latex,
     latex_tree::{self, ToString},
 };
-use glam::{DVec2, dvec2};
+use glam::{DVec2, UVec2, dvec2};
 use winit::{
     event::{ElementState, KeyEvent, MouseButton},
     window::CursorIcon,
@@ -14,13 +14,14 @@ use winit::{
 
 use crate::{
     Bounds, Context, Event, Response,
+    katex_font::{Font, get_glyph},
     math_field::tree::{
         BigOp as BigOpE, Bracket as BracketE,
         Node::{self, *},
         TexturedQuad, Tree, ends_in_operatorname, new_big_op, new_bracket, new_char, new_frac,
         new_radical, new_script, new_script_lower, new_script_upper, new_sqrt, to_latex,
     },
-    snap,
+    mix, snap,
 };
 
 /// Specifies which structural component of a node to navigate to. Used for
@@ -108,6 +109,15 @@ impl From<Cursor> for UserSelection {
         Self {
             anchor: c.clone(),
             focus: c,
+        }
+    }
+}
+
+impl From<(Cursor, Cursor)> for UserSelection {
+    fn from((a, f): (Cursor, Cursor)) -> Self {
+        Self {
+            anchor: a,
+            focus: f,
         }
     }
 }
@@ -861,16 +871,34 @@ impl TexturedQuad {
 #[derive(Debug)]
 pub struct MathField {
     tree: Tree,
+    /// Applied before scaling
+    left_padding: f64,
+    right_padding: f64,
     scale: f64,
+    bounds: Bounds,
+    scale_factor: f64,
+    scroll: f64,
     dragging: bool,
     selection: Option<UserSelection>,
 }
 
 impl Default for MathField {
     fn default() -> Self {
+        // These characters escape their bounds so draw extra by that much to
+        // avoid them getting clipped off
+        let j_glyph = get_glyph(Font::MainRegular, 'j');
+        let v_glyph = get_glyph(Font::MathItalic, 'V');
         Self {
             tree: Default::default(),
+            left_padding: -j_glyph.plane.left,
+            right_padding: v_glyph.plane.right - v_glyph.advance,
             scale: 20.0,
+            bounds: Bounds {
+                pos: UVec2::ZERO,
+                size: UVec2::ZERO,
+            },
+            scale_factor: 1.0,
+            scroll: 0.0,
             dragging: false,
             selection: None,
         }
@@ -904,20 +932,70 @@ pub enum Message {
 
 impl MathField {
     pub fn size(&self, ctx: &Context) -> DVec2 {
+        self.size_impl(ctx.scale_factor)
+    }
+
+    fn size_impl(&self, scale_factor: f64) -> DVec2 {
         let b = &self.tree.bounds;
-        ctx.scale_factor * self.scale * dvec2(b.width, b.height + b.depth)
+        scale_factor
+            * self.scale
+            * dvec2(
+                self.left_padding + b.width + self.right_padding,
+                b.height + b.depth,
+            )
+    }
+
+    /// `delta > 0` pushes content to the right.
+    fn scroll(&mut self, scale_factor: f64, bounds: Bounds, delta: f64) {
+        self.scroll -= delta;
+        self.scroll = self
+            .scroll
+            .min(self.size_impl(scale_factor).x - bounds.size.x as f64);
+        self.scroll = self.scroll.max(0.0);
+    }
+
+    fn set_selection(&mut self, selection: impl Into<UserSelection>) {
+        let selection: UserSelection = selection.into();
+        let focus = &selection.focus;
+        let tree = self.tree.walk(&focus.path);
+        let x = if tree.is_empty() {
+            tree.bounds.left()
+        } else {
+            tree.nodes
+                .get(focus.index)
+                .map_or(tree.bounds.right(), |(b, _)| b.left())
+        };
+        let x = -self.scroll + self.scale_factor * self.scale * (self.left_padding + x);
+        const CURSOR_EDGE: f64 = 0.8;
+        let cursor_edge = self.scale_factor * self.scale * CURSOR_EDGE;
+        let x1 = if x < cursor_edge && self.bounds.size.x as f64 - cursor_edge <= x {
+            self.bounds.size.x as f64 / 2.0
+        } else if x < cursor_edge {
+            if x >= self.bounds.size.x as f64 - cursor_edge {
+                self.bounds.size.x as f64 / 2.0
+            } else {
+                cursor_edge
+            }
+        } else if x >= self.bounds.size.x as f64 - cursor_edge {
+            self.bounds.size.x as f64 - cursor_edge
+        } else {
+            x
+        };
+        self.scroll(self.scale_factor, self.bounds, x1 - x);
+
+        self.selection = Some(selection);
     }
 
     fn set_cursor(&mut self, cursor: impl Into<Cursor>) {
-        self.selection = Some(cursor.into().into());
+        self.set_selection(cursor.into());
     }
 
     fn tree_updated(&mut self, cursor: impl Into<Cursor>) {
         let mut cursor = cursor.into();
         self.tree.join_consecutive_scripts(Some((&mut cursor, 0)));
-        self.set_cursor(cursor);
         self.tree.close_parentheses(false);
         self.tree.layout();
+        self.set_cursor(cursor);
     }
 
     pub fn unfocus(&mut self) -> Response {
@@ -926,6 +1004,7 @@ impl MathField {
             self.selection = None;
             self.tree.close_parentheses(true);
             self.tree.layout();
+            self.scroll = 0.0;
             response.request_redraw();
         }
         response
@@ -933,14 +1012,8 @@ impl MathField {
 
     pub fn focus(&mut self) -> Response {
         let mut response = Response::default();
-        if self.selection.is_none() {
-            self.selection = Some(
-                Cursor {
-                    path: vec![],
-                    index: self.tree.len(),
-                }
-                .into(),
-            );
+        if !self.has_focus() {
+            self.set_cursor((vec![], self.tree.len()));
             response.request_redraw();
         }
         response
@@ -956,12 +1029,15 @@ impl MathField {
         event: &Event,
         bounds: Bounds,
     ) -> (Response, Option<Message>) {
+        self.bounds = bounds;
+        self.scale_factor = ctx.scale_factor;
         let mut response = Response::default();
         let mut message = None;
 
         let hovered = (bounds.contains(ctx.cursor) || self.dragging).then(|| {
-            let position = (ctx.cursor - bounds.pos.as_dvec2()) / (ctx.scale_factor * self.scale)
-                - dvec2(0.0, self.tree.bounds.height);
+            let position = (ctx.cursor - bounds.pos.as_dvec2() + dvec2(self.scroll, 0.0))
+                / (ctx.scale_factor * self.scale)
+                - dvec2(self.left_padding, self.tree.bounds.height);
             self.tree.get_hovered(vec![], position)
         });
 
@@ -974,7 +1050,7 @@ impl MathField {
                 logical_key,
                 state: ElementState::Pressed,
                 ..
-            }) if self.selection.is_some() => {
+            }) if self.has_focus() => {
                 use winit::keyboard::{Key, NamedKey};
                 let Selection { mut path, span } = self.selection.as_ref().unwrap().into();
 
@@ -991,7 +1067,7 @@ impl MathField {
                     }
                     Key::Named(NamedKey::ArrowLeft) => {
                         if ctx.modifiers.shift_key() {
-                            let s = self.selection.as_mut().unwrap();
+                            let s = self.selection.take().unwrap();
                             let (mut path, anchor, focus) = s.normalize();
                             let index = if focus % 1.0 == 0.5 {
                                 let mut index = focus.floor() as usize;
@@ -1009,7 +1085,7 @@ impl MathField {
                             } else {
                                 0
                             };
-                            s.focus = Cursor { path, index };
+                            self.set_selection((s.anchor, Cursor { path, index }));
                         } else {
                             match span {
                                 SelectionSpan::Cursor(mut i) => {
@@ -1076,7 +1152,7 @@ impl MathField {
                     }
                     Key::Named(NamedKey::ArrowRight) => {
                         if ctx.modifiers.shift_key() {
-                            let s = self.selection.as_mut().unwrap();
+                            let s = self.selection.take().unwrap();
                             let (mut path, anchor, focus) = s.normalize();
                             let index = if focus % 1.0 == 0.5 {
                                 let mut index = focus.ceil() as usize;
@@ -1097,7 +1173,7 @@ impl MathField {
                                     self.tree.len()
                                 }
                             };
-                            s.focus = Cursor { path, index };
+                            self.set_selection((s.anchor, Cursor { path, index }));
                         } else {
                             match span {
                                 SelectionSpan::Cursor(i) => {
@@ -1154,7 +1230,7 @@ impl MathField {
                     }
                     Key::Named(NamedKey::ArrowDown) => {
                         if ctx.modifiers.shift_key() {
-                            let s = self.selection.as_mut().unwrap();
+                            let s = self.selection.take().unwrap();
                             let (mut path, anchor, focus) = s.normalize();
                             let index = if focus > anchor
                                 || anchor % 1.0 == 0.0
@@ -1172,7 +1248,7 @@ impl MathField {
                             } else {
                                 anchor.floor() as usize
                             };
-                            s.focus = Cursor { path, index };
+                            self.set_selection((s.anchor, Cursor { path, index }));
                         } else {
                             let i = span.as_range().end;
 
@@ -1284,7 +1360,7 @@ impl MathField {
                     }
                     Key::Named(NamedKey::ArrowUp) => {
                         if ctx.modifiers.shift_key() {
-                            let s = self.selection.as_mut().unwrap();
+                            let s = self.selection.take().unwrap();
                             let (mut path, anchor, focus) = s.normalize();
                             let index = if focus < anchor
                                 || anchor % 1.0 == 0.0
@@ -1302,7 +1378,7 @@ impl MathField {
                             } else {
                                 anchor.ceil() as usize
                             };
-                            s.focus = Cursor { path, index };
+                            self.set_selection((s.anchor, Cursor { path, index }));
                         } else {
                             let i = span.as_range().end;
 
@@ -1744,16 +1820,16 @@ impl MathField {
                     }
                     Key::Character(c) => match c.as_str().chars().next() {
                         Some('a') if ctx.modifiers.control_key() || ctx.modifiers.super_key() => {
-                            self.selection = Some(UserSelection {
-                                anchor: Cursor {
+                            self.set_selection((
+                                Cursor {
                                     path: vec![],
                                     index: 0,
                                 },
-                                focus: Cursor {
+                                Cursor {
                                     path: vec![],
                                     index: self.tree.len(),
                                 },
-                            });
+                            ));
                             response.consume_event();
                             response.request_redraw();
                         }
@@ -2044,20 +2120,28 @@ impl MathField {
             }
             Event::CursorMoved if self.dragging => {
                 if let Some(hovered) = hovered {
-                    self.selection.as_mut().unwrap().focus = hovered;
+                    let anchor = self.selection.take().unwrap().anchor;
+                    self.set_selection((anchor, hovered));
                 } else {
                     eprintln!("how did we get here?");
                 }
                 response.consume_event();
                 response.request_redraw();
             }
+            Event::MouseWheel(DVec2 { x, y }) if hovered.is_some() => {
+                if x.abs() > y.abs() {
+                    self.scroll(ctx.scale_factor, bounds, *x);
+                    response.consume_event();
+                    response.request_redraw();
+                }
+            }
             Event::MouseInput(ElementState::Pressed, MouseButton::Left) => {
                 if let Some(hovered) = hovered {
                     self.dragging = true;
-                    self.selection = Some(hovered.into());
+                    self.set_cursor(hovered);
                     response.consume_event();
                     response.request_redraw();
-                } else if self.selection.is_some() {
+                } else if self.has_focus() {
                     response = response.or(self.unfocus());
                 }
             }
@@ -2077,9 +2161,24 @@ impl MathField {
         bounds: Bounds,
         draw_quad: &mut impl FnMut(DVec2, DVec2, DVec2, DVec2),
     ) {
+        self.scroll(ctx.scale_factor, bounds, 0.0);
+        let top_left = bounds.pos.as_dvec2();
+        let bottom_right = (bounds.pos + bounds.size).as_dvec2();
+        let draw_quad = &mut |p0: DVec2, p1: DVec2, uv0: DVec2, uv1: DVec2| {
+            let q0 = p0.clamp(top_left, bottom_right);
+            let q1 = p1.clamp(top_left, bottom_right);
+            draw_quad(
+                q0,
+                q1,
+                mix(uv0, uv1, (q0 - p0) / (p1 - p0)),
+                mix(uv0, uv1, (q1 - p0) / (p1 - p0)),
+            )
+        };
         let height = self.tree.bounds.height;
-        let transform =
-            &|p| bounds.pos.as_dvec2() + ctx.scale_factor * self.scale * (p + dvec2(0.0, height));
+        let transform = &|p| {
+            bounds.pos.as_dvec2() - dvec2(self.scroll, 0.0)
+                + ctx.scale_factor * self.scale * (p + dvec2(self.left_padding, height))
+        };
         match &self.selection {
             Some(selection) => {
                 let selection: Selection = selection.into();
@@ -2091,7 +2190,9 @@ impl MathField {
                 self.tree.render(ctx, transform, draw_quad);
                 self.tree.walk_mut(&selection.path).has_gray_background = original_gray;
             }
-            None => self.tree.render(ctx, transform, draw_quad),
+            None => {
+                self.tree.render(ctx, transform, draw_quad);
+            }
         }
     }
 }

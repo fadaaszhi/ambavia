@@ -94,3 +94,13 @@ impl<'a> fmt::Display for Node<'a> {
         Ok(())
     }
 }
+
+pub trait ToString {
+    fn to_string(self) -> String;
+}
+
+impl ToString for &[Node<'_>] {
+    fn to_string(self) -> String {
+        NodesDisplayer(self).to_string()
+    }
+}

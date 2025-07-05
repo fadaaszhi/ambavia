@@ -12,6 +12,7 @@ const BLACK_BOX = 2u;
 const TRANSLUCENT_BLACK_BOX = 3u;
 const HIGHLIGHT_BOX = 4u;
 const GRAY_BOX = 5u;
+const TRANSPARENT_TO_WHITE_GRADIENT = 6u;
 
 struct Vertex {
     @location(0) position: vec2f,
@@ -57,6 +58,9 @@ fn fs_latex(in: VertexOutput) -> @location(0) vec4f {
         }
         case GRAY_BOX {
             return vec4(0.847, 0.847, 0.847, 1.0);
+        }
+        case TRANSPARENT_TO_WHITE_GRADIENT {
+            return vec4(1.0, 1.0, 1.0, in.uv.x);
         }
         default {
             // https://github.com/Chlumsky/msdfgen

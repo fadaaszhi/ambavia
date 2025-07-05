@@ -523,6 +523,7 @@ enum QuadKind {
     TranslucentBlackBox,
     HighlightBox,
     GrayBox,
+    TransparentToWhiteGradient,
 }
 
 impl QuadKind {
@@ -535,6 +536,7 @@ impl QuadKind {
             TranslucentBlackBox => 3,
             HighlightBox => 4,
             GrayBox => 5,
+            TransparentToWhiteGradient => 6,
         }
     }
 }
@@ -785,7 +787,7 @@ mod expression_list {
                     event,
                     Bounds {
                         pos: bounds.pos + dvec2(0.0, y_offset) + padding,
-                        size: dvec2(bounds.size.x - padding - separator_width, y_size),
+                        size: dvec2(bounds.size.x - 1.5 * padding - separator_width, y_size),
                     },
                 );
 
@@ -918,7 +920,7 @@ mod expression_list {
                     ctx,
                     Bounds {
                         pos: bounds.pos + dvec2(0.0, y_offset) + padding,
-                        size: dvec2(bounds.size.x - padding - separator_width, y_size),
+                        size: dvec2(bounds.size.x - 1.5 * padding - separator_width, y_size),
                     },
                     draw_quad,
                 );

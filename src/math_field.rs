@@ -2174,5 +2174,29 @@ impl MathField {
                 self.tree.render(ctx, transform, draw_quad);
             }
         }
+
+        if self.scroll > 0.0 {
+            // The order of the first two arguments determines which the direction of the gradient
+            draw_quad(
+                dvec2(
+                    top_left.x + ctx.scale_factor * self.scale * self.overflow_gradient_width,
+                    bottom_right.y,
+                ),
+                top_left,
+                QuadKind::TransparentToWhiteGradient,
+            );
+        }
+
+        if self.scroll < self.expression_size().x - bounds.size.x {
+            // The order of the first two arguments determines which the direction of the gradient
+            draw_quad(
+                dvec2(
+                    bottom_right.x - ctx.scale_factor * self.scale * self.overflow_gradient_width,
+                    top_left.y,
+                ),
+                bottom_right,
+                QuadKind::TransparentToWhiteGradient,
+            );
+        }
     }
 }

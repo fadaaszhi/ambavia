@@ -516,8 +516,32 @@ impl MainThing {
     }
 }
 
+enum QuadKind {
+    MsdfGlyph(DVec2, DVec2),
+    TranslucentMsdfGlyph(DVec2, DVec2),
+    BlackBox,
+    TranslucentBlackBox,
+    HighlightBox,
+    GrayBox,
+}
+
+impl QuadKind {
+    fn index(&self) -> u32 {
+        use QuadKind::*;
+        match self {
+            MsdfGlyph(..) => 0,
+            TranslucentMsdfGlyph(..) => 1,
+            BlackBox => 2,
+            TranslucentBlackBox => 3,
+            HighlightBox => 4,
+            GrayBox => 5,
+        }
+    }
+}
+
 mod expression_list {
     use bytemuck::{Zeroable, offset_of};
+    use glam::{U16Vec2, u16vec2};
 
     use crate::math_field::{MathField, Message};
 
@@ -543,7 +567,8 @@ mod expression_list {
     #[repr(C)]
     struct Vertex {
         position: Vec2,
-        uv: Vec2,
+        uv: U16Vec2,
+        kind: u32,
     }
 
     fn create_index_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
@@ -625,9 +650,14 @@ mod expression_list {
                                 shader_location: 0,
                             },
                             wgpu::VertexAttribute {
-                                format: wgpu::VertexFormat::Float32x2,
+                                format: wgpu::VertexFormat::Unorm16x2,
                                 offset: offset_of!(Vertex::zeroed(), Vertex, uv) as _,
                                 shader_location: 1,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Uint32,
+                                offset: offset_of!(Vertex::zeroed(), Vertex, kind) as _,
+                                shader_location: 2,
                             },
                         ],
                     }],
@@ -828,11 +858,28 @@ mod expression_list {
         ) {
             let mut indices = vec![];
             let mut vertices = vec![];
-            let draw_quad = &mut |p0: DVec2, p1: DVec2, uv0: DVec2, uv1: DVec2| {
+            let draw_quad = &mut |p0: DVec2, p1: DVec2, kind: QuadKind| {
                 let p0 = p0.as_vec2();
                 let p1 = p1.as_vec2();
-                let uv0 = uv0.as_vec2();
-                let uv1 = uv1.as_vec2();
+                let (uv0, uv1) = match kind {
+                    QuadKind::MsdfGlyph(uv0, uv1) | QuadKind::TranslucentMsdfGlyph(uv0, uv1) => {
+                        (uv0, uv1)
+                    }
+                    QuadKind::BlackBox
+                    | QuadKind::TranslucentBlackBox
+                    | QuadKind::HighlightBox
+                    | QuadKind::GrayBox
+                    | QuadKind::TransparentToWhiteGradient => {
+                        (DVec2::splat(0.0), DVec2::splat(1.0))
+                    }
+                };
+                let kind = kind.index();
+                let uv0 = uv0
+                    .map(|x| (x.clamp(0.0, 1.0) * 65535.0).round())
+                    .as_u16vec2();
+                let uv1 = uv1
+                    .map(|x| (x.clamp(0.0, 1.0) * 65535.0).round())
+                    .as_u16vec2();
 
                 indices.push(vertices.len() as u32 + 0);
                 indices.push(vertices.len() as u32 + 1);
@@ -843,18 +890,22 @@ mod expression_list {
                 vertices.push(Vertex {
                     position: p0,
                     uv: uv0,
+                    kind,
                 });
                 vertices.push(Vertex {
                     position: vec2(p1.x, p0.y),
-                    uv: vec2(uv1.x, uv0.y),
+                    uv: u16vec2(uv1.x, uv0.y),
+                    kind,
                 });
                 vertices.push(Vertex {
                     position: vec2(p0.x, p1.y),
-                    uv: vec2(uv0.x, uv1.y),
+                    uv: u16vec2(uv0.x, uv1.y),
+                    kind,
                 });
                 vertices.push(Vertex {
                     position: p1,
                     uv: uv1,
+                    kind,
                 });
             };
             let mut y_offset = 0.0;
@@ -875,8 +926,11 @@ mod expression_list {
 
                 let p0 = bounds.pos + dvec2(0.0, y_offset);
                 let p1 = dvec2(bounds.right(), bounds.top() + y_offset + separator_width);
-                let uv = DVec2::splat(-3.0);
-                draw_quad(ctx.scale_factor * p0, ctx.scale_factor * p1, uv, uv);
+                draw_quad(
+                    ctx.scale_factor * p0,
+                    ctx.scale_factor * p1,
+                    QuadKind::GrayBox,
+                );
 
                 y_offset += separator_width;
             }
@@ -884,8 +938,11 @@ mod expression_list {
             {
                 let p0 = dvec2(bounds.right() - separator_width, bounds.top());
                 let p1 = dvec2(bounds.right(), bounds.bottom());
-                let uv = DVec2::splat(-3.0);
-                draw_quad(ctx.scale_factor * p0, ctx.scale_factor * p1, uv, uv);
+                draw_quad(
+                    ctx.scale_factor * p0,
+                    ctx.scale_factor * p1,
+                    QuadKind::GrayBox,
+                );
             }
 
             let indices_size = size_of_val(&indices[..]) as u64;

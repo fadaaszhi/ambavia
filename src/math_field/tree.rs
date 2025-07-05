@@ -106,16 +106,10 @@ pub struct TexturedQuad {
     pub size: DVec2,
     pub uv0: DVec2,
     pub uv1: DVec2,
+    pub gray: bool,
 }
 
 impl TexturedQuad {
-    fn set_gray(&mut self, gray: bool) {
-        if gray {
-            self.uv0 += 2.0;
-            self.uv1 += 2.0;
-        }
-    }
-
     fn transform(&mut self, position: DVec2, scale: f64) {
         self.advance *= scale;
         self.position = position + scale * self.position;
@@ -612,6 +606,7 @@ fn get_quad(font: Font, ch: char) -> TexturedQuad {
         size: dvec2(p.right - p.left, p.bottom - p.top),
         uv0: dvec2(a.left, a.top),
         uv1: dvec2(a.right, a.bottom),
+        gray: false,
     }
 }
 
@@ -756,8 +751,8 @@ impl Tree {
                         Bracket::Brace => get_quad(Font::Size1Regular, '}'),
                         Bracket::Pipe => get_quad(Font::MainRegular, '|'),
                     };
-                    left_quad.set_gray(left.is_none());
-                    right_quad.set_gray(right.is_none());
+                    left_quad.gray = left.is_none();
+                    right_quad.gray = right.is_none();
                     inner.layout_relative();
                     inner.has_gray_background = false;
                     inner.bounds.position.x = left_quad.advance;

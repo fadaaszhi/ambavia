@@ -13,7 +13,7 @@ use winit::{
 };
 
 use crate::{
-    Bounds, Context, Event, Response,
+    Bounds, Context, Event, QuadKind, Response,
     katex_font::{Font, get_glyph},
     math_field::tree::{
         BigOp as BigOpE, Bracket as BracketE,
@@ -737,7 +737,7 @@ impl Tree {
         ctx: &Context,
         selection: &Selection,
         transform: &impl Fn(DVec2) -> DVec2,
-        draw_quad: &mut impl FnMut(DVec2, DVec2, DVec2, DVec2),
+        draw_quad: &mut impl FnMut(DVec2, DVec2, QuadKind),
     ) {
         let tree = self.walk(&selection.path);
         match &selection.span {
@@ -757,15 +757,13 @@ impl Tree {
                 let x = snap(p0.x, w);
                 let p0 = dvec2(x - w as f64 / 2.0, p0.y.floor());
                 let p1 = dvec2(x + w as f64 / 2.0, p1.y.ceil());
-                let uv = DVec2::splat(-1.0);
-                draw_quad(p0, p1, uv, uv);
+                draw_quad(p0, p1, QuadKind::BlackBox);
             }
             SelectionSpan::Range(r) => {
                 for (b, _) in &tree.nodes[r.clone()] {
                     let p0 = transform(b.top_left());
                     let p1 = transform(b.bottom_right());
-                    let uv = DVec2::splat(-2.0);
-                    draw_quad(p0, p1, uv, uv);
+                    draw_quad(p0, p1, QuadKind::HighlightBox);
                 }
             }
         }
@@ -775,15 +773,13 @@ impl Tree {
         &self,
         ctx: &Context,
         transform: &impl Fn(DVec2) -> DVec2,
-        draw_quad: &mut impl FnMut(DVec2, DVec2, DVec2, DVec2),
+        draw_quad: &mut impl FnMut(DVec2, DVec2, QuadKind),
     ) {
         if self.has_gray_background {
-            let uv = DVec2::splat(-4.0);
             draw_quad(
                 transform(self.bounds.top_left()),
                 transform(self.bounds.bottom_right()),
-                uv,
-                uv,
+                QuadKind::TranslucentBlackBox,
             );
         }
         for (_, node) in &self.nodes {
@@ -821,7 +817,7 @@ impl Tree {
                     let mut l1 = transform(dvec2(line.x_max, line.y));
                     l0.y = l0.y.floor();
                     l1.y = l0.y + ctx.round_nonzero_as_physical(1.0) as f64;
-                    draw_quad(l0, l1, DVec2::splat(-1.0), DVec2::splat(-1.0));
+                    draw_quad(l0, l1, QuadKind::BlackBox);
                 }
                 Frac { num, den, line } => {
                     num.render(ctx, transform, draw_quad);
@@ -833,8 +829,7 @@ impl Tree {
                     draw_quad(
                         dvec2(l0.x.floor(), y - w as f64 / 2.0),
                         dvec2(l1.x.ceil(), y + w as f64 / 2.0),
-                        DVec2::splat(-1.0),
-                        DVec2::splat(-1.0),
+                        QuadKind::BlackBox,
                     );
                 }
                 BigOp {
@@ -857,13 +852,16 @@ impl TexturedQuad {
     fn render(
         &self,
         transform: &impl Fn(DVec2) -> DVec2,
-        draw_quad: &mut impl FnMut(DVec2, DVec2, DVec2, DVec2),
+        draw_quad: &mut impl FnMut(DVec2, DVec2, QuadKind),
     ) {
         draw_quad(
             transform(self.position),
             transform(self.position + self.size),
-            self.uv0,
-            self.uv1,
+            if self.gray {
+                QuadKind::TranslucentMsdfGlyph
+            } else {
+                QuadKind::MsdfGlyph
+            }(self.uv0, self.uv1),
         );
     }
 }
@@ -873,7 +871,10 @@ pub struct MathField {
     tree: Tree,
     /// Applied before scaling
     left_padding: f64,
+    /// Applied before scaling
     right_padding: f64,
+    /// Applied before scaling
+    overflow_gradient_width: f64,
     scale: f64,
     /// Logical
     scroll: f64,
@@ -892,6 +893,7 @@ impl Default for MathField {
             tree: Default::default(),
             left_padding: -j_glyph.plane.left,
             right_padding: v_glyph.plane.right - v_glyph.advance,
+            overflow_gradient_width: 0.5,
             scale: 20.0,
             scroll: 0.0,
             dragging: false,
@@ -2135,19 +2137,21 @@ impl MathField {
         &mut self,
         ctx: &Context,
         bounds: Bounds,
-        draw_quad: &mut impl FnMut(DVec2, DVec2, DVec2, DVec2),
+        draw_quad: &mut impl FnMut(DVec2, DVec2, QuadKind),
     ) {
         let top_left = bounds.pos * ctx.scale_factor;
         let bottom_right = (bounds.pos + bounds.size) * ctx.scale_factor;
-        let draw_quad = &mut |p0: DVec2, p1: DVec2, uv0: DVec2, uv1: DVec2| {
+        let draw_quad = &mut |p0: DVec2, p1: DVec2, mut kind: QuadKind| {
             let q0 = p0.clamp(top_left, bottom_right);
             let q1 = p1.clamp(top_left, bottom_right);
-            draw_quad(
-                q0,
-                q1,
-                mix(uv0, uv1, (q0 - p0) / (p1 - p0)),
-                mix(uv0, uv1, (q1 - p0) / (p1 - p0)),
-            )
+            match &mut kind {
+                QuadKind::MsdfGlyph(uv0, uv1) | QuadKind::TranslucentMsdfGlyph(uv0, uv1) => {
+                    *uv0 = mix(*uv0, *uv1, (q0 - p0) / (p1 - p0));
+                    *uv1 = mix(*uv0, *uv1, (q1 - p0) / (p1 - p0));
+                }
+                _ => {}
+            }
+            draw_quad(q0, q1, kind)
         };
         let height = self.tree.bounds.height;
         let transform = &|p| {

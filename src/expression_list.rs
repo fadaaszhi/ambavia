@@ -1,14 +1,111 @@
 use ambavia::latex_parser::parse_latex;
 use bytemuck::{Zeroable, offset_of};
 use glam::{DVec2, U16Vec2, Vec2, dvec2, u16vec2, uvec2, vec2};
+use winit::{
+    event::{ElementState, MouseButton},
+    window::CursorIcon,
+};
 
 use crate::{
     math_field::{MathField, Message},
     ui::{Bounds, Context, Event, QuadKind, Response},
 };
 
+#[derive(Default)]
+struct Expression {
+    field: MathField,
+}
+
+impl Expression {
+    const PADDING: f64 = 16.0;
+
+    fn update(
+        &mut self,
+        ctx: &Context,
+        event: &Event,
+        top_left: DVec2,
+        width: f64,
+    ) -> (Response, Option<Message>, f64) {
+        let mut response = Response::default();
+        let mut message = None;
+        let mut height = 0.0;
+
+        let padding = ctx.round(Self::PADDING);
+        height += padding;
+        let field_height = ctx.ceil(self.field.expression_size().y);
+        let field_bounds = Bounds {
+            pos: top_left + dvec2(padding, height),
+            size: dvec2(width - padding * 1.5, field_height),
+        };
+        height += field_height;
+        height += padding;
+        let bounds = Bounds {
+            pos: top_left,
+            size: dvec2(width, height),
+        };
+
+        if bounds.contains(ctx.cursor) {
+            response.cursor_icon = CursorIcon::Pointer;
+            if event == &Event::MouseInput(ElementState::Pressed, MouseButton::Left)
+                && bounds.contains(ctx.cursor)
+                && !field_bounds.contains(ctx.cursor)
+            {
+                response.consume_event();
+                if !self.field.has_focus() {
+                    self.field.focus();
+                    response.request_redraw();
+                }
+            }
+        }
+
+        response = response.or_else(|| {
+            let (r, m) = self.field.update(ctx, event, field_bounds);
+            message = m;
+            r
+        });
+
+        (response, message, height)
+    }
+
+    fn focus(&mut self) {
+        self.field.focus();
+    }
+
+    fn unfocus(&mut self) {
+        self.field.unfocus();
+    }
+
+    fn has_focus(&self) -> bool {
+        self.field.has_focus()
+    }
+
+    fn render(
+        &mut self,
+        ctx: &Context,
+        top_left: DVec2,
+        width: f64,
+        draw_quad: &mut impl FnMut(DVec2, DVec2, QuadKind),
+    ) -> f64 {
+        let mut height = 0.0;
+
+        let padding = ctx.round(Self::PADDING);
+        height += padding;
+        let field_height = ctx.ceil(self.field.expression_size().y);
+        let field_bounds = Bounds {
+            pos: top_left + dvec2(padding, height),
+            size: dvec2(width - padding * 1.5, field_height),
+        };
+        height += field_height;
+        height += padding;
+
+        self.field.render(ctx, field_bounds, draw_quad);
+
+        height
+    }
+}
+
 pub struct ExpressionList {
-    expressions: Vec<MathField>,
+    expressions: Vec<Expression>,
 
     pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
@@ -217,7 +314,9 @@ impl ExpressionList {
         // let s = r"f\left(x,y,\beta_{1}\right)=\sum_{n=\frac{\frac{1}{1}}{\frac{1}{1}}}^{10}abc";
         Self {
             expressions: vec![
-                MathField::from(&parse_latex(s).unwrap()),
+                Expression {
+                    field: MathField::from(&parse_latex(s).unwrap()),
+                },
                 Default::default(),
             ],
             pipeline,
@@ -229,77 +328,59 @@ impl ExpressionList {
     }
 
     const SEPARATOR_WIDTH: f64 = 1.0;
-    const PADDING: f64 = 16.0;
 
     pub fn update(&mut self, ctx: &Context, event: &Event, bounds: Bounds) -> Response {
         let mut response = Response::default();
-        let mut y_offset = 0.0;
+        let mut next_y = bounds.pos.y;
         let mut message = None;
-        let padding = ctx.round(Self::PADDING);
         let separator_width = ctx.round_nonzero(Self::SEPARATOR_WIDTH);
+        let expression_width = bounds.size.x - separator_width;
 
         for (i, expression) in self.expressions.iter_mut().enumerate() {
-            let y_size = ctx.ceil(expression.expression_size().y);
-            let (r, m) = expression.update(
-                ctx,
-                event,
-                Bounds {
-                    pos: bounds.pos + dvec2(0.0, y_offset) + padding,
-                    size: dvec2(bounds.size.x - 1.5 * padding - separator_width, y_size),
-                },
-            );
-
-            if let Some(m) = m {
-                message = Some((i, m));
-            }
-
+            let (r, m, height) =
+                expression.update(ctx, event, dvec2(bounds.pos.x, next_y), expression_width);
+            next_y += height;
             response = response.or(r);
-            y_offset += y_size + 2.0 * padding + separator_width;
+            message = message.or(m.map(|m| (i, m)));
+            next_y += separator_width;
         }
 
         if let Some((i, m)) = message {
             match m {
                 Message::Up => {
                     if i > 0 {
-                        response = response
-                            .or(self.expressions[i].unfocus())
-                            .or(self.expressions[i - 1].focus());
+                        self.expressions[i].unfocus();
+                        self.expressions[i - 1].focus();
                         response.request_redraw();
                     }
                 }
                 Message::Down => {
                     if i == self.expressions.len() - 1 {
-                        self.expressions.push(MathField::default());
+                        self.expressions.push(Default::default());
                     }
-
-                    response = response
-                        .or(self.expressions[i].unfocus())
-                        .or(self.expressions[i + 1].focus());
+                    self.expressions[i].unfocus();
+                    self.expressions[i + 1].focus();
                     response.request_redraw();
                 }
                 Message::Add => {
-                    self.expressions.insert(i + 1, MathField::default());
-                    response = response
-                        .or(self.expressions[i].unfocus())
-                        .or(self.expressions[i + 1].focus());
+                    self.expressions.insert(i + 1, Default::default());
+                    self.expressions[i].unfocus();
+                    self.expressions[i + 1].focus();
                     response.request_redraw();
                 }
                 Message::Remove => {
-                    response = response.or(self.expressions[i].unfocus());
                     self.expressions.remove(i);
-
                     if self.expressions.is_empty() {
-                        self.expressions.push(MathField::default());
+                        self.expressions.push(Default::default());
                     }
-
-                    response = response.or(self.expressions[i.saturating_sub(1)].focus());
+                    self.expressions[i.saturating_sub(1)].focus();
                     response.request_redraw();
                 }
             }
         }
 
         if self.expressions.last().unwrap().has_focus() {
-            self.expressions.push(MathField::default());
+            self.expressions.push(Default::default());
             response.request_redraw();
         }
 
@@ -366,31 +447,26 @@ impl ExpressionList {
                 kind,
             });
         };
-        let mut y_offset = 0.0;
-        let padding = ctx.round(Self::PADDING);
+        let mut next_y = bounds.pos.y;
         let separator_width = ctx.round_nonzero(Self::SEPARATOR_WIDTH);
+        let expression_width = bounds.size.x - separator_width;
 
         for expression in &mut self.expressions {
-            let y_size = ctx.ceil(expression.expression_size().y);
-            expression.render(
+            let height = expression.render(
                 ctx,
-                Bounds {
-                    pos: bounds.pos + dvec2(0.0, y_offset) + padding,
-                    size: dvec2(bounds.size.x - 1.5 * padding - separator_width, y_size),
-                },
+                dvec2(bounds.pos.x, next_y),
+                expression_width,
                 draw_quad,
             );
-            y_offset += y_size + 2.0 * padding;
-
-            let p0 = bounds.pos + dvec2(0.0, y_offset);
-            let p1 = dvec2(bounds.right(), bounds.top() + y_offset + separator_width);
+            next_y += height;
+            let p0 = dvec2(bounds.pos.x, next_y);
+            let p1 = p0 + dvec2(bounds.size.x, separator_width);
             draw_quad(
                 ctx.scale_factor * p0,
                 ctx.scale_factor * p1,
                 QuadKind::GrayBox,
             );
-
-            y_offset += separator_width;
+            next_y += separator_width;
         }
 
         {

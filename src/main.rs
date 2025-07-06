@@ -251,9 +251,12 @@ impl MainThing {
             self.graph_paper.update(ctx, &Event::Resized, right);
         }
 
-        response
-            .or_else(|| self.expression_list.update(ctx, event, left))
-            .or_else(|| self.graph_paper.update(ctx, event, right))
+        response.or_else(|| {
+            Response::or(
+                self.expression_list.update(ctx, event, left),
+                self.graph_paper.update(ctx, event, right),
+            )
+        })
     }
 
     fn render(

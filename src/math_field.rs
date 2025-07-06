@@ -876,11 +876,11 @@ pub struct MathField {
     /// Applied before scaling
     overflow_gradient_width: f64,
     scale: f64,
+    width: f64,
     /// Logical
     scroll: f64,
     dragging: bool,
     selection: Option<UserSelection>,
-    selection_was_set: bool,
 }
 
 impl Default for MathField {
@@ -895,11 +895,10 @@ impl Default for MathField {
             right_padding: v_glyph.plane.right - v_glyph.advance,
             overflow_gradient_width: 0.5,
             scale: 20.0,
+            width: 0.0,
             scroll: 0.0,
             dragging: false,
             selection: None,
-
-            selection_was_set: false,
         }
     }
 }
@@ -942,7 +941,20 @@ impl MathField {
 
     fn set_selection(&mut self, selection: impl Into<UserSelection>) {
         self.selection = Some(selection.into());
-        self.selection_was_set = true;
+        let focus = &self.selection.as_ref().unwrap().focus;
+        let tree = self.tree.walk(&focus.path);
+        let x = if tree.is_empty() {
+            tree.bounds.left()
+        } else {
+            tree.nodes
+                .get(focus.index)
+                .map_or(tree.bounds.right(), |(b, _)| b.left())
+        };
+        let x = -self.scroll + self.scale * (self.left_padding + x);
+        const CURSOR_EDGE: f64 = 0.8;
+        let cursor_edge = self.scale * CURSOR_EDGE;
+        let x1 = x.min(self.width - cursor_edge).max(cursor_edge);
+        self.scroll(x1 - x);
     }
 
     fn set_cursor(&mut self, cursor: impl Into<Cursor>) {
@@ -957,25 +969,26 @@ impl MathField {
         self.set_cursor(cursor);
     }
 
-    pub fn unfocus(&mut self) -> Response {
-        let mut response = Response::default();
+    pub fn unfocus(&mut self) {
         if self.selection.is_some() {
             self.selection = None;
             self.tree.close_parentheses(true);
             self.tree.layout();
             self.scroll = 0.0;
-            response.request_redraw();
         }
-        response
     }
 
-    pub fn focus(&mut self) -> Response {
-        let mut response = Response::default();
+    /// Positive `delta` moves the expression right
+    fn scroll(&mut self, delta: f64) {
+        self.scroll = (self.scroll - delta)
+            .min(self.expression_size().x - self.width)
+            .max(0.0);
+    }
+
+    pub fn focus(&mut self) {
         if !self.has_focus() {
             self.set_cursor((vec![], self.tree.len()));
-            response.request_redraw();
         }
-        response
     }
 
     pub fn has_focus(&self) -> bool {
@@ -988,6 +1001,7 @@ impl MathField {
         event: &Event,
         bounds: Bounds,
     ) -> (Response, Option<Message>) {
+        self.width = bounds.size.x;
         let mut response = Response::default();
         let mut message = None;
 
@@ -1002,6 +1016,10 @@ impl MathField {
         }
 
         match event {
+            Event::Resized => {
+                self.scroll(0.0);
+                response.request_redraw();
+            }
             Event::KeyboardInput(KeyEvent {
                 logical_key,
                 state: ElementState::Pressed,
@@ -2081,7 +2099,7 @@ impl MathField {
             }
             Event::MouseWheel(DVec2 { x, y }) if hovered.is_some() => {
                 if x.abs() > y.abs() {
-                    self.scroll -= x;
+                    self.scroll(*x);
                     response.consume_event();
                     response.request_redraw();
                 }
@@ -2093,7 +2111,8 @@ impl MathField {
                     response.consume_event();
                     response.request_redraw();
                 } else if self.has_focus() {
-                    response = response.or(self.unfocus());
+                    self.unfocus();
+                    response.request_redraw();
                 }
             }
             Event::MouseInput(ElementState::Released, MouseButton::Left) if self.dragging => {
@@ -2102,33 +2121,6 @@ impl MathField {
             }
             _ => {}
         }
-
-        if self.selection_was_set {
-            self.selection_was_set = false;
-            let focus = &self.selection.as_ref().unwrap().focus;
-            let tree = self.tree.walk(&focus.path);
-            let x = if tree.is_empty() {
-                tree.bounds.left()
-            } else {
-                tree.nodes
-                    .get(focus.index)
-                    .map_or(tree.bounds.right(), |(b, _)| b.left())
-            };
-            let x = -self.scroll + self.scale * (self.left_padding + x);
-            const CURSOR_EDGE: f64 = 0.8;
-            let cursor_edge = self.scale * CURSOR_EDGE;
-            let x1 = if bounds.size.x < 2.0 * cursor_edge {
-                bounds.size.x / 2.0
-            } else {
-                x.clamp(cursor_edge, bounds.size.x - cursor_edge)
-            };
-            self.scroll += x - x1;
-        }
-
-        self.scroll = self
-            .scroll
-            .min(self.expression_size().x - bounds.size.x)
-            .max(0.0);
 
         (response, message)
     }

@@ -106,7 +106,7 @@ impl Context {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Event {
     Resized,
     KeyboardInput(KeyEvent),
@@ -168,6 +168,10 @@ impl Response {
         self.requested_redraw = true;
     }
 
+    /// Use when combining responses from elements that aren't nested, that way
+    /// other elements still have the chance to unfocus themselves when one
+    /// consumes a mouse down event.
+    #[must_use]
     pub fn or(self, other: Response) -> Response {
         Response {
             consumed_event: self.consumed_event | other.consumed_event,
@@ -182,16 +186,13 @@ impl Response {
         }
     }
 
-    pub fn or_else(self, f: impl FnOnce() -> Response) -> Response {
+    /// Use when combining responses from nested elements. Or don't, idk
+    #[must_use]
+    pub fn or_else(self, other: impl FnOnce() -> Response) -> Response {
         if self.consumed_event {
             self
         } else {
-            let mut response = f();
-            response.requested_redraw |= self.requested_redraw;
-            if !response.consumed_event && self.cursor_icon != CursorIcon::Default {
-                response.cursor_icon = self.cursor_icon;
-            }
-            response
+            self.or(other())
         }
     }
 }

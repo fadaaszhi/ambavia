@@ -13,7 +13,6 @@ use winit::{
 };
 
 use crate::{
-    Bounds, Context, Event, QuadKind, Response,
     katex_font::{Font, get_glyph},
     math_field::tree::{
         BigOp as BigOpE, Bracket as BracketE,
@@ -21,7 +20,8 @@ use crate::{
         TexturedQuad, Tree, ends_in_operatorname, new_big_op, new_bracket, new_char, new_frac,
         new_radical, new_script, new_script_lower, new_script_upper, new_sqrt, to_latex,
     },
-    mix, snap,
+    ui::{Bounds, Context, Event, QuadKind, Response},
+    utility::{mix, snap},
 };
 
 /// Specifies which structural component of a node to navigate to. Used for
@@ -984,7 +984,7 @@ impl MathField {
 
     pub fn update(
         &mut self,
-        ctx: &mut Context,
+        ctx: &Context,
         event: &Event,
         bounds: Bounds,
     ) -> (Response, Option<Message>) {
@@ -1789,7 +1789,7 @@ impl MathField {
                         Some('c') if ctx.modifiers.control_key() || ctx.modifiers.super_key() => {
                             if let SelectionSpan::Range(r) = span {
                                 let latex = to_latex(&self.tree.walk(&path)[r]).to_string();
-                                if let Err(e) = ctx.clipboard.set_text(latex) {
+                                if let Err(e) = ctx.set_clipboard_text(latex) {
                                     eprintln!("failed to set clipboard contents: {e}");
                                 }
                             }
@@ -1799,7 +1799,7 @@ impl MathField {
                             if let SelectionSpan::Range(r) = span {
                                 let nodes = self.tree.walk_mut(&path);
                                 let latex = to_latex(&nodes[r.clone()]).to_string();
-                                if let Err(e) = ctx.clipboard.set_text(latex) {
+                                if let Err(e) = ctx.set_clipboard_text(latex) {
                                     eprintln!("failed to set clipboard contents: {e}");
                                 } else {
                                     nodes.drain(r.clone());
@@ -1810,9 +1810,8 @@ impl MathField {
                             response.consume_event();
                         }
                         Some('v') if ctx.modifiers.control_key() || ctx.modifiers.super_key() => {
-                            let latex = ctx.clipboard.get_text().unwrap_or_default();
-                            match parse_latex(&latex) {
-                                Ok(latex) => {
+                            match ctx.get_clipboard_text().as_ref().map(|s| parse_latex(s)) {
+                                Ok(Ok(latex)) => {
                                     let nodes = Tree::from(&latex);
                                     let r = span.as_range();
                                     let pasted_len = nodes.len();
@@ -1820,7 +1819,8 @@ impl MathField {
                                     self.tree_updated((path, r.start + pasted_len));
                                     response.request_redraw();
                                 }
-                                Err(e) => eprintln!("parse_latex error: {e:?}"),
+                                Ok(Err(e)) => eprintln!("parse_latex error: {e:?}"),
+                                Err(e) => eprintln!("failed to get clipboard contents: {e}"),
                             }
                             response.consume_event();
                         }

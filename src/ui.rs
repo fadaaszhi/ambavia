@@ -15,8 +15,6 @@ use crate::utility::AsGlam;
 
 pub struct Context {
     clipboard: Arc<Mutex<Option<Clipboard>>>,
-    /// The cursor's previous logical position
-    pub prev_cursor: DVec2,
     /// The cursor's current logical position
     pub cursor: DVec2,
     /// The window's scale factor
@@ -28,7 +26,6 @@ impl Context {
     pub fn new(window: &Window) -> Self {
         Self {
             clipboard: Arc::new(Mutex::new(None)),
-            prev_cursor: DVec2::ZERO,
             cursor: DVec2::ZERO,
             scale_factor: window.scale_factor(),
             modifiers: Default::default(),
@@ -36,9 +33,6 @@ impl Context {
     }
 
     pub fn update(&mut self, event: &WindowEvent) {
-        // Should this happen every event or only when CursorMoved?
-        self.prev_cursor = self.cursor;
-
         match &event {
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
             WindowEvent::CursorMoved { position, .. } => {
@@ -116,7 +110,10 @@ impl Context {
 pub enum Event {
     Resized,
     KeyboardInput(KeyEvent),
-    CursorMoved,
+    CursorMoved {
+        /// The cursor's previous logical position
+        previous_cursor: DVec2,
+    },
     MouseWheel(DVec2),
     MouseInput(ElementState, MouseButton),
     PinchGesture(f64),

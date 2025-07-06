@@ -108,6 +108,7 @@ impl App {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
+        let previous_cursor = self.context.cursor;
         self.context.update(&event);
         let bounds = Bounds {
             pos: DVec2::ZERO,
@@ -118,7 +119,7 @@ impl App {
             let my_event = match event.clone() {
                 WindowEvent::Resized { .. } => Event::Resized,
                 WindowEvent::KeyboardInput { event, .. } => Event::KeyboardInput(event),
-                WindowEvent::CursorMoved { .. } => Event::CursorMoved,
+                WindowEvent::CursorMoved { .. } => Event::CursorMoved { previous_cursor },
                 // Is this delta a physical size? Do we need to convert it to
                 // logical? I think it's already logical because my trackpad
                 // feels less sensitive when I decrease my Mac's scale factor.
@@ -196,7 +197,7 @@ impl MainThing {
         let mut response = Response::default();
 
         let mut x = mix(bounds.left(), bounds.right(), self.resizer_position);
-        let resized = if let Event::CursorMoved = event
+        let resized = if let Event::CursorMoved { .. } = event
             && let Some(offset) = self.dragging
         {
             x = (ctx.cursor.x + offset).clamp(bounds.left(), bounds.right());

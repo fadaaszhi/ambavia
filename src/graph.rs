@@ -338,10 +338,10 @@ impl GraphPaper {
                 self.dragging = false;
                 response.consume_event();
             }
-            Event::CursorMoved => {
+            Event::CursorMoved { previous_cursor } => {
                 if self.dragging {
                     let diff =
-                        to_vp(&self.viewport, ctx.cursor) - to_vp(&self.viewport, ctx.prev_cursor);
+                        to_vp(&self.viewport, ctx.cursor) - to_vp(&self.viewport, *previous_cursor);
 
                     self.viewport.center -= diff;
                     response.request_redraw();

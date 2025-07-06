@@ -2069,7 +2069,7 @@ impl MathField {
                     _ => {}
                 }
             }
-            Event::CursorMoved if self.dragging => {
+            Event::CursorMoved { .. } if self.dragging => {
                 if let Some(hovered) = hovered {
                     let anchor = self.selection.take().unwrap().anchor;
                     self.set_selection((anchor, hovered));

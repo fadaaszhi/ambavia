@@ -8,6 +8,7 @@ derive_more = { workspace = true }
 
 logos = "0.15.0"
 typed-index-collections = { workspace = true }
+
 [dev-dependencies]
-pretty_assertions = "1.4.1"
+pretty_assertions = { workspace = true }
 assert_matches = "1.5.0"

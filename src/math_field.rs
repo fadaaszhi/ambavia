@@ -27,7 +27,7 @@ use crate::{
 /// Specifies which structural component of a node to navigate to. Used for
 /// traversing into the different parts of an expression tree.
 #[derive(Debug, Clone, PartialEq)]
-enum NodeField {
+pub enum NodeField {
     BracketInner,
     ScriptLower,
     ScriptUpper,
@@ -43,18 +43,18 @@ use NodeField::*;
 
 /// Represents a path to a subtree. Each tuple contains the child index and
 /// which node field to enter.
-type Path = Vec<(usize, NodeField)>;
+pub type Path = Vec<(usize, NodeField)>;
 type PathSlice<'a> = &'a [(usize, NodeField)];
 
 /// Represents a cursor position within an expression tree. The cursor sits
 /// between nodes.
 #[derive(Debug, Clone, PartialEq)]
-struct Cursor {
+pub struct Cursor {
     /// The path through the expression tree to reach the target node list.
-    path: Path,
+    pub path: Path,
     /// The position within the target node list. The cursor
     /// sits to the left of the `index`th node.
-    index: usize,
+    pub index: usize,
 }
 
 impl From<(Path, usize)> for Cursor {
@@ -95,13 +95,13 @@ impl SelectionSpan {
 /// Represents the user's actual selection before normalization. The
 /// `anchor` and `focus` may be at different tree depths and in any order.
 #[derive(Debug)]
-struct UserSelection {
+pub struct UserSelection {
     /// Where the selection started (e.g., mouse down position or
     /// `Shift`+`Arrow` start)
-    anchor: Cursor,
+    pub anchor: Cursor,
     /// Where the selection currently ends (e.g., current mouse position or
     /// `Shift`+`Arrow` end)
-    focus: Cursor,
+    pub focus: Cursor,
 }
 
 impl From<Cursor> for UserSelection {
@@ -867,20 +867,54 @@ impl TexturedQuad {
 }
 
 #[derive(Debug)]
+pub enum Interactiveness {
+    /// The user can edit the contents of the field
+    Edit,
+    /// The user can highlight text in the field and copy it
+    Select,
+    /// The user can't interact with the field in any way
+    None,
+}
+
+impl Interactiveness {
+    fn allows_writing(&self) -> bool {
+        match self {
+            Interactiveness::Edit => true,
+            Interactiveness::Select => false,
+            Interactiveness::None => false,
+        }
+    }
+
+    fn allows_selection(&self) -> bool {
+        match self {
+            Interactiveness::Edit => true,
+            Interactiveness::Select => true,
+            Interactiveness::None => false,
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct MathField {
     tree: Tree,
+    pub interactiveness: Interactiveness,
     /// Applied before scaling
-    left_padding: f64,
+    pub left_padding: f64,
     /// Applied before scaling
-    right_padding: f64,
+    pub right_padding: f64,
     /// Applied before scaling
-    overflow_gradient_width: f64,
-    scale: f64,
+    pub top_padding: f64,
+    /// Applied before scaling
+    pub bottom_padding: f64,
+    /// Applied before scaling
+    pub overflow_gradient_width: f64,
+    pub scale: f64,
     width: f64,
     /// Logical
     scroll: f64,
     dragging: bool,
     selection: Option<UserSelection>,
+    tree_changed: bool,
 }
 
 impl Default for MathField {
@@ -891,14 +925,18 @@ impl Default for MathField {
         let v_glyph = get_glyph(Font::MathItalic, 'V');
         Self {
             tree: Default::default(),
+            interactiveness: Interactiveness::Edit,
             left_padding: -j_glyph.plane.left,
             right_padding: v_glyph.plane.right - v_glyph.advance,
+            top_padding: 0.0,
+            bottom_padding: 0.0,
             overflow_gradient_width: 0.5,
             scale: 20.0,
             width: 0.0,
             scroll: 0.0,
             dragging: false,
             selection: None,
+            tree_changed: false,
         }
     }
 }
@@ -920,8 +958,9 @@ impl From<&latex_tree::Nodes<'_>> for MathField {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum Message {
+    ContentsChanged,
     Up,
     Down,
     Add,
@@ -935,11 +974,15 @@ impl MathField {
         self.scale
             * dvec2(
                 self.left_padding + b.width + self.right_padding,
-                b.height + b.depth,
+                self.bottom_padding + b.height + b.depth + self.top_padding,
             )
     }
 
-    fn set_selection(&mut self, selection: impl Into<UserSelection>) {
+    pub fn get_selection(&self) -> Option<&UserSelection> {
+        self.selection.as_ref()
+    }
+
+    pub fn set_selection(&mut self, selection: impl Into<UserSelection>) {
         self.selection = Some(selection.into());
         let focus = &self.selection.as_ref().unwrap().focus;
         let tree = self.tree.walk(&focus.path);
@@ -967,6 +1010,7 @@ impl MathField {
         self.tree.close_parentheses(false);
         self.tree.layout();
         self.set_cursor(cursor);
+        self.tree_changed = true;
     }
 
     pub fn unfocus(&mut self) {
@@ -1005,14 +1049,24 @@ impl MathField {
         let mut response = Response::default();
         let mut message = None;
 
+        let write = self.interactiveness.allows_writing();
+        let select = self.interactiveness.allows_selection();
+
         let hovered = (bounds.contains(ctx.cursor) || self.dragging).then(|| {
             let position = (ctx.cursor - bounds.pos + dvec2(self.scroll, 0.0)) / self.scale
-                - dvec2(self.left_padding, self.tree.bounds.height);
+                - dvec2(
+                    self.left_padding,
+                    self.top_padding + self.tree.bounds.height,
+                );
             self.tree.get_hovered(vec![], position)
         });
 
         if hovered.is_some() {
-            response.cursor_icon = CursorIcon::Text;
+            if write || self.dragging {
+                response.cursor_icon = CursorIcon::Text;
+            } else if select {
+                response.cursor_icon = CursorIcon::Pointer;
+            }
         }
 
         match event {
@@ -1029,17 +1083,17 @@ impl MathField {
                 let Selection { mut path, span } = self.selection.as_ref().unwrap().into();
 
                 match &logical_key {
-                    Key::Named(NamedKey::Enter) => {
+                    Key::Named(NamedKey::Enter) if write => {
                         message = Some(Message::Add);
                         response.consume_event();
                     }
-                    Key::Named(NamedKey::Space) => {
+                    Key::Named(NamedKey::Space) if write => {
                         let cursor = self.tree.walk_mut(&path).add_char(path, span, ' ');
                         self.tree_updated(cursor);
                         response.request_redraw();
                         response.consume_event();
                     }
-                    Key::Named(NamedKey::ArrowLeft) => {
+                    Key::Named(NamedKey::ArrowLeft) if select => {
                         if ctx.modifiers.shift_key() {
                             let s = self.selection.take().unwrap();
                             let (mut path, anchor, focus) = s.normalize();
@@ -1124,7 +1178,7 @@ impl MathField {
                         response.request_redraw();
                         response.consume_event();
                     }
-                    Key::Named(NamedKey::ArrowRight) => {
+                    Key::Named(NamedKey::ArrowRight) if select => {
                         if ctx.modifiers.shift_key() {
                             let s = self.selection.take().unwrap();
                             let (mut path, anchor, focus) = s.normalize();
@@ -1202,7 +1256,7 @@ impl MathField {
                         response.consume_event();
                         response.request_redraw();
                     }
-                    Key::Named(NamedKey::ArrowDown) => {
+                    Key::Named(NamedKey::ArrowDown) if select => {
                         if ctx.modifiers.shift_key() {
                             let s = self.selection.take().unwrap();
                             let (mut path, anchor, focus) = s.normalize();
@@ -1332,7 +1386,7 @@ impl MathField {
                         response.request_redraw();
                         response.consume_event();
                     }
-                    Key::Named(NamedKey::ArrowUp) => {
+                    Key::Named(NamedKey::ArrowUp) if select => {
                         if ctx.modifiers.shift_key() {
                             let s = self.selection.take().unwrap();
                             let (mut path, anchor, focus) = s.normalize();
@@ -1467,7 +1521,7 @@ impl MathField {
                         response.request_redraw();
                         response.consume_event();
                     }
-                    Key::Named(NamedKey::Backspace) => {
+                    Key::Named(NamedKey::Backspace) if write => {
                         match span {
                             SelectionSpan::Cursor(mut i) => {
                                 let nodes = self.tree.walk_mut(&path);
@@ -1631,7 +1685,7 @@ impl MathField {
                         response.consume_event();
                         response.request_redraw();
                     }
-                    Key::Named(NamedKey::Delete) => {
+                    Key::Named(NamedKey::Delete) if write => {
                         match span {
                             SelectionSpan::Cursor(i) => {
                                 let nodes = self.tree.walk_mut(&path);
@@ -1790,21 +1844,27 @@ impl MathField {
                         response.request_redraw();
                     }
                     Key::Character(c) => match c.as_str().chars().next() {
-                        Some('a') if ctx.modifiers.control_key() || ctx.modifiers.super_key() => {
+                        Some('a')
+                            if select
+                                && (ctx.modifiers.control_key() || ctx.modifiers.super_key()) =>
+                        {
                             self.set_selection((
                                 Cursor {
                                     path: vec![],
-                                    index: 0,
+                                    index: self.tree.len(),
                                 },
                                 Cursor {
                                     path: vec![],
-                                    index: self.tree.len(),
+                                    index: 0,
                                 },
                             ));
                             response.consume_event();
                             response.request_redraw();
                         }
-                        Some('c') if ctx.modifiers.control_key() || ctx.modifiers.super_key() => {
+                        Some('c')
+                            if select
+                                && (ctx.modifiers.control_key() || ctx.modifiers.super_key()) =>
+                        {
                             if let SelectionSpan::Range(r) = span {
                                 let latex = to_latex(&self.tree.walk(&path)[r]).to_string();
                                 if let Err(e) = ctx.set_clipboard_text(latex) {
@@ -1813,13 +1873,16 @@ impl MathField {
                             }
                             response.consume_event();
                         }
-                        Some('x') if ctx.modifiers.control_key() || ctx.modifiers.super_key() => {
+                        Some('x')
+                            if select
+                                && (ctx.modifiers.control_key() || ctx.modifiers.super_key()) =>
+                        {
                             if let SelectionSpan::Range(r) = span {
                                 let nodes = self.tree.walk_mut(&path);
                                 let latex = to_latex(&nodes[r.clone()]).to_string();
                                 if let Err(e) = ctx.set_clipboard_text(latex) {
                                     eprintln!("failed to set clipboard contents: {e}");
-                                } else {
+                                } else if write {
                                     nodes.drain(r.clone());
                                     self.tree_updated((path, r.start));
                                     response.request_redraw();
@@ -1827,7 +1890,10 @@ impl MathField {
                             }
                             response.consume_event();
                         }
-                        Some('v') if ctx.modifiers.control_key() || ctx.modifiers.super_key() => {
+                        Some('v')
+                            if write
+                                && (ctx.modifiers.control_key() || ctx.modifiers.super_key()) =>
+                        {
                             match ctx.get_clipboard_text().as_ref().map(|s| parse_latex(s)) {
                                 Ok(Ok(latex)) => {
                                     let nodes = Tree::from(&latex);
@@ -1842,7 +1908,7 @@ impl MathField {
                             }
                             response.consume_event();
                         }
-                        Some(b @ ('(' | '[' | '{')) => {
+                        Some(b @ ('(' | '[' | '{')) if write => {
                             let b = Some(BracketE::from(b));
                             match span {
                                 SelectionSpan::Cursor(i) => {
@@ -1885,7 +1951,7 @@ impl MathField {
                             response.request_redraw();
                             response.consume_event();
                         }
-                        Some(b @ (')' | ']' | '}')) => {
+                        Some(b @ (')' | ']' | '}')) if write => {
                             let b = Some(BracketE::from(b));
                             match span {
                                 SelectionSpan::Cursor(i) => {
@@ -1928,7 +1994,7 @@ impl MathField {
                             response.request_redraw();
                             response.consume_event();
                         }
-                        Some('|') => {
+                        Some('|') if write => {
                             let b = Some(BracketE::Pipe);
                             match span {
                                 SelectionSpan::Cursor(i) => {
@@ -1991,7 +2057,7 @@ impl MathField {
                             response.request_redraw();
                             response.consume_event();
                         }
-                        Some('_') => {
+                        Some('_') if write => {
                             let nodes = self.tree.walk_mut(&path);
                             let r = span.as_range();
                             if r.end > 0 {
@@ -2004,7 +2070,7 @@ impl MathField {
                             }
                             response.consume_event();
                         }
-                        Some('^') => {
+                        Some('^') if write => {
                             let nodes = self.tree.walk_mut(&path);
                             let r = span.as_range();
                             if r.end > 0 {
@@ -2017,7 +2083,7 @@ impl MathField {
                             }
                             response.consume_event();
                         }
-                        Some('/') => {
+                        Some('/') if write => {
                             let nodes = self.tree.walk_mut(&path);
                             let r = match span {
                                 SelectionSpan::Cursor(c) => {
@@ -2076,7 +2142,7 @@ impl MathField {
                             | '!'
                             | '%'
                             | '\''),
-                        ) => {
+                        ) if write => {
                             let cursor = self.tree.walk_mut(&path).add_char(path, span, c);
                             self.tree_updated(cursor);
                             response.request_redraw();
@@ -2104,7 +2170,7 @@ impl MathField {
                     response.request_redraw();
                 }
             }
-            Event::MouseInput(ElementState::Pressed, MouseButton::Left) => {
+            Event::MouseInput(ElementState::Pressed, MouseButton::Left) if select => {
                 if let Some(hovered) = hovered {
                     self.dragging = true;
                     self.set_cursor(hovered);
@@ -2117,12 +2183,39 @@ impl MathField {
             }
             Event::MouseInput(ElementState::Released, MouseButton::Left) if self.dragging => {
                 self.dragging = false;
+
+                if select && !write {
+                    let s = self.selection.as_ref().unwrap();
+                    if s.anchor == s.focus {
+                        self.set_selection((
+                            Cursor {
+                                path: vec![],
+                                index: self.tree.len(),
+                            },
+                            Cursor {
+                                path: vec![],
+                                index: 0,
+                            },
+                        ));
+                    }
+                }
+
                 response.consume_event();
             }
             _ => {}
         }
 
+        if self.tree_changed {
+            assert_eq!(message, None);
+            self.tree_changed = false;
+            message = Some(Message::ContentsChanged);
+        }
+
         (response, message)
+    }
+
+    pub fn to_latex(&self) -> latex_tree::Nodes<'static> {
+        to_latex(&self.tree)
     }
 
     pub fn render(
@@ -2148,7 +2241,7 @@ impl MathField {
         let height = self.tree.bounds.height;
         let transform = &|p| {
             (bounds.pos - dvec2(self.scroll, 0.0)
-                + self.scale * (p + dvec2(self.left_padding, height)))
+                + self.scale * (p + dvec2(self.left_padding, self.top_padding + height)))
                 * ctx.scale_factor
         };
         match &self.selection {

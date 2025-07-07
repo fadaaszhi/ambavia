@@ -4,6 +4,7 @@
 
 struct Uniforms {
     resolution: vec2f,
+    scale_factor: f32,
 }
 
 const MSDF_GLYPH = 0u;
@@ -13,6 +14,7 @@ const TRANSLUCENT_BLACK_BOX = 3u;
 const HIGHLIGHT_BOX = 4u;
 const GRAY_BOX = 5u;
 const TRANSPARENT_TO_WHITE_GRADIENT = 6u;
+const ROUNDED_BOX = 7u;
 
 struct Vertex {
     @location(0) position: vec2f,
@@ -40,11 +42,20 @@ fn median(x: f32, y: f32, z: f32) -> f32 {
     return max(min(x, y), min(max(x, y), z));
 }
 
+// https://www.shadertoy.com/view/4llXD7
+fn sd_rounded_box(p: vec2f, b: vec2f, r: vec4f) -> f32 {
+    var r1 = select(r.zw, r.xy, p.x > 0.0);
+    r1.x  = select(r1.y, r1.x, p.y > 0.0);
+    let q = abs(p) - b + r.x;
+    return min(max(q.x, q.y), 0.0) + length(max(q, vec2(0.0))) - r.x;
+}
+
 @fragment
 fn fs_latex(in: VertexOutput) -> @location(0) vec4f {
-    // 'fwidth' must only be called from uniform control flow so we do this here
+    // Derivatives must only be called from uniform control flow so we do this here
     // before the switch statement
     let fwidth_uv = fwidth(in.uv);
+    let size = 1.0 / vec2(dpdx(in.uv.x), dpdy(in.uv.y));
 
     switch in.kind {
         case BLACK_BOX {
@@ -61,6 +72,19 @@ fn fs_latex(in: VertexOutput) -> @location(0) vec4f {
         }
         case TRANSPARENT_TO_WHITE_GRADIENT {
             return vec4(1.0, 1.0, 1.0, in.uv.x);
+        }
+        case ROUNDED_BOX {
+            const RADIUS = 4.0;
+            const STROKE_COLOR = vec3(0.84);
+            const FILL_COLOR = vec3(0.96);
+            const STROKE_WIDTH = 1.0;
+
+            let radius = RADIUS * uniforms.scale_factor;
+            let stroke_width = max(round(STROKE_WIDTH * uniforms.scale_factor), 1.0);
+
+            let sd = sd_rounded_box(size * (in.uv - 0.5), size / 2.0, vec4(radius));
+            let color = mix(STROKE_COLOR, FILL_COLOR, saturate(0.5 - (sd + stroke_width)));
+            return vec4(color, saturate(0.5 - sd));
         }
         default {
             // https://github.com/Chlumsky/msdfgen

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, iter::zip};
+use std::{borrow::Borrow, collections::HashMap, iter::zip};
 
 use derive_more::{From, Into};
 use typed_index_collections::{TiSlice, TiVec};
@@ -172,20 +172,20 @@ struct Resolver<'a> {
 
 #[derive(Debug, Copy, Clone, From, Into)]
 pub struct ExpressionIndex(usize);
-type ExpressionList = TiSlice<ExpressionIndex, ExpressionListEntry>;
+type ExpressionList<E> = TiSlice<ExpressionIndex, E>;
 
 impl<'a> Resolver<'a> {
-    fn new(list: &'a ExpressionList) -> Self {
+    fn new(list: &'a ExpressionList<impl Borrow<ExpressionListEntry>>) -> Self {
         let mut globals = HashMap::new();
 
         for entry in list {
-            match entry {
+            match entry.borrow() {
                 ExpressionListEntry::Assignment { name, .. }
                 | ExpressionListEntry::FunctionDeclaration { name, .. } => {
                     if let Some(result @ Ok(_)) = globals.get_mut(name.as_str()) {
                         *result = Err(format!("'{name}' defined multiple times"));
                     } else {
-                        globals.insert(name.as_str(), Ok(entry));
+                        globals.insert(name.as_str(), Ok(entry.borrow()));
                     }
                 }
                 _ => continue,
@@ -694,7 +694,7 @@ pub struct AssignmentIndex(usize);
 pub type ExpressionToAssignment = TiVec<ExpressionIndex, Option<Result<AssignmentIndex, String>>>;
 
 pub fn resolve_names(
-    list: &ExpressionList,
+    list: &ExpressionList<impl Borrow<ExpressionListEntry>>,
 ) -> (TiVec<AssignmentIndex, Assignment>, ExpressionToAssignment) {
     let mut resolver = Resolver::new(list);
 
@@ -705,7 +705,7 @@ pub fn resolve_names(
             assert!(resolver.global_scope.0.iter().all(|(_, v)| v.len() <= 1));
             assert_eq!(resolver.assignments.len(), 1);
 
-            match e {
+            match e.borrow() {
                 ExpressionListEntry::Assignment { name, value } => {
                     if let Some(((id, err), _)) = resolver.global_scope.get(name) {
                         Some(err.clone().map_or(Ok(*id), Err))

@@ -1,23 +1,38 @@
-use ambavia::latex_parser::parse_latex;
+use ambavia::{
+    ast_parser::parse_expression_list_entry,
+    compiler::compile_assignments,
+    latex_tree,
+    name_resolver::{ExpressionIndex, resolve_names},
+    type_checker::{Type, type_check},
+    vm::Vm,
+};
 use bytemuck::{Zeroable, offset_of};
+use derive_more::{From, Into};
 use glam::{DVec2, U16Vec2, Vec2, dvec2, u16vec2, uvec2, vec2};
+use typed_index_collections::{TiVec, ti_vec};
 use winit::{
     event::{ElementState, MouseButton},
     window::CursorIcon,
 };
 
 use crate::{
-    math_field::{MathField, Message},
+    math_field::{Cursor, Interactiveness, MathField, Message, UserSelection},
     ui::{Bounds, Context, Event, QuadKind, Response},
 };
 
 #[derive(Default)]
 struct Expression {
     field: MathField,
+    ast: Option<Result<ambavia::ast::ExpressionListEntry, String>>,
+    output: Option<Result<MathField, String>>,
 }
 
 impl Expression {
     const PADDING: f64 = 16.0;
+    const OUTPUT_LEFT_PADDING: f64 = 4.0;
+    const OUTPUT_RIGHT_PADDING: f64 = 8.0;
+    const OUTPUT_TOP_PADDING: f64 = 4.5;
+    const OUTPUT_BOTTOM_PADDING: f64 = 3.5;
 
     fn update(
         &mut self,
@@ -32,37 +47,75 @@ impl Expression {
 
         let padding = ctx.round(Self::PADDING);
         height += padding;
-        let field_height = ctx.ceil(self.field.expression_size().y);
         let field_bounds = Bounds {
             pos: top_left + dvec2(padding, height),
-            size: dvec2(width - padding * 1.5, field_height),
+            size: dvec2(
+                width - padding * 1.5,
+                ctx.ceil(self.field.expression_size().y),
+            ),
         };
-        height += field_height;
-        height += padding;
+        height += field_bounds.size.y;
+        let output_bounds = if let Some(Ok(output)) = &self.output {
+            height += 0.5 * padding;
+            let size = output.expression_size().map(|s| ctx.ceil(s));
+            let right = top_left.x + width - 0.5 * padding;
+            let left = (right - size.x).max(top_left.x + padding);
+            let bounds = Bounds {
+                pos: dvec2(left, top_left.y + height),
+                size: dvec2(right - left, size.y),
+            };
+            height += bounds.size.y;
+            height += 0.5 * padding;
+            bounds
+        } else {
+            height += padding;
+            Bounds::default()
+        };
         let bounds = Bounds {
             pos: top_left,
             size: dvec2(width, height),
         };
 
-        if bounds.contains(ctx.cursor) {
-            response.cursor_icon = CursorIcon::Pointer;
-            if event == &Event::MouseInput(ElementState::Pressed, MouseButton::Left)
-                && bounds.contains(ctx.cursor)
-                && !field_bounds.contains(ctx.cursor)
-            {
-                response.consume_event();
+        let mut r = Response::default();
+        if bounds.contains(ctx.cursor)
+            && !field_bounds.contains(ctx.cursor)
+            && !output_bounds.contains(ctx.cursor)
+        {
+            r.cursor_icon = CursorIcon::Pointer;
+            if event == &Event::MouseInput(ElementState::Pressed, MouseButton::Left) {
+                r.consume_event();
                 if !self.field.has_focus() {
                     self.field.focus();
-                    response.request_redraw();
+                    r.request_redraw();
                 }
             }
         }
-
-        response = response.or_else(|| {
+        response = response.or(r.or_else(|| {
             let (r, m) = self.field.update(ctx, event, field_bounds);
             message = m;
             r
-        });
+        }));
+
+        if let Some(Ok(output)) = &mut self.output {
+            let mut r = output.update(ctx, event, output_bounds).0;
+
+            if let Some(UserSelection { anchor, focus }) = output.get_selection() {
+                let mut clamp = |mut cursor: Cursor| {
+                    let index = cursor
+                        .path
+                        .first_mut()
+                        .map_or(&mut cursor.index, |(index, _)| index);
+                    if *index == 0 {
+                        *index = 1;
+                        r.requested_redraw = true;
+                    }
+                    cursor
+                };
+                output.set_selection((clamp(anchor.clone()), clamp(focus.clone())));
+            }
+
+            response = response.or(r);
+        }
 
         (response, message, height)
     }
@@ -90,15 +143,42 @@ impl Expression {
 
         let padding = ctx.round(Self::PADDING);
         height += padding;
-        let field_height = ctx.ceil(self.field.expression_size().y);
         let field_bounds = Bounds {
             pos: top_left + dvec2(padding, height),
-            size: dvec2(width - padding * 1.5, field_height),
+            size: dvec2(
+                width - padding * 1.5,
+                ctx.ceil(self.field.expression_size().y),
+            ),
         };
-        height += field_height;
-        height += padding;
+        height += field_bounds.size.y;
+
+        let output_bounds = if let Some(Ok(output)) = &self.output {
+            height += 0.5 * padding;
+            let size = output.expression_size().map(|s| ctx.ceil(s));
+            let right = top_left.x + width - 0.5 * padding;
+            let left = (right - size.x).max(top_left.x + padding);
+            let bounds = Bounds {
+                pos: dvec2(left, top_left.y + height),
+                size: dvec2(right - left, size.y),
+            };
+            height += bounds.size.y;
+            height += 0.5 * padding;
+            bounds
+        } else {
+            height += padding;
+            Bounds::default()
+        };
 
         self.field.render(ctx, field_bounds, draw_quad);
+
+        if let Some(Ok(output)) = &mut self.output {
+            draw_quad(
+                ctx.scale_factor * output_bounds.pos,
+                ctx.scale_factor * (output_bounds.pos + output_bounds.size),
+                QuadKind::RoundedBox,
+            );
+            output.render(ctx, output_bounds, draw_quad);
+        }
 
         height
     }
@@ -118,6 +198,7 @@ pub struct ExpressionList {
 #[repr(C)]
 struct Uniforms {
     resolution: Vec2,
+    scale_factor: f32,
 }
 
 #[derive(Clone, Copy, bytemuck::Zeroable, bytemuck::Pod)]
@@ -158,7 +239,7 @@ impl ExpressionList {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -310,15 +391,8 @@ impl ExpressionList {
             ],
         });
 
-        let s = r"f\left(x,y,\beta_{1}\right)=\sum_{n=\prod_{n=4}^{5}}^{10}\prod_{n=\frac{\frac{3}{4}}{5}}^{\frac{23ojlkjaf}{dlfj}}ljk";
-        // let s = r"f\left(x,y,\beta_{1}\right)=\sum_{n=\frac{\frac{1}{1}}{\frac{1}{1}}}^{10}abc";
         Self {
-            expressions: vec![
-                Expression {
-                    field: MathField::from(&parse_latex(s).unwrap()),
-                },
-                Default::default(),
-            ],
+            expressions: vec![Default::default()],
             pipeline,
             vertex_buffer,
             index_buffer,
@@ -345,8 +419,19 @@ impl ExpressionList {
             next_y += separator_width;
         }
 
+        let mut needs_reevaluation = false;
+
         if let Some((i, m)) = message {
             match m {
+                Message::ContentsChanged => {
+                    let e = &mut self.expressions[i];
+                    let latex = e.field.to_latex();
+                    e.ast = latex
+                        .iter()
+                        .any(|n| n != &latex_tree::Node::Char(' '))
+                        .then(|| parse_expression_list_entry(&latex));
+                    needs_reevaluation = true;
+                }
                 Message::Up => {
                     if i > 0 {
                         self.expressions[i].unfocus();
@@ -370,6 +455,7 @@ impl ExpressionList {
                 }
                 Message::Remove => {
                     self.expressions.remove(i);
+                    needs_reevaluation = true;
                     if self.expressions.is_empty() {
                         self.expressions.push(Default::default());
                     }
@@ -382,6 +468,156 @@ impl ExpressionList {
         if self.expressions.last().unwrap().has_focus() {
             self.expressions.push(Default::default());
             response.request_redraw();
+        }
+
+        if needs_reevaluation {
+            #[derive(From, Into, Clone, Copy)]
+            struct OutputIndex(usize);
+
+            let mut ei_to_oi: TiVec<ExpressionIndex, OutputIndex> = ti_vec![];
+            let mut list: TiVec<ExpressionIndex, _> = ti_vec![];
+
+            for (i, e) in self.expressions.iter_mut().enumerate() {
+                let i = OutputIndex(i);
+                e.output = None;
+                list.push(match &e.ast {
+                    Some(Ok(ast)) => ast,
+                    Some(Err(err)) => {
+                        e.output = Some(Err(format!("parse error: {err}")));
+                        continue;
+                    }
+                    None => continue,
+                });
+                ei_to_oi.push(i);
+            }
+
+            let (assignments, ei_to_nr) = resolve_names(list.as_slice());
+            let (assignments, nr_to_tc) = type_check(&assignments);
+            let (program, vars) = compile_assignments(&assignments);
+            let mut vm = Vm::with_program(program);
+            vm.run(false);
+
+            for (ei, nr) in ei_to_nr.into_iter_enumerated() {
+                let i: OutputIndex = ei_to_oi[ei];
+                let output = &mut self.expressions[usize::from(i)].output;
+                if output.is_none() {
+                    *output = match nr {
+                        Some(Ok(nr)) => match nr_to_tc[nr].clone() {
+                            Ok(tc) => {
+                                use latex_tree::Node::{self, Char as C};
+                                let ty = assignments[tc].value.ty;
+                                let v = vars[tc];
+                                let mut nodes = vec![C('=')];
+
+                                let number = |nodes: &mut Vec<Node>, mut x: f64| {
+                                    if x.is_nan() {
+                                        nodes.push(Node::Frac {
+                                            num: vec![C('0')],
+                                            den: vec![C('0')],
+                                        });
+                                        return;
+                                    }
+                                    if x.is_sign_negative() {
+                                        nodes.push(C('-'));
+                                        x = -x;
+                                    }
+                                    if x.is_infinite() {
+                                        nodes.push(Node::CtrlSeq("infty"));
+                                        return;
+                                    }
+                                    let mut buffer = ryu::Buffer::new();
+                                    let mut s = buffer.format_finite(x).split('e');
+                                    let m = s.next().unwrap();
+                                    nodes.extend(m.strip_suffix(".0").unwrap_or(m).chars().map(C));
+                                    if let Some(e) = s.next() {
+                                        nodes.extend([
+                                            Node::CtrlSeq("times"),
+                                            C('1'),
+                                            C('0'),
+                                            Node::SubSup {
+                                                sub: None,
+                                                sup: Some(e.chars().map(C).collect()),
+                                            },
+                                        ]);
+                                    }
+                                };
+                                let point = |nodes: &mut Vec<Node>, x: f64, y: f64| {
+                                    let mut point = vec![C('(')];
+                                    number(&mut point, x);
+                                    point.push(C(','));
+                                    number(&mut point, y);
+                                    point.push(C(')'));
+                                    nodes.push(Node::DelimitedGroup(point));
+                                };
+
+                                match ty {
+                                    Type::Number => number(&mut nodes, vm.vars[v].clone().number()),
+                                    Type::NumberList => {
+                                        let a = vm.vars[v].clone().list();
+                                        let mut list = vec![C('[')];
+                                        for (i, x) in a.borrow().as_slice().iter().enumerate() {
+                                            if i > 0 {
+                                                list.push(C(','));
+                                            }
+                                            number(&mut list, *x);
+                                        }
+                                        list.push(C(']'));
+                                        nodes.push(Node::DelimitedGroup(list));
+                                    }
+                                    Type::Point => point(
+                                        &mut nodes,
+                                        vm.vars[v].clone().number(),
+                                        vm.vars[v + 1].clone().number(),
+                                    ),
+                                    Type::PointList => {
+                                        let a = vm.vars[v].clone().list();
+                                        let mut list = vec![C('[')];
+                                        for (i, p) in a.borrow().chunks(2).enumerate() {
+                                            if i > 0 {
+                                                list.push(C(','));
+                                            }
+                                            point(&mut list, p[0], p[1]);
+                                        }
+                                        list.push(C(']'));
+                                        nodes.push(Node::DelimitedGroup(list));
+                                    }
+                                    Type::Bool | Type::BoolList => unreachable!(),
+                                    Type::EmptyList => {
+                                        nodes.push(Node::DelimitedGroup(vec![C('['), C(']')]))
+                                    }
+                                }
+
+                                let mut field = MathField::from(&nodes);
+                                field.interactiveness = Interactiveness::Select;
+                                field.scale = 18.0;
+                                field.left_padding =
+                                    ctx.round(Expression::OUTPUT_LEFT_PADDING) / field.scale;
+                                field.right_padding =
+                                    ctx.round(Expression::OUTPUT_RIGHT_PADDING) / field.scale;
+                                field.bottom_padding =
+                                    ctx.round(Expression::OUTPUT_BOTTOM_PADDING) / field.scale;
+                                field.top_padding =
+                                    ctx.round(Expression::OUTPUT_TOP_PADDING) / field.scale;
+                                Some(Ok(field))
+                            }
+                            Err(e) => Some(Err(format!("type error: {e}"))),
+                        },
+                        Some(Err(e)) => Some(Err(format!("name error: {e}"))),
+                        None => None,
+                    }
+                }
+            }
+
+            let mut has_error = false;
+            for (i, e) in self.expressions.iter().enumerate() {
+                if let Some(Err(e)) = &e.output {
+                    println!("expression {} {e}", i + 1);
+                    has_error = true;
+                }
+            }
+            if has_error {
+                println!();
+            }
         }
 
         response
@@ -410,7 +646,8 @@ impl ExpressionList {
                 | QuadKind::TranslucentBlackBox
                 | QuadKind::HighlightBox
                 | QuadKind::GrayBox
-                | QuadKind::TransparentToWhiteGradient => (DVec2::splat(0.0), DVec2::splat(1.0)),
+                | QuadKind::TransparentToWhiteGradient
+                | QuadKind::RoundedBox => (DVec2::splat(0.0), DVec2::splat(1.0)),
             };
             let kind = kind.index();
             let uv0 = uv0
@@ -496,6 +733,7 @@ impl ExpressionList {
             0,
             bytemuck::cast_slice(&[Uniforms {
                 resolution: uvec2(config.width, config.height).as_vec2(),
+                scale_factor: ctx.scale_factor as f32,
             }]),
         );
 

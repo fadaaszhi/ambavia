@@ -119,7 +119,7 @@ pub enum Event {
     PinchGesture(f64),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct Bounds {
     pub pos: DVec2,
     pub size: DVec2,
@@ -177,7 +177,7 @@ impl Response {
             consumed_event: self.consumed_event | other.consumed_event,
             requested_redraw: self.requested_redraw | other.requested_redraw,
             cursor_icon: if self.consumed_event
-                || !other.consumed_event && other.cursor_icon == CursorIcon::Default
+                || !other.consumed_event && self.cursor_icon != CursorIcon::Default
             {
                 self.cursor_icon
             } else {
@@ -205,6 +205,7 @@ pub enum QuadKind {
     HighlightBox,
     GrayBox,
     TransparentToWhiteGradient,
+    RoundedBox,
 }
 
 impl QuadKind {
@@ -218,6 +219,7 @@ impl QuadKind {
             HighlightBox => 4,
             GrayBox => 5,
             TransparentToWhiteGradient => 6,
+            RoundedBox => 7,
         }
     }
 }

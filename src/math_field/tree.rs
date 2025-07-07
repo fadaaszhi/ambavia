@@ -11,7 +11,7 @@ use crate::katex_font::{Font, Glyph, get_glyph};
 
 const OPERATORNAME_SPACE: f64 = 0.17;
 const BINOP_SPACE: f64 = 0.2;
-const COMMA_SPACE: f64 = 0.2;
+const COMMA_SPACE: f64 = 0.15;
 const COLON_SPACE: f64 = 0.2;
 const BRACKET_JUT: f64 = 0.072;
 const BRACKET_PADDING: f64 = 0.072;

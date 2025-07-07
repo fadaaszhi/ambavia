@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{borrow::Borrow, collections::HashMap, iter::zip};
 
 use derive_more::{From, Into};
 use typed_index_collections::{TiSlice, TiVec};
@@ -172,20 +172,20 @@ struct Resolver<'a> {
 
 #[derive(Debug, Copy, Clone, From, Into)]
 pub struct ExpressionIndex(usize);
-type ExpressionList = TiSlice<ExpressionIndex, ExpressionListEntry>;
+type ExpressionList<E> = TiSlice<ExpressionIndex, E>;
 
 impl<'a> Resolver<'a> {
-    fn new(list: &'a ExpressionList) -> Self {
+    fn new(list: &'a ExpressionList<impl Borrow<ExpressionListEntry>>) -> Self {
         let mut globals = HashMap::new();
 
         for entry in list {
-            match entry {
+            match entry.borrow() {
                 ExpressionListEntry::Assignment { name, .. }
                 | ExpressionListEntry::FunctionDeclaration { name, .. } => {
                     if let Some(result @ Ok(_)) = globals.get_mut(name.as_str()) {
                         *result = Err(format!("'{name}' defined multiple times"));
                     } else {
-                        globals.insert(name.as_str(), Ok(entry));
+                        globals.insert(name.as_str(), Ok(entry.borrow()));
                     }
                 }
                 _ => continue,
@@ -239,7 +239,7 @@ impl<'a> Resolver<'a> {
     fn resolve_variable(&mut self, name: &'a str) -> (Result<usize, String>, Dependencies<'a>) {
         if let Some(((id, err), deps)) = self.get_maybe_outdated_variable(name) {
             if deps.map.iter().all(|(n, d)| match d {
-                Dependency::Assignment(i) => self.get_maybe_outdated_variable(n).unwrap().0 .0 == i,
+                Dependency::Assignment(i) => self.get_maybe_outdated_variable(n).unwrap().0.0 == i,
                 Dependency::NotDynamic => !self.dynamic_scope.contains_key(n),
             }) {
                 let mut deps = deps.clone();
@@ -263,7 +263,7 @@ impl<'a> Resolver<'a> {
                         level: 0,
                         map: [(name, Dependency::NotDynamic)].into(),
                     },
-                )
+                );
             }
         };
 
@@ -414,7 +414,7 @@ impl<'a> Resolver<'a> {
             ));
         }
 
-        self.resolve_dynamic(body, parameters.iter().zip(args.iter()), |name| {
+        self.resolve_dynamic(body, zip(parameters, args), |name| {
             format!("cannot use '{name}' for multiple parameters of this function")
         })
     }
@@ -594,9 +594,12 @@ impl<'a> Resolver<'a> {
 
                 for (name, value) in lists {
                     if seen.contains_key(name.as_str()) {
-                        return (Err(format!(
-                            "you can't define '{name}' more than once on the right-hand side of 'for'"
-                        )), list_deps);
+                        return (
+                            Err(format!(
+                                "you can't define '{name}' more than once on the right-hand side of 'for'"
+                            )),
+                            list_deps,
+                        );
                     }
 
                     let (value, d) = match self.resolve_expression(value) {
@@ -691,7 +694,7 @@ pub struct AssignmentIndex(usize);
 pub type ExpressionToAssignment = TiVec<ExpressionIndex, Option<Result<AssignmentIndex, String>>>;
 
 pub fn resolve_names(
-    list: &ExpressionList,
+    list: &ExpressionList<impl Borrow<ExpressionListEntry>>,
 ) -> (TiVec<AssignmentIndex, Assignment>, ExpressionToAssignment) {
     let mut resolver = Resolver::new(list);
 
@@ -702,7 +705,7 @@ pub fn resolve_names(
             assert!(resolver.global_scope.0.iter().all(|(_, v)| v.len() <= 1));
             assert_eq!(resolver.assignments.len(), 1);
 
-            match e {
+            match e.borrow() {
                 ExpressionListEntry::Assignment { name, value } => {
                     if let Some(((id, err), _)) = resolver.global_scope.get(name) {
                         Some(err.clone().map_or(Ok(*id), Err))
@@ -754,6 +757,9 @@ pub fn resolve_names(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ExpressionListEntry::{
+        Assignment as ElAssign, Expression as ElExpr, FunctionDeclaration as ElFunction,
+    };
     use ast::{
         BinaryOperator as ABo,
         Expression::{
@@ -773,9 +779,6 @@ mod tests {
         },
     };
     use pretty_assertions::assert_eq;
-    use ExpressionListEntry::{
-        Assignment as ElAssign, Expression as ElExpr, FunctionDeclaration as ElFunction,
-    };
 
     fn bx<T>(x: T) -> Box<T> {
         Box::new(x)

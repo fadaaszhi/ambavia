@@ -1,9 +1,11 @@
+use std::iter::zip;
+
 use ambavia::{
     ast_parser::parse_expression_list_entry,
     compiler::compile_assignments,
     latex_parser::parse_latex,
     name_resolver::resolve_names,
-    type_checker::{type_check, Type},
+    type_checker::{Type, type_check},
     vm::Vm,
 };
 use rstest::rstest;
@@ -23,14 +25,11 @@ impl PartialEq for Value {
         match (self, other) {
             (Self::Number(l), Self::Number(r)) => eq(l, r),
             (Self::NumberList(l), Self::NumberList(r)) => {
-                l.len() == r.len() && l.iter().zip(r.iter()).all(|(l, r)| eq(l, r))
+                l.len() == r.len() && zip(l, r).all(|(l, r)| eq(l, r))
             }
             (Self::Point(lx, ly), Self::Point(rx, ry)) => eq(lx, rx) && eq(ly, ry),
             (Self::PointList(l), Self::PointList(r)) => {
-                l.len() == r.len()
-                    && l.iter()
-                        .zip(r.iter())
-                        .all(|((lx, ly), (rx, ry))| eq(lx, rx) && eq(ly, ry))
+                l.len() == r.len() && zip(l, r).all(|((lx, ly), (rx, ry))| eq(lx, rx) && eq(ly, ry))
             }
             (Self::EmptyList, Self::EmptyList) => true,
             _ => false,
@@ -183,7 +182,10 @@ fn expression_eq(#[case] expression: &str, #[case] expected: impl Into<Value>) {
 }
 
 #[rstest]
-#[case(r"\{1<2:(3,4),5\}", "cannot use a point and a number as the branches in a piecewise, every branch must have the same type")]
+#[case(
+    r"\{1<2:(3,4),5\}",
+    "cannot use a point and a number as the branches in a piecewise, every branch must have the same type"
+)]
 fn expression_type_error(#[case] expression: &str, #[case] error: &str) {
     assert_type_error(expression, error);
 }

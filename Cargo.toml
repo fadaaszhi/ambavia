@@ -1,14 +1,22 @@
 [package]
 name = "ambavia"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
+arboard = "3.6.0"
+bytemuck = { version = "1.23.1", features = ["derive"] }
 cli-clipboard = "0.4.0"
 derive_more = { version = "2.0.1", features = ["from", "into"] }
+glam = { version = "0.30.4", features = ["bytemuck"] }
+image = "0.25.6"
 logos = "0.15.0"
 num-integer = "0.1.46"
+pollster = "0.4.0"
+ryu = "1.0.20"
 typed-index-collections = "3.3.0"
+wgpu = "25.0.2"
+winit = "0.30.11"
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"

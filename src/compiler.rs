@@ -1,3 +1,5 @@
+use std::iter::zip;
+
 use typed_index_collections::{TiSlice, TiVec};
 
 use crate::{
@@ -74,7 +76,7 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
             let i_lt_count = builder.instr2(LessThan, i_copy, count_copy);
             let loop_jump_if_false = builder.jump_if_false(i_lt_count);
 
-            for (Assignment { id, .. }, value) in vectors.iter().zip(&vector_values) {
+            for (Assignment { id, .. }, value) in zip(vectors, &vector_values) {
                 let i_copy = builder.copy(&i);
                 let value_i = builder.unchecked_index(value, i_copy);
                 builder.store(*id, value_i);
@@ -200,7 +202,7 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
             let mut jifs = vec![];
             let mut old_c = None;
 
-            for (b, op) in operands[1..].iter().zip(operators) {
+            for (b, op) in zip(&operands[1..], operators) {
                 if let Some(c) = old_c {
                     builder.pop(c);
                 }
@@ -263,7 +265,7 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
             let mut result = builder.build_list(tc_list_to_ib_base(*ty), vec![]);
             let mut variables = vec![];
 
-            for (Assignment { id, .. }, value) in lists.iter().zip(&list_values).rev() {
+            for (Assignment { id, .. }, value) in zip(lists, &list_values) {
                 let count = builder.count_specific(value);
                 let i = builder.load_const(0.0);
                 let loop_start = builder.label();
@@ -343,10 +345,10 @@ pub fn compile_assignments(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pretty_assertions::assert_eq;
     use BinaryOperator as TBo;
     use Expression::{BinaryOperation as TBop, Identifier as TId, Number as TNum};
     use InstructionBuilder as Ib;
+    use pretty_assertions::assert_eq;
 
     fn bx<T>(x: T) -> Box<T> {
         Box::new(x)

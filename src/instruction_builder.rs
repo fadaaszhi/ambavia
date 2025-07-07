@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, iter::zip};
 
 use crate::vm::Instruction::{self, *};
 
@@ -358,7 +358,7 @@ impl InstructionBuilder {
                 .collect::<Vec<_>>()
         );
         assert_eq!(jump.ctx.len(), label.stack.len() - jump.stack.len());
-        for (j, l) in jump.ctx.iter().zip(label.stack[jump.stack.len()..].iter()) {
+        for (j, l) in zip(&jump.ctx, &label.stack[jump.stack.len()..]) {
             assert_eq!((j.index, j.ty), (l.index, l.ty));
         }
         match &mut self.instructions[jump.index] {

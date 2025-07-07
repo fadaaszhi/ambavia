@@ -87,10 +87,20 @@ impl<'a> fmt::Display for Node<'a> {
             Node::Operatorname(name) => write!(f, r"\operatorname{{{}}}", NodesDisplayer(name),)?,
             Node::CtrlSeq(word) => write!(f, r"\{word} ")?,
             Node::Char(c) => match c {
-                '{' | '}' | '%' => write!(f, r"\{}", c)?,
-                _ => write!(f, "{}", c)?,
+                '{' | '}' | '%' => write!(f, r"\{c}")?,
+                _ => write!(f, "{c}")?,
             },
         }
         Ok(())
+    }
+}
+
+pub trait ToString {
+    fn to_string(self) -> String;
+}
+
+impl ToString for &[Node<'_>] {
+    fn to_string(self) -> String {
+        NodesDisplayer(self).to_string()
     }
 }

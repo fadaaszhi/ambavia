@@ -1,131 +1,304 @@
-use std::hint::black_box;
+mod expression_list;
+mod graph;
+mod katex_font;
+mod math_field;
+mod ui;
+mod utility;
 
-use ambavia::{
-    ast_parser::parse_expression_list_entry,
-    compiler::compile_assignments,
-    latex_parser::parse_latex,
-    name_resolver::{resolve_names, ExpressionIndex},
-    type_checker::{type_check, Type},
-    vm::Vm,
+use std::{f64, sync::Arc};
+
+use glam::{DVec2, UVec2, dvec2, vec2};
+use winit::{
+    event::{ElementState, MouseButton, WindowEvent},
+    event_loop::{ActiveEventLoop, EventLoop},
+    window::{CursorIcon, Window, WindowAttributes, WindowId},
 };
-use derive_more::{From, Into};
-use typed_index_collections::{ti_vec, TiVec};
 
-use crate::timer::Timer;
+use crate::{
+    ui::{Bounds, Context, Event, Response},
+    utility::{AsGlam, mix, unmix},
+};
 
-pub mod timer;
+fn main() -> Result<(), winit::error::EventLoopError> {
+    struct AppRaw(Option<App>);
 
-fn main() {
-    let graph = r"
-    1 + (2 + \{2=4: 5\})
-
-    // 1
-    // 1 2
-    // 1 2 2
-    // 1 2 
-    "
-    .trim();
-
-    let mut timer = Timer::default();
-    let mut t = timer.start("entire");
-    let mut t_parse = t.start("parse");
-    t_parse.disable_sections();
-
-    #[derive(From, Into, Clone, Copy)]
-    struct OutputIndex(usize);
-
-    let mut output: TiVec<OutputIndex, _> = ti_vec!["".to_string(); graph.lines().count()];
-    let mut ei_to_oi: TiVec<ExpressionIndex, OutputIndex> = ti_vec![];
-    let mut list: TiVec<ExpressionIndex, _> = ti_vec![];
-
-    for (i, line) in graph.lines().enumerate() {
-        let mut t = t_parse.start(format!("line {i}"));
-        let i = OutputIndex(i);
-        if line.trim().is_empty() {
-            continue;
+    impl winit::application::ApplicationHandler for AppRaw {
+        fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+            if self.0.is_none() {
+                self.0 = Some(App::new(event_loop));
+            }
         }
 
-        let tree = match t.time("parse_latex", || parse_latex(line)) {
-            Ok(tree) => tree,
-            Err(e) => {
-                output[i] = format!("LaTeX error: {e:?}");
-                continue;
+        fn window_event(
+            &mut self,
+            event_loop: &ActiveEventLoop,
+            window_id: WindowId,
+            event: WindowEvent,
+        ) {
+            if let Some(app) = &mut self.0 {
+                app.window_event(event_loop, window_id, event);
             }
-        };
-        let ast = match t.time("parse_expression_list_entry", || {
-            parse_expression_list_entry(&tree)
-        }) {
-            Ok(ast) => ast,
-            Err(e) => {
-                output[i] = format!("AST Error: {e}");
-                continue;
-            }
-        };
-        ei_to_oi.push(i);
-        list.push(ast);
+        }
+
+        fn exiting(&mut self, _: &ActiveEventLoop) {
+            self.0 = None;
+        }
     }
 
-    drop(t_parse);
+    EventLoop::new()?.run_app(&mut AppRaw(None))
+}
 
-    let (assignments, ei_to_nr) = t.time("resolve_names", || resolve_names(&list));
-    let (assignments, nr_to_tc) = t.time("type_check", || type_check(&assignments));
-    let (program, vars) = t.time("compile_assignments", || compile_assignments(&assignments));
-    let mut vm = t.time("create vm", || Vm::with_program(program));
-    t.time("run vm", || vm.run(false));
-    vm = black_box(vm);
-    t.time("write output", || {
-        for (ei, nr) in ei_to_nr.into_iter_enumerated() {
-            output[ei_to_oi[ei]] = match nr {
-                Some(Ok(nr)) => match nr_to_tc[nr].clone() {
-                    Ok(tc) => {
-                        let ty = assignments[tc].value.ty;
-                        let v = vars[tc];
-                        format!(
-                            // "({ty}) {}",
-                            "{}",
-                            match ty {
-                                Type::Number | Type::NumberList => format!("{}", vm.vars[v]),
-                                Type::Point => format!("({},{})", vm.vars[v], vm.vars[v + 1]),
-                                Type::PointList => {
-                                    let a = vm.vars[v].clone().list();
-                                    format!(
-                                        "[{}]",
-                                        a.borrow()
-                                            .chunks(2)
-                                            .map(|p| format!("({},{})", p[0], p[1]))
-                                            .collect::<Vec<_>>()
-                                            .join(",")
-                                    )
-                                }
-                                Type::Bool | Type::BoolList => unreachable!(),
-                                Type::EmptyList => "[]".into(),
-                            }
-                        )
-                    }
-                    Err(e) => format!("Type Error: {e}"),
-                },
-                Some(Err(e)) => format!("Name Error: {e}"),
-                None => continue,
+struct App {
+    window: Arc<Window>,
+    surface: wgpu::Surface<'static>,
+    config: wgpu::SurfaceConfiguration,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    context: Context,
+    main_thing: MainThing,
+}
+
+impl App {
+    fn new(event_loop: &ActiveEventLoop) -> App {
+        let window = Arc::new(
+            event_loop
+                .create_window(
+                    WindowAttributes::default()
+                        .with_title("Ambavia")
+                        .with_theme(Some(winit::window::Theme::Light)),
+                )
+                .unwrap(),
+        );
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::from_env_or_default());
+        let surface = instance.create_surface(window.clone()).unwrap();
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            compatible_surface: Some(&surface),
+            ..Default::default()
+        }))
+        .expect("Failed to find an appropriate adapter");
+        let (device, queue) = pollster::block_on(adapter.request_device(&Default::default()))
+            .expect("Failed to create device");
+        let size = window.inner_size().as_glam().max(UVec2::splat(1));
+        let mut config = surface
+            .get_default_config(&adapter, size.x, size.y)
+            .unwrap();
+        config.format = config.format.remove_srgb_suffix();
+        let present_modes = surface.get_capabilities(&adapter).present_modes;
+        if present_modes.contains(&wgpu::PresentMode::Mailbox) {
+            config.present_mode = wgpu::PresentMode::Mailbox;
+        }
+        surface.configure(&device, &config);
+        let context = Context::new(&window);
+        let main_thing = MainThing::new(&device, &queue, &config);
+
+        App {
+            window,
+            surface,
+            config,
+            device,
+            queue,
+            context,
+            main_thing,
+        }
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        let previous_cursor = self.context.cursor;
+        self.context.update(&event);
+        let bounds = Bounds {
+            pos: DVec2::ZERO,
+            size: self.window.inner_size().as_glam().as_dvec2() / self.context.scale_factor,
+        };
+
+        'update: {
+            let my_event = match event.clone() {
+                WindowEvent::Resized { .. } => Event::Resized,
+                WindowEvent::KeyboardInput { event, .. } => Event::KeyboardInput(event),
+                WindowEvent::CursorMoved { .. } => Event::CursorMoved { previous_cursor },
+                // Is this delta a physical size? Do we need to convert it to
+                // logical? I think it's already logical because my trackpad
+                // feels less sensitive when I decrease my Mac's scale factor.
+                WindowEvent::MouseWheel { delta, .. } => Event::MouseWheel(match delta {
+                    winit::event::MouseScrollDelta::LineDelta(x, y) => vec2(x, y).as_dvec2() * 20.0,
+                    winit::event::MouseScrollDelta::PixelDelta(delta) => delta.as_glam(),
+                }),
+                WindowEvent::MouseInput { state, button, .. } => Event::MouseInput(state, button),
+                WindowEvent::PinchGesture { delta, .. } => Event::PinchGesture(delta),
+                _ => break 'update,
+            };
+            let response = self.main_thing.update(&self.context, &my_event, bounds);
+            if response.requested_redraw {
+                self.window.request_redraw();
+            }
+            self.window.set_cursor(response.cursor_icon);
+        }
+
+        match event {
+            WindowEvent::Resized(new_size) => {
+                self.config.width = new_size.width.max(1);
+                self.config.height = new_size.height.max(1);
+                self.surface.configure(&self.device, &self.config);
+            }
+            WindowEvent::ScaleFactorChanged { .. } => {
+                self.window.request_redraw();
+            }
+            WindowEvent::RedrawRequested => {
+                let surface_texture = self
+                    .surface
+                    .get_current_texture()
+                    .expect("Failed to acquire next swap chain texture");
+                let surface_view = surface_texture.texture.create_view(&Default::default());
+                let command_buffer = self.main_thing.render(
+                    &self.context,
+                    &self.device,
+                    &self.queue,
+                    &surface_view,
+                    &self.config,
+                    bounds,
+                );
+                self.queue.submit(command_buffer);
+                self.window.pre_present_notify();
+                surface_texture.present();
+            }
+            WindowEvent::CloseRequested => event_loop.exit(),
+            _ => {}
+        };
+    }
+}
+struct MainThing {
+    resizer_width: f64,
+    resizer_position: f64,
+    dragging: Option<f64>,
+    expression_list: expression_list::ExpressionList,
+    graph_paper: graph::GraphPaper,
+}
+
+impl MainThing {
+    fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        config: &wgpu::SurfaceConfiguration,
+    ) -> MainThing {
+        MainThing {
+            resizer_width: 25.0,
+            resizer_position: 0.3,
+            dragging: None,
+            expression_list: expression_list::ExpressionList::new(device, queue, config),
+            graph_paper: graph::GraphPaper::new(device, config),
+        }
+    }
+
+    fn update(&mut self, ctx: &Context, event: &Event, bounds: Bounds) -> Response {
+        let mut response = Response::default();
+
+        let mut x = mix(bounds.left(), bounds.right(), self.resizer_position);
+        let resized = if let Event::CursorMoved { .. } = event
+            && let Some(offset) = self.dragging
+        {
+            x = (ctx.cursor.x + offset).clamp(bounds.left(), bounds.right());
+            self.resizer_position = unmix(x, bounds.left(), bounds.right());
+            response.consume_event();
+            response.request_redraw();
+            true
+        } else {
+            false
+        };
+
+        let offset = x - ctx.cursor.x;
+        let hovering = offset.abs() <= self.resizer_width / 2.0;
+
+        if let Event::MouseInput(state, MouseButton::Left) = event {
+            match state {
+                ElementState::Pressed if hovering => {
+                    self.dragging = Some(offset);
+                    response.consume_event();
+                }
+                ElementState::Released if self.dragging.is_some() => {
+                    self.dragging = None;
+                    response.consume_event();
+                }
+                _ => {}
             }
         }
 
-        let lines = graph.lines().map(|l| l.trim()).collect::<Vec<_>>();
-        let len = lines.iter().map(|l| l.len()).max().unwrap_or(0);
+        if hovering || self.dragging.is_some() {
+            response.cursor_icon = CursorIcon::ColResize;
 
-        println!(
-            "\n{}",
-            lines
-                .iter()
-                .zip(output.iter())
-                .map(|(i, o)| format!("{i:len$}   │ {o}"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        );
-    });
+            // Really should be using TouchPhase here to not interrupt people
+            // who started using these before we got hovered
+            if matches!(event, Event::MouseWheel(_) | Event::PinchGesture(_)) {
+                response.consume_event();
+            }
+        }
 
-    drop(t);
-    println!("{}", timer.string());
-    // cli_clipboard::set_contents(timer.string()).unwrap();
+        let x = ctx.round(x);
+        let left = Bounds {
+            pos: bounds.pos,
+            size: dvec2(x - bounds.left(), bounds.size.y),
+        };
+        let right = Bounds {
+            pos: dvec2(x, bounds.pos.y),
+            size: dvec2(bounds.right() - x, bounds.size.y),
+        };
 
-    println!();
+        if resized {
+            self.expression_list.update(ctx, &Event::Resized, left);
+            self.graph_paper.update(ctx, &Event::Resized, right);
+        }
+
+        response.or_else(|| {
+            Response::or(
+                self.expression_list.update(ctx, event, left),
+                self.graph_paper.update(ctx, event, right),
+            )
+        })
+    }
+
+    fn render(
+        &mut self,
+        ctx: &Context,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        view: &wgpu::TextureView,
+        config: &wgpu::SurfaceConfiguration,
+        bounds: Bounds,
+    ) -> Option<wgpu::CommandBuffer> {
+        if bounds.is_empty() {
+            return None;
+        }
+
+        let mut encoder = device.create_command_encoder(&Default::default());
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("main_thing_clear"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+
+        let x = ctx.round(mix(bounds.left(), bounds.right(), self.resizer_position));
+        let left = Bounds {
+            pos: bounds.pos,
+            size: dvec2(x - bounds.left(), bounds.size.y),
+        };
+        let right = Bounds {
+            pos: dvec2(x, bounds.pos.y),
+            size: dvec2(bounds.right() - x, bounds.size.y),
+        };
+        self.expression_list
+            .render(ctx, device, queue, view, config, &mut encoder, left);
+        self.graph_paper
+            .render(ctx, device, queue, view, config, &mut encoder, right);
+        Some(encoder.finish())
+    }
 }

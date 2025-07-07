@@ -53,7 +53,7 @@ pub enum Token<'a> {
 impl<'a> Token<'a> {
     pub fn to_small_string(&self) -> String {
         match self {
-            Token::IdentFrag(string) | Token::Number(string) => format!("'{}'", string),
+            Token::IdentFrag(string) | Token::Number(string) => format!("'{string}'"),
             other => match other {
                 Token::IdentFrag(_) | Token::Number(_) => unreachable!(),
                 Token::SubSup { sub: Some(_), .. } => r"'_'",
@@ -151,7 +151,7 @@ fn flatten_helper<'a>(
                             return Err(format!(
                                 r"'\operatorname' expected letters, found {}",
                                 node.to_small_string()
-                            ))
+                            ));
                         }
                     }
                 }
@@ -277,10 +277,10 @@ pub fn flatten<'a>(nodes: &'a [Node]) -> Result<Vec<Token<'a>>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use assert_matches::assert_matches;
-    use pretty_assertions::assert_eq;
     use Node::*;
     use Token as Tk;
+    use assert_matches::assert_matches;
+    use pretty_assertions::assert_eq;
 
     #[test]
     fn number_dot_ellipsis() {
@@ -578,10 +578,13 @@ mod tests {
         );
 
         let Ok(
-            [Tk::SubSup {
-                sub: Some(sub),
-                sup: Some(sup),
-            }, ..],
+            [
+                Tk::SubSup {
+                    sub: Some(sub),
+                    sup: Some(sup),
+                },
+                ..,
+            ],
         ) = tokens.as_deref()
         else {
             unreachable!();
@@ -607,10 +610,13 @@ mod tests {
         );
 
         let Ok(
-            [Tk::Sqrt {
-                root: Some(root),
-                arg,
-            }, ..],
+            [
+                Tk::Sqrt {
+                    root: Some(root),
+                    arg,
+                },
+                ..,
+            ],
         ) = tokens.as_deref()
         else {
             unreachable!();

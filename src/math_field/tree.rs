@@ -425,7 +425,6 @@ pub fn to_latex(tree: &[(Bounds, Node)]) -> latex_tree::Nodes<'static> {
             }
             Node::Char { ch, .. } => {
                 let seq = match ch {
-                    ' ' => " ",
                     '×' => "times",
                     '÷' => "div",
                     'Γ' => "Gamma",

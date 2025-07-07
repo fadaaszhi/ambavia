@@ -19,8 +19,8 @@ wgpu = "25.0.2"
 winit = "0.30.11"
 
 parse = { workspace = true }
+eval = { workspace = true }
 
 [dev-dependencies]
-pretty_assertions = "1.4.1"
+pretty_assertions = { workspace = true }
 assert_matches = "1.5.0"
-rstest = "0.25.0"

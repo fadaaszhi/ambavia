@@ -64,13 +64,13 @@ dependencies = [
  "bytemuck",
  "cli-clipboard",
  "derive_more",
+ "eval",
  "glam",
  "image",
  "num-integer",
  "parse",
  "pollster",
  "pretty_assertions",
- "rstest",
  "ryu",
  "typed-index-collections",
  "wgpu",
@@ -706,6 +706,12 @@ checksum = "dea2df4cf52843e0452895c455a1a2cfbb842a1e7329671acf418fdc53ed4c59"
 [[package]]
 name = "eval"
 version = "0.1.0"
+dependencies = [
+ "parse",
+ "pretty_assertions",
+ "rstest",
+ "typed-index-collections",
+]
 
 [[package]]
 name = "exr"

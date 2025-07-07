@@ -1,15 +1,6 @@
-use ambavia::{compiler::compile_assignments, vm::Vm};
 use bytemuck::{Zeroable, offset_of};
 use derive_more::{From, Into};
 use glam::{DVec2, U16Vec2, Vec2, dvec2, u16vec2, uvec2, vec2};
-
-use parse::{
-    ast_parser::parse_expression_list_entry,
-    latex_tree,
-    name_resolver::{ExpressionIndex, resolve_names},
-    type_checker::{Type, type_check},
-};
-
 use typed_index_collections::{TiVec, ti_vec};
 use winit::{
     event::{ElementState, MouseButton},
@@ -19,6 +10,13 @@ use winit::{
 use crate::{
     math_field::{Cursor, Interactiveness, MathField, Message, UserSelection},
     ui::{Bounds, Context, Event, QuadKind, Response},
+};
+use eval::{compiler::compile_assignments, vm::Vm};
+use parse::{
+    ast_parser::parse_expression_list_entry,
+    latex_tree,
+    name_resolver::{ExpressionIndex, resolve_names},
+    type_checker::{Type, type_check},
 };
 
 #[derive(Default)]

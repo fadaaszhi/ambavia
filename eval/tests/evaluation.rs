@@ -1,6 +1,6 @@
 use std::iter::zip;
 
-use ambavia::{compiler::compile_assignments, vm::Vm};
+use eval::{compiler::compile_assignments, vm::Vm};
 use parse::{
     ast_parser::parse_expression_list_entry,
     latex_parser::parse_latex,

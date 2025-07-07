@@ -3,6 +3,9 @@ members = ["ui", "parse", "eval"]
 resolver = "3"
 
 [workspace.dependencies]
-typed-index-collections = "3.3.0"
 parse = { path = "parse" }
+eval = { path = "eval" }
+
+typed-index-collections = "3.3.0"
 derive_more = { version = "2.0.1", features = ["from", "into"] }
+pretty_assertions = "1.4.1"

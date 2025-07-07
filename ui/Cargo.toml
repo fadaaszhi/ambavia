@@ -1,0 +1,26 @@
+[package]
+name = "ambavia"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+arboard = "3.6.0"
+bytemuck = { version = "1.23.1", features = ["derive"] }
+cli-clipboard = "0.4.0"
+typed-index-collections = { workspace = true }
+derive_more = { workspace = true }
+glam = { version = "0.30.4", features = ["bytemuck"] }
+image = "0.25.6"
+num-integer = "0.1.46"
+pollster = "0.4.0"
+ryu = "1.0.20"
+
+wgpu = "25.0.2"
+winit = "0.30.11"
+
+parse = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = "1.4.1"
+assert_matches = "1.5.0"
+rstest = "0.25.0"

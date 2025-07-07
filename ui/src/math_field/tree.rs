@@ -5,7 +5,7 @@ use std::{
 
 use glam::{DVec2, dvec2};
 
-use ambavia::latex_tree::{self, Node as LNode};
+use parse::latex_tree::{self, Node as LNode};
 
 use crate::katex_font::{Font, Glyph, get_glyph};
 

@@ -2,11 +2,11 @@ mod tree;
 
 use std::{iter::zip, ops::Range};
 
-use ambavia::{
+use glam::{DVec2, dvec2};
+use parse::{
     latex_parser::parse_latex,
     latex_tree::{self, ToString},
 };
-use glam::{DVec2, dvec2};
 use winit::{
     event::{ElementState, KeyEvent, MouseButton},
     window::CursorIcon,

@@ -1,0 +1,12 @@
+[package]
+name = "eval"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+parse = { workspace = true }
+typed-index-collections = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+rstest = "0.25.0"

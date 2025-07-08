@@ -2,10 +2,6 @@ mod tree;
 
 use std::{iter::zip, ops::Range};
 
-use ambavia::{
-    latex_parser::parse_latex,
-    latex_tree::{self, ToString},
-};
 use glam::{DVec2, dvec2};
 use winit::{
     event::{ElementState, KeyEvent, MouseButton},
@@ -22,6 +18,10 @@ use crate::{
     },
     ui::{Bounds, Context, Event, QuadKind, Response},
     utility::{mix, snap},
+};
+use parse::{
+    latex_parser::parse_latex,
+    latex_tree::{self, ToString},
 };
 
 /// Specifies which structural component of a node to navigate to. Used for

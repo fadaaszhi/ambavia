@@ -4,11 +4,11 @@ use typed_index_collections::{TiSlice, TiVec};
 
 use crate::{
     instruction_builder::{BaseType as IbBaseType, InstructionBuilder, Value},
-    type_checker::{
-        Assignment, AssignmentIndex, BinaryOperator, Body, BuiltIn, ComparisonOperator, Expression,
-        Type as TcType, TypedExpression, UnaryOperator,
-    },
     vm::Instruction::{self, *},
+};
+use parse::type_checker::{
+    Assignment, AssignmentIndex, BinaryOperator, Body, BuiltIn, ComparisonOperator, Expression,
+    Type as TcType, TypedExpression, UnaryOperator,
 };
 
 fn tc_list_to_ib_base(ty: TcType) -> IbBaseType {

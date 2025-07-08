@@ -1,0 +1,23 @@
+[package]
+name = "ambavia"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+parse = { workspace = true }
+eval = { workspace = true }
+
+typed-index-collections = { workspace = true }
+derive_more = { workspace = true }
+
+arboard = "3.6.0"
+ryu = "1.0.20"
+bytemuck = { version = "1.23.1", features = ["derive"] }
+image = { version = "0.25.6", default-features = false, features = [
+    "png",
+    "rayon",
+] }
+pollster = "0.4.0"
+glam = { version = "0.30.4", features = ["bytemuck"] }
+wgpu = "25.0.2"
+winit = "0.30.11"

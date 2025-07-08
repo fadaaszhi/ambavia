@@ -1,12 +1,11 @@
 use std::iter::zip;
 
-use ambavia::{
+use eval::{compiler::compile_assignments, vm::Vm};
+use parse::{
     ast_parser::parse_expression_list_entry,
-    compiler::compile_assignments,
     latex_parser::parse_latex,
     name_resolver::resolve_names,
     type_checker::{Type, type_check},
-    vm::Vm,
 };
 use rstest::rstest;
 

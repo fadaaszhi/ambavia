@@ -5,9 +5,8 @@ use std::{
 
 use glam::{DVec2, dvec2};
 
-use ambavia::latex_tree::{self, Node as LNode};
-
 use crate::katex_font::{Font, Glyph, get_glyph};
+use parse::latex_tree::{self, Node as LNode};
 
 const OPERATORNAME_SPACE: f64 = 0.17;
 const BINOP_SPACE: f64 = 0.2;

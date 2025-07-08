@@ -1,11 +1,3 @@
-use ambavia::{
-    ast_parser::parse_expression_list_entry,
-    compiler::compile_assignments,
-    latex_tree,
-    name_resolver::{ExpressionIndex, resolve_names},
-    type_checker::{Type, type_check},
-    vm::Vm,
-};
 use bytemuck::{Zeroable, offset_of};
 use derive_more::{From, Into};
 use glam::{DVec2, U16Vec2, Vec2, dvec2, u16vec2, uvec2, vec2};
@@ -19,11 +11,18 @@ use crate::{
     math_field::{Cursor, Interactiveness, MathField, Message, UserSelection},
     ui::{Bounds, Context, Event, QuadKind, Response},
 };
+use eval::{compiler::compile_assignments, vm::Vm};
+use parse::{
+    ast_parser::parse_expression_list_entry,
+    latex_tree,
+    name_resolver::{ExpressionIndex, resolve_names},
+    type_checker::{Type, type_check},
+};
 
 #[derive(Default)]
 struct Expression {
     field: MathField,
-    ast: Option<Result<ambavia::ast::ExpressionListEntry, String>>,
+    ast: Option<Result<parse::ast::ExpressionListEntry, String>>,
     output: Option<Result<MathField, String>>,
 }
 

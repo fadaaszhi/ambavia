@@ -2205,6 +2205,15 @@ impl MathField {
             _ => {}
         }
 
+        if !write
+            && !self.dragging
+            && let Some(s) = &self.selection
+            && s.anchor == s.focus
+        {
+            self.unfocus();
+            response.request_redraw();
+        }
+
         if self.tree_changed {
             assert_eq!(message, None);
             self.tree_changed = false;
@@ -2245,7 +2254,9 @@ impl MathField {
                 * ctx.scale_factor
         };
         match &self.selection {
-            Some(selection) => {
+            Some(selection)
+                if self.interactiveness.allows_writing() || selection.anchor != selection.focus =>
+            {
                 let selection: Selection = selection.into();
                 let nodes = self.tree.walk_mut(&selection.path);
                 let original_gray = nodes.has_gray_background;
@@ -2255,7 +2266,7 @@ impl MathField {
                 self.tree.render(ctx, transform, draw_quad);
                 self.tree.walk_mut(&selection.path).has_gray_background = original_gray;
             }
-            None => {
+            _ => {
                 self.tree.render(ctx, transform, draw_quad);
             }
         }

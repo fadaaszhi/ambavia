@@ -22,7 +22,8 @@ struct Vertex {
 
 struct VertexOutput {
     @builtin(position) position: vec4f,
-    @location(0) @interpolate(flat) index: u32,
+    @location(0) @interpolate(perspective, sample) p: vec2f,
+    @location(1) @interpolate(flat) index: u32,
 }
 
 fn flip_y(v: vec2f) -> vec2f {
@@ -60,7 +61,7 @@ fn vs_graph(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     let p = select(p1 + t, p0 - t, 0 < j && j < 4) + select(n, -n, 1 < j && j < 5);
     let z = bitcast<f32>(vertex.shape + 0x00800000);
     let p_clip = vec4(flip_y(2.0 * p - uniforms.resolution) / uniforms.resolution, z, 1.0);
-    return VertexOutput(p_clip, i);
+    return VertexOutput(p_clip, p, i);
 }
 
 fn sd_segment(p: vec2f, a: vec2f, b: vec2f) -> f32 {
@@ -71,7 +72,6 @@ fn sd_segment(p: vec2f, a: vec2f, b: vec2f) -> f32 {
 
 @fragment
 fn fs_graph(in: VertexOutput) -> @location(0) vec4f {
-    let p = in.position.xy;
     let vertex = vertices[in.index];
     let p0 = vertex.position;
     let shape = shapes[vertex.shape];
@@ -83,7 +83,7 @@ fn fs_graph(in: VertexOutput) -> @location(0) vec4f {
         p1 = p0;
     }
 
-    let d = sd_segment(p, p0, p1);
+    let d = sd_segment(in.p, p0, p1);
 
     if d > shape.width * 0.5 {
         discard;

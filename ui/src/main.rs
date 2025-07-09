@@ -345,10 +345,12 @@ impl MainThing {
             pos: dvec2(x, bounds.pos.y),
             size: dvec2(bounds.right() - x, bounds.size.y),
         };
-        self.expression_list
-            .render(ctx, device, queue, view, config, &mut encoder, left);
+        // Render graph paper first because it does a fullscreen MSAA resolve
+        // which would otherwise overwrite the expression list
         self.graph_paper
             .render(ctx, device, queue, view, config, &mut encoder, right);
+        self.expression_list
+            .render(ctx, device, queue, view, config, &mut encoder, left);
         Some(encoder.finish())
     }
 }

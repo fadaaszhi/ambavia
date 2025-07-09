@@ -38,6 +38,7 @@ pub struct GraphPaper {
     hovered_point: Option<ExpressionId>,
     points: Vec<Point>,
 
+    graph_texture: wgpu::Texture,
     depth_texture: wgpu::Texture,
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
@@ -111,6 +112,30 @@ impl Vertex {
     }
 }
 
+const MSAA_SAMPLE_COUNT: u32 = 4;
+
+fn create_graph_texture(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+    format: wgpu::TextureFormat,
+) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("graph_texture"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: MSAA_SAMPLE_COUNT,
+        dimension: wgpu::TextureDimension::D2,
+        format: format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    })
+}
+
 fn create_depth_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some("graph_depth_texture"),
@@ -120,7 +145,7 @@ fn create_depth_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu:
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
-        sample_count: 1,
+        sample_count: MSAA_SAMPLE_COUNT,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Depth32Float,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -251,6 +276,8 @@ impl GraphPaper {
                 },
             ],
         });
+        let graph_texture =
+            create_graph_texture(device, config.width, config.height, config.format);
         let depth_texture = create_depth_texture(device, config.width, config.height);
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("graph"),
@@ -275,7 +302,11 @@ impl GraphPaper {
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
-            multisample: Default::default(),
+            multisample: wgpu::MultisampleState {
+                count: MSAA_SAMPLE_COUNT,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
             fragment: Some(wgpu::FragmentState {
                 module: &module,
                 entry_point: Some("fs_graph"),
@@ -312,6 +343,7 @@ impl GraphPaper {
             hovered_point: None,
             points: vec![],
 
+            graph_texture,
             depth_texture,
             pipeline,
             layout,
@@ -441,6 +473,13 @@ impl GraphPaper {
             return;
         }
 
+        if self.graph_texture.width() != config.width
+            || self.graph_texture.height() != config.height
+        {
+            self.graph_texture =
+                create_graph_texture(device, config.width, config.height, config.format);
+        }
+
         if self.depth_texture.width() != config.width
             || self.depth_texture.height() != config.height
         {
@@ -459,10 +498,10 @@ impl GraphPaper {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("graph_paper"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view,
-                resolve_target: None,
+                view: &self.graph_texture.create_view(&Default::default()),
+                resolve_target: Some(view),
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
+                    load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
                     store: wgpu::StoreOp::Store,
                 },
             })],

@@ -49,6 +49,8 @@ fn main() -> Result<(), winit::error::EventLoopError> {
 }
 
 struct App {
+    events: Vec<WindowEvent>,
+    request_redraw: bool,
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
@@ -92,6 +94,8 @@ impl App {
         let main_thing = MainThing::new(&device, &queue, &config);
 
         App {
+            events: vec![],
+            request_redraw: false,
             window,
             surface,
             config,
@@ -103,6 +107,42 @@ impl App {
     }
 
     fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        if true {
+            // Pool events and only execute them on RedrawRequested to work around a
+            // weird issue where taking more than 8ms during a non-RedrawRequested
+            // event meant winit didn't give us any chance to redraw, making our app
+            // appear frozen even though under the hood it was running fine. With
+            // this method we get extraneous RedrawRequested events, but it's okay
+            // because we only actually redraw when self.request_redraw is set to
+            // true by fake_window_event.
+            if event != WindowEvent::RedrawRequested {
+                self.window.request_redraw();
+                self.events.push(event);
+                return;
+            }
+
+            self.request_redraw = false;
+            for event in std::mem::take(&mut self.events).drain(..) {
+                self.fake_window_event(event_loop, window_id, event);
+            }
+            if self.request_redraw {
+                self.fake_window_event(event_loop, window_id, WindowEvent::RedrawRequested);
+            }
+        } else {
+            self.request_redraw = false;
+            self.fake_window_event(event_loop, window_id, event);
+            if self.request_redraw {
+                self.window.request_redraw();
+            }
+        }
+    }
+
+    fn fake_window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
         _window_id: WindowId,
@@ -133,7 +173,8 @@ impl App {
             };
             let response = self.main_thing.update(&self.context, &my_event, bounds);
             if response.requested_redraw {
-                self.window.request_redraw();
+                self.request_redraw = true;
+                // self.window.request_redraw();
             }
             self.window.set_cursor(response.cursor_icon);
         }
@@ -252,10 +293,19 @@ impl MainThing {
         }
 
         response.or_else(|| {
-            Response::or(
-                self.expression_list.update(ctx, event, left),
-                self.graph_paper.update(ctx, event, right),
-            )
+            let (r_graph, dragged_point) = self.graph_paper.update(ctx, event, right);
+
+            if let Some((i, p)) = dragged_point {
+                self.expression_list.point_dragged(i, p);
+            }
+
+            let (r_expression_list, points) = self.expression_list.update(ctx, event, left);
+
+            if let Some(points) = points {
+                self.graph_paper.set_geometry(points);
+            }
+
+            r_graph.or(r_expression_list)
         })
     }
 

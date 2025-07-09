@@ -1,5 +1,5 @@
 use bytemuck::{Zeroable, offset_of};
-use derive_more::{From, Into};
+use derive_more::{Add, From, Into, Sub};
 use glam::{DVec2, U16Vec2, Vec2, dvec2, u16vec2, uvec2, vec2};
 use typed_index_collections::{TiVec, ti_vec};
 use winit::{
@@ -8,30 +8,133 @@ use winit::{
 };
 
 use crate::{
+    graph::Point,
     math_field::{Cursor, Interactiveness, MathField, Message, UserSelection},
     ui::{Bounds, Context, Event, QuadKind, Response},
 };
 use eval::{compiler::compile_assignments, vm::Vm};
 use parse::{
     ast_parser::parse_expression_list_entry,
+    latex_parser::parse_latex,
     latex_tree,
     name_resolver::{ExpressionIndex, resolve_names},
     type_checker::{Type, type_check},
 };
 
 #[derive(Default)]
+enum Output {
+    #[default]
+    None,
+    Error(String),
+    // Slider { .. },
+    DraggablePoint(Point),
+    Value {
+        field: MathField,
+        points: Vec<Point>,
+    },
+}
+
+impl Output {
+    fn new_value(latex: &[latex_tree::Node], points: Vec<Point>) -> Output {
+        let mut field = MathField::from(latex);
+        field.interactiveness = Interactiveness::Select;
+        field.scale = 18.0;
+        field.left_padding = 0.22;
+        field.right_padding = 0.4;
+        field.bottom_padding = 0.19;
+        field.top_padding = 0.25;
+        Output::Value { field, points }
+    }
+
+    fn update(
+        &mut self,
+        ctx: &Context,
+        event: &Event,
+        padding: f64,
+        top_left: DVec2,
+        width: f64,
+    ) -> (Response, Bounds) {
+        match self {
+            Output::None | Output::Error(_) | Output::DraggablePoint(_) => {
+                (Response::default(), Bounds::default())
+            }
+            Output::Value { field, .. } => {
+                let size = field.expression_size().map(|s| ctx.ceil(s));
+                let right = top_left.x + width - 0.5 * padding;
+                let left = (right - size.x).max(top_left.x + padding);
+                let bounds = Bounds {
+                    pos: dvec2(left, top_left.y),
+                    size: dvec2(right - left, size.y),
+                };
+                let (mut response, _) = field.update(ctx, event, bounds);
+
+                if let Some(UserSelection { anchor, focus }) = field.get_selection() {
+                    let mut clamp = |mut cursor: Cursor| {
+                        let index = cursor
+                            .path
+                            .first_mut()
+                            .map_or(&mut cursor.index, |(index, _)| index);
+                        if *index == 0 {
+                            *index = 1;
+                            response.request_redraw();
+                        }
+                        cursor
+                    };
+                    field.set_selection((clamp(anchor.clone()), clamp(focus.clone())));
+                }
+
+                (response, bounds)
+            }
+        }
+    }
+
+    fn render(
+        &mut self,
+        ctx: &Context,
+        padding: f64,
+        top_left: DVec2,
+        width: f64,
+        draw_quad: &mut impl FnMut(DVec2, DVec2, QuadKind),
+    ) -> f64 {
+        match self {
+            Output::None | Output::Error(_) | Output::DraggablePoint(_) => 0.0,
+            Output::Value { field, .. } => {
+                let size = field.expression_size().map(|s| ctx.ceil(s));
+                let right = top_left.x + width - 0.5 * padding;
+                let left = (right - size.x).max(top_left.x + padding);
+                let bounds = Bounds {
+                    pos: dvec2(left, top_left.y),
+                    size: dvec2(right - left, size.y),
+                };
+                draw_quad(
+                    ctx.scale_factor * bounds.pos,
+                    ctx.scale_factor * (bounds.pos + bounds.size),
+                    QuadKind::OutputValueBox,
+                );
+                field.render(ctx, bounds, draw_quad);
+                bounds.size.y
+            }
+        }
+    }
+}
+
+#[derive(Default)]
 struct Expression {
     field: MathField,
     ast: Option<Result<parse::ast::ExpressionListEntry, String>>,
-    output: Option<Result<MathField, String>>,
+    output: Output,
+}
+
+impl From<&[latex_tree::Node<'_>]> for Expression {
+    fn from(latex: &[latex_tree::Node]) -> Self {
+        let mut e = Expression::default();
+        e.set_latex(latex);
+        e
+    }
 }
 
 impl Expression {
     const PADDING: f64 = 16.0;
-    const OUTPUT_LEFT_PADDING: f64 = 4.0;
-    const OUTPUT_RIGHT_PADDING: f64 = 8.0;
-    const OUTPUT_TOP_PADDING: f64 = 4.5;
-    const OUTPUT_BOTTOM_PADDING: f64 = 3.5;
 
     fn update(
         &mut self,
@@ -54,22 +157,14 @@ impl Expression {
             ),
         };
         height += field_bounds.size.y;
-        let output_bounds = if let Some(Ok(output)) = &self.output {
-            height += 0.5 * padding;
-            let size = output.expression_size().map(|s| ctx.ceil(s));
-            let right = top_left.x + width - 0.5 * padding;
-            let left = (right - size.x).max(top_left.x + padding);
-            let bounds = Bounds {
-                pos: dvec2(left, top_left.y + height),
-                size: dvec2(right - left, size.y),
-            };
-            height += bounds.size.y;
-            height += 0.5 * padding;
-            bounds
-        } else {
-            height += padding;
-            Bounds::default()
-        };
+        height += 0.5 * padding;
+        let (output_response, output_bounds) =
+            self.output
+                .update(ctx, event, padding, top_left + dvec2(0.0, height), width);
+        response = response.or(output_response);
+        height += output_bounds.size.y;
+        height += 0.5 * padding;
+
         let bounds = Bounds {
             pos: top_left,
             size: dvec2(width, height),
@@ -91,32 +186,27 @@ impl Expression {
         }
         response = response.or(r.or_else(|| {
             let (r, m) = self.field.update(ctx, event, field_bounds);
+            if m == Some(Message::ContentsChanged) {
+                self.parse_ast();
+            }
             message = m;
             r
         }));
 
-        if let Some(Ok(output)) = &mut self.output {
-            let mut r = output.update(ctx, event, output_bounds).0;
-
-            if let Some(UserSelection { anchor, focus }) = output.get_selection() {
-                let mut clamp = |mut cursor: Cursor| {
-                    let index = cursor
-                        .path
-                        .first_mut()
-                        .map_or(&mut cursor.index, |(index, _)| index);
-                    if *index == 0 {
-                        *index = 1;
-                        r.requested_redraw = true;
-                    }
-                    cursor
-                };
-                output.set_selection((clamp(anchor.clone()), clamp(focus.clone())));
-            }
-
-            response = response.or(r);
-        }
-
         (response, message, height)
+    }
+
+    fn set_latex(&mut self, latex: &[latex_tree::Node]) {
+        self.field = MathField::from(latex);
+        self.parse_ast();
+    }
+
+    fn parse_ast(&mut self) {
+        let latex = self.field.to_latex();
+        self.ast = latex
+            .iter()
+            .any(|n| n != &latex_tree::Node::Char(' '))
+            .then(|| parse_expression_list_entry(&latex));
     }
 
     fn focus(&mut self) {
@@ -150,41 +240,31 @@ impl Expression {
             ),
         };
         height += field_bounds.size.y;
-
-        let output_bounds = if let Some(Ok(output)) = &self.output {
-            height += 0.5 * padding;
-            let size = output.expression_size().map(|s| ctx.ceil(s));
-            let right = top_left.x + width - 0.5 * padding;
-            let left = (right - size.x).max(top_left.x + padding);
-            let bounds = Bounds {
-                pos: dvec2(left, top_left.y + height),
-                size: dvec2(right - left, size.y),
-            };
-            height += bounds.size.y;
-            height += 0.5 * padding;
-            bounds
-        } else {
-            height += padding;
-            Bounds::default()
-        };
+        height += 0.5 * padding;
+        height += self.output.render(
+            ctx,
+            padding,
+            top_left + dvec2(0.0, height),
+            width,
+            draw_quad,
+        );
+        height += 0.5 * padding;
 
         self.field.render(ctx, field_bounds, draw_quad);
-
-        if let Some(Ok(output)) = &mut self.output {
-            draw_quad(
-                ctx.scale_factor * output_bounds.pos,
-                ctx.scale_factor * (output_bounds.pos + output_bounds.size),
-                QuadKind::RoundedBox,
-            );
-            output.render(ctx, output_bounds, draw_quad);
-        }
 
         height
     }
 }
 
+#[derive(Clone, Copy, From, Into, Add, Sub, PartialEq)]
+pub struct ExpressionId(usize);
+
 pub struct ExpressionList {
-    expressions: Vec<Expression>,
+    expressions: TiVec<ExpressionId, Expression>,
+    expressions_changed: bool,
+    scroll: f64,
+    height: f64,
+    expression_bottoms: TiVec<ExpressionId, f64>,
 
     pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
@@ -390,8 +470,19 @@ impl ExpressionList {
             ],
         });
 
+        let expressions = [
+        ];
         Self {
-            expressions: vec![Default::default()],
+            expressions: expressions
+                .iter()
+                .chain(Some(&""))
+                .map(|s| Expression::from(parse_latex(s).unwrap().as_slice()))
+                .collect(),
+            expressions_changed: true,
+            scroll: 0.0,
+            height: 0.0,
+            expression_bottoms: ti_vec![],
+
             pipeline,
             vertex_buffer,
             index_buffer,
@@ -400,226 +491,411 @@ impl ExpressionList {
         }
     }
 
+    pub fn point_dragged(&mut self, i: ExpressionId, p: DVec2) {
+        use parse::latex_tree::Node::{self, Char as C};
+        let name = self.expressions[i]
+            .field
+            .to_latex()
+            .iter()
+            .take_while(|n| n != &&C('='))
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut latex = name;
+        latex.push(C('='));
+        let mut point = vec![C('(')];
+        point.extend(p.x.to_string().chars().map(C));
+        point.push(C(','));
+        point.extend(p.y.to_string().chars().map(C));
+        point.push(C(')'));
+        latex.push(Node::DelimitedGroup(point));
+        self.expressions[i].set_latex(&latex);
+        self.expressions_changed = true;
+    }
+
+    // Positive `delta` moves the expressions down
+    fn scroll(&mut self, delta: f64) {
+        const SCROLL_EXTRA: f64 = 50.0;
+        self.scroll = (self.scroll - delta)
+            .min(SCROLL_EXTRA + self.expression_bottoms.last().unwrap_or(&0.0) - self.height)
+            .max(0.0);
+    }
+
+    fn scroll_into_view(&mut self, i: ExpressionId) {
+        const SCROLL_PADDING: f64 = 25.0;
+        let bottom = self.expression_bottoms[i];
+        let top = if i.0 == 0 {
+            0.0
+        } else {
+            self.expression_bottoms[i - 1.into()]
+        };
+        self.scroll((self.height - SCROLL_PADDING - (bottom - self.scroll)).min(0.0));
+        self.scroll((SCROLL_PADDING - (top - self.scroll)).max(0.0));
+    }
+
     const SEPARATOR_WIDTH: f64 = 1.0;
 
-    pub fn update(&mut self, ctx: &Context, event: &Event, bounds: Bounds) -> Response {
+    pub fn update(
+        &mut self,
+        ctx: &Context,
+        event: &Event,
+        bounds: Bounds,
+    ) -> (Response, Option<Vec<Point>>) {
+        self.height = bounds.size.y;
         let mut response = Response::default();
-        let mut next_y = bounds.pos.y;
-        let mut message = None;
-        let separator_width = ctx.round_nonzero(Self::SEPARATOR_WIDTH);
-        let expression_width = bounds.size.x - separator_width;
+        let mut redraw_points = false;
 
-        for (i, expression) in self.expressions.iter_mut().enumerate() {
-            let (r, m, height) =
-                expression.update(ctx, event, dvec2(bounds.pos.x, next_y), expression_width);
-            next_y += height;
-            response = response.or(r);
-            message = message.or(m.map(|m| (i, m)));
-            next_y += separator_width;
-        }
-
-        let mut needs_reevaluation = false;
-
-        if let Some((i, m)) = message {
-            match m {
-                Message::ContentsChanged => {
-                    let e = &mut self.expressions[i];
-                    let latex = e.field.to_latex();
-                    e.ast = latex
-                        .iter()
-                        .any(|n| n != &latex_tree::Node::Char(' '))
-                        .then(|| parse_expression_list_entry(&latex));
-                    needs_reevaluation = true;
-                }
-                Message::Up => {
-                    if i > 0 {
-                        self.expressions[i].unfocus();
-                        self.expressions[i - 1].focus();
-                        response.request_redraw();
-                    }
-                }
-                Message::Down => {
-                    if i == self.expressions.len() - 1 {
-                        self.expressions.push(Default::default());
-                    }
-                    self.expressions[i].unfocus();
-                    self.expressions[i + 1].focus();
-                    response.request_redraw();
-                }
-                Message::Add => {
-                    self.expressions.insert(i + 1, Default::default());
-                    self.expressions[i].unfocus();
-                    self.expressions[i + 1].focus();
-                    response.request_redraw();
-                }
-                Message::Remove => {
-                    self.expressions.remove(i);
-                    needs_reevaluation = true;
-                    if self.expressions.is_empty() {
-                        self.expressions.push(Default::default());
-                    }
-                    self.expressions[i.saturating_sub(1)].focus();
-                    response.request_redraw();
-                }
+        match event {
+            Event::MouseWheel(delta)
+                if bounds.contains(ctx.cursor) && delta.abs().y >= delta.x.abs() =>
+            {
+                self.scroll(delta.y);
+                response.consume_event();
+                response.request_redraw();
             }
-        }
+            _ => {
+                let mut next_y = bounds.pos.y - self.scroll;
+                let mut message = None;
+                let separator_width = ctx.round_nonzero(Self::SEPARATOR_WIDTH);
+                let expression_width = bounds.size.x - separator_width;
+                let mut original_focus = None;
+                self.expression_bottoms.clear();
 
-        if self.expressions.last().unwrap().has_focus() {
-            self.expressions.push(Default::default());
-            response.request_redraw();
-        }
-
-        if needs_reevaluation {
-            #[derive(From, Into, Clone, Copy)]
-            struct OutputIndex(usize);
-
-            let mut ei_to_oi: TiVec<ExpressionIndex, OutputIndex> = ti_vec![];
-            let mut list: TiVec<ExpressionIndex, _> = ti_vec![];
-
-            for (i, e) in self.expressions.iter_mut().enumerate() {
-                let i = OutputIndex(i);
-                e.output = None;
-                list.push(match &e.ast {
-                    Some(Ok(ast)) => ast,
-                    Some(Err(err)) => {
-                        e.output = Some(Err(format!("parse error: {err}")));
-                        continue;
+                for (i, expression) in self.expressions.iter_mut_enumerated() {
+                    if expression.has_focus() {
+                        original_focus = Some(i);
                     }
-                    None => continue,
-                });
-                ei_to_oi.push(i);
-            }
 
-            let (assignments, ei_to_nr) = resolve_names(list.as_slice());
-            let (assignments, nr_to_tc) = type_check(&assignments);
-            let (program, vars) = compile_assignments(&assignments);
-            let mut vm = Vm::with_program(program);
-            vm.run(false);
+                    let (r, m, height) = expression.update(
+                        ctx,
+                        event,
+                        dvec2(bounds.pos.x, next_y),
+                        expression_width,
+                    );
+                    next_y += height;
+                    response = response.or(r);
+                    message = message.or(m.map(|m| (i, m)));
+                    next_y += separator_width;
+                    self.expression_bottoms
+                        .push(next_y - (bounds.pos.y - self.scroll));
+                }
 
-            for (ei, nr) in ei_to_nr.into_iter_enumerated() {
-                let i: OutputIndex = ei_to_oi[ei];
-                let output = &mut self.expressions[usize::from(i)].output;
-                if output.is_none() {
-                    *output = match nr {
-                        Some(Ok(nr)) => match nr_to_tc[nr].clone() {
-                            Ok(tc) => {
-                                use latex_tree::Node::{self, Char as C};
-                                let ty = assignments[tc].value.ty;
-                                let v = vars[tc];
-                                let mut nodes = vec![C('=')];
-
-                                let number = |nodes: &mut Vec<Node>, mut x: f64| {
-                                    if x.is_nan() {
-                                        nodes.push(Node::Frac {
-                                            num: vec![C('0')],
-                                            den: vec![C('0')],
-                                        });
-                                        return;
-                                    }
-                                    if x.is_sign_negative() {
-                                        nodes.push(C('-'));
-                                        x = -x;
-                                    }
-                                    if x.is_infinite() {
-                                        nodes.push(Node::CtrlSeq("infty"));
-                                        return;
-                                    }
-                                    let mut buffer = ryu::Buffer::new();
-                                    let mut s = buffer.format_finite(x).split('e');
-                                    let m = s.next().unwrap();
-                                    nodes.extend(m.strip_suffix(".0").unwrap_or(m).chars().map(C));
-                                    if let Some(e) = s.next() {
-                                        nodes.extend([
-                                            Node::CtrlSeq("times"),
-                                            C('1'),
-                                            C('0'),
-                                            Node::SubSup {
-                                                sub: None,
-                                                sup: Some(e.chars().map(C).collect()),
-                                            },
-                                        ]);
-                                    }
-                                };
-                                let point = |nodes: &mut Vec<Node>, x: f64, y: f64| {
-                                    let mut point = vec![C('(')];
-                                    number(&mut point, x);
-                                    point.push(C(','));
-                                    number(&mut point, y);
-                                    point.push(C(')'));
-                                    nodes.push(Node::DelimitedGroup(point));
-                                };
-
-                                match ty {
-                                    Type::Number => number(&mut nodes, vm.vars[v].clone().number()),
-                                    Type::NumberList => {
-                                        let a = vm.vars[v].clone().list();
-                                        let mut list = vec![C('[')];
-                                        for (i, x) in a.borrow().as_slice().iter().enumerate() {
-                                            if i > 0 {
-                                                list.push(C(','));
-                                            }
-                                            number(&mut list, *x);
-                                        }
-                                        list.push(C(']'));
-                                        nodes.push(Node::DelimitedGroup(list));
-                                    }
-                                    Type::Point => point(
-                                        &mut nodes,
-                                        vm.vars[v].clone().number(),
-                                        vm.vars[v + 1].clone().number(),
-                                    ),
-                                    Type::PointList => {
-                                        let a = vm.vars[v].clone().list();
-                                        let mut list = vec![C('[')];
-                                        for (i, p) in a.borrow().chunks(2).enumerate() {
-                                            if i > 0 {
-                                                list.push(C(','));
-                                            }
-                                            point(&mut list, p[0], p[1]);
-                                        }
-                                        list.push(C(']'));
-                                        nodes.push(Node::DelimitedGroup(list));
-                                    }
-                                    Type::Bool | Type::BoolList => unreachable!(),
-                                    Type::EmptyList => {
-                                        nodes.push(Node::DelimitedGroup(vec![C('['), C(']')]))
-                                    }
-                                }
-
-                                let mut field = MathField::from(&nodes);
-                                field.interactiveness = Interactiveness::Select;
-                                field.scale = 18.0;
-                                field.left_padding =
-                                    ctx.round(Expression::OUTPUT_LEFT_PADDING) / field.scale;
-                                field.right_padding =
-                                    ctx.round(Expression::OUTPUT_RIGHT_PADDING) / field.scale;
-                                field.bottom_padding =
-                                    ctx.round(Expression::OUTPUT_BOTTOM_PADDING) / field.scale;
-                                field.top_padding =
-                                    ctx.round(Expression::OUTPUT_TOP_PADDING) / field.scale;
-                                Some(Ok(field))
+                if let Some((i, m)) = message {
+                    match m {
+                        Message::ContentsChanged => {
+                            self.expressions_changed = true;
+                            self.scroll_into_view(i);
+                        }
+                        Message::Up => {
+                            if i.0 > 0 {
+                                self.expressions[i].unfocus();
+                                self.expressions[i - 1.into()].focus();
+                                response.request_redraw();
                             }
-                            Err(e) => Some(Err(format!("type error: {e}"))),
-                        },
-                        Some(Err(e)) => Some(Err(format!("name error: {e}"))),
-                        None => None,
+                        }
+                        Message::Down => {
+                            if i.0 == self.expressions.len() - 1 {
+                                self.expressions.push(Default::default());
+                            }
+                            self.expressions[i].unfocus();
+                            self.expressions[i + 1.into()].focus();
+                            response.request_redraw();
+                        }
+                        Message::Add => {
+                            self.expressions_changed = true;
+                            self.expressions.insert(i + 1.into(), Default::default());
+                            self.expressions[i].unfocus();
+                            self.expressions[i + 1.into()].focus();
+                            response.request_redraw();
+                        }
+                        Message::Remove => {
+                            self.expressions.remove(i);
+                            self.expressions_changed = true;
+                            if self.expressions.is_empty() {
+                                self.expressions.push(Default::default());
+                            }
+                            self.expressions[ExpressionId(i.0.saturating_sub(1))].focus();
+                            response.request_redraw();
+                        }
+                    }
+                }
+
+                if self.expressions.last().unwrap().has_focus() {
+                    self.expressions.push(Default::default());
+                    response.request_redraw();
+                }
+
+                let new_focus = self
+                    .expressions
+                    .iter_enumerated()
+                    .find_map(|(i, e)| e.has_focus().then_some(i));
+                redraw_points |= self.expressions_changed || original_focus != new_focus;
+
+                if let Some(i) = new_focus
+                    && original_focus != new_focus
+                {
+                    self.scroll_into_view(i);
+                }
+
+                if self.expressions_changed {
+                    use latex_tree::Node::{self, Char as C};
+                    let number = |nodes: &mut Vec<Node>, mut x: f64| {
+                        if x.is_nan() {
+                            nodes.push(Node::Frac {
+                                num: vec![C('0')],
+                                den: vec![C('0')],
+                            });
+                            return;
+                        }
+                        if x.is_sign_negative() {
+                            nodes.push(C('-'));
+                            x = -x;
+                        }
+                        if x.is_infinite() {
+                            nodes.push(Node::CtrlSeq("infty"));
+                            return;
+                        }
+                        let mut buffer = ryu::Buffer::new();
+                        let mut s = buffer.format_finite(x).split('e');
+                        let m = s.next().unwrap();
+                        nodes.extend(m.strip_suffix(".0").unwrap_or(m).chars().map(C));
+                        if let Some(e) = s.next() {
+                            nodes.extend([
+                                Node::CtrlSeq("times"),
+                                C('1'),
+                                C('0'),
+                                Node::SubSup {
+                                    sub: None,
+                                    sup: Some(e.chars().map(C).collect()),
+                                },
+                            ]);
+                        }
+                    };
+                    let colors = [
+                        [0.780, 0.267, 0.251, 1.0],
+                        [0.176, 0.439, 0.702, 1.0],
+                        [0.204, 0.522, 0.263, 1.0],
+                        [0.376, 0.259, 0.651, 1.0],
+                        [0.0, 0.0, 0.0, 1.0],
+                    ];
+                    let point = |nodes: &mut Vec<Node>, x: f64, y: f64| {
+                        let mut point = vec![C('(')];
+                        number(&mut point, x);
+                        point.push(C(','));
+                        number(&mut point, y);
+                        point.push(C(')'));
+                        nodes.push(Node::DelimitedGroup(point));
+                    };
+
+                    let mut ei_to_oi: TiVec<ExpressionIndex, ExpressionId> = ti_vec![];
+                    let mut list: TiVec<ExpressionIndex, _> = ti_vec![];
+
+                    for (i, e) in self.expressions.iter_mut_enumerated() {
+                        e.output = Output::None;
+                        let ast = match &e.ast {
+                            Some(Ok(ast)) => ast,
+                            Some(Err(err)) => {
+                                e.output = Output::Error(format!("parse error: {err}"));
+                                continue;
+                            }
+                            None => {
+                                e.output = Output::None;
+                                continue;
+                            }
+                        };
+                        fn get_number(e: &parse::ast::Expression) -> Option<f64> {
+                            match e {
+                                parse::ast::Expression::Number(x) => Some(*x),
+                                parse::ast::Expression::UnaryOperation {
+                                    operation: parse::ast::UnaryOperator::Neg,
+                                    arg,
+                                } => Some(-get_number(arg)?),
+                                _ => None,
+                            }
+                        }
+                        if let parse::ast::ExpressionListEntry::Assignment { value, .. } = ast
+                            && let parse::ast::Expression::BinaryOperation {
+                                operation: parse::ast::BinaryOperator::Point,
+                                left,
+                                right,
+                            } = value
+                            && let Some(x) = get_number(left)
+                            && let Some(y) = get_number(right)
+                        {
+                            let mut latex = vec![C('=')];
+                            point(&mut latex, x, y);
+                            e.output = Output::DraggablePoint(Point {
+                                p: dvec2(x, y),
+                                width: 8.0,
+                                color: colors[i.0 % colors.len()],
+                                draggable: Some(i),
+                            });
+                        }
+                        list.push(ast);
+                        ei_to_oi.push(i);
+                    }
+
+                    let (assignments, ei_to_nr) = resolve_names(list.as_slice());
+                    let (assignments, nr_to_tc) = type_check(&assignments);
+                    let (program, vars) = compile_assignments(&assignments);
+                    let mut vm = Vm::with_program(program);
+                    vm.run(false);
+
+                    for (ei, nr) in ei_to_nr.into_iter_enumerated() {
+                        let i = ei_to_oi[ei];
+                        let output = &mut self.expressions[i].output;
+
+                        if matches!(output, Output::None) {
+                            *output = match nr {
+                                Some(Ok(nr)) => match nr_to_tc[nr].clone() {
+                                    Ok(tc) => {
+                                        let ty = assignments[tc].value.ty;
+                                        let v = vars[tc];
+                                        let mut nodes = vec![C('=')];
+
+                                        let color = colors[i.0 % colors.len()];
+                                        let mut points = vec![];
+                                        let mut draw_point = |x: f64, y: f64| {
+                                            points.push(Point {
+                                                p: dvec2(x, y),
+                                                width: 8.0,
+                                                color,
+                                                draggable: None,
+                                            })
+                                        };
+                                        let list_limit = 10;
+
+                                        match ty {
+                                            Type::Number => {
+                                                number(&mut nodes, vm.vars[v].clone().number())
+                                            }
+                                            Type::NumberList => {
+                                                let a = vm.vars[v].clone().list();
+                                                let mut list = vec![C('[')];
+                                                for (i, x) in
+                                                    a.borrow().as_slice().iter().enumerate()
+                                                {
+                                                    if i < list_limit {
+                                                        if i > 0 {
+                                                            list.push(C(','));
+                                                        }
+                                                        number(&mut list, *x);
+                                                    } else {
+                                                        list.extend([
+                                                            C(','),
+                                                            C('.'),
+                                                            C('.'),
+                                                            C('.'),
+                                                        ]);
+                                                        break;
+                                                    }
+                                                }
+                                                list.push(C(']'));
+                                                nodes.push(Node::DelimitedGroup(list));
+                                            }
+                                            Type::Point => {
+                                                let x = vm.vars[v].clone().number();
+                                                let y = vm.vars[v + 1].clone().number();
+                                                draw_point(x, y);
+                                                point(&mut nodes, x, y);
+                                            }
+                                            Type::PointList => {
+                                                let a = vm.vars[v].clone().list();
+                                                let mut list = vec![C('[')];
+                                                for (i, p) in a.borrow().chunks(2).enumerate() {
+                                                    if i < list_limit {
+                                                        if i > 0 {
+                                                            list.push(C(','));
+                                                        }
+                                                        point(&mut list, p[0], p[1]);
+                                                    } else if i == list_limit {
+                                                        list.extend([
+                                                            C(','),
+                                                            C('.'),
+                                                            C('.'),
+                                                            C('.'),
+                                                        ]);
+                                                    }
+                                                    draw_point(p[0], p[1]);
+                                                }
+                                                list.push(C(']'));
+                                                nodes.push(Node::DelimitedGroup(list));
+                                            }
+                                            Type::Bool | Type::BoolList => unreachable!(),
+                                            Type::EmptyList => nodes
+                                                .push(Node::DelimitedGroup(vec![C('['), C(']')])),
+                                        }
+
+                                        Output::new_value(&nodes, points)
+                                    }
+                                    Err(e) => Output::Error(format!("type error: {e}")),
+                                },
+                                Some(Err(e)) => Output::Error(format!("name error: {e}")),
+                                None => Output::None,
+                            }
+                        }
+                    }
+
+                    let mut has_error = false;
+                    for (i, e) in self.expressions.iter().enumerate() {
+                        if let Output::Error(e) = &e.output {
+                            println!("expression {} {e}", i + 1);
+                            has_error = true;
+                        }
+                    }
+                    if has_error {
+                        println!();
                     }
                 }
             }
-
-            let mut has_error = false;
-            for (i, e) in self.expressions.iter().enumerate() {
-                if let Some(Err(e)) = &e.output {
-                    println!("expression {} {e}", i + 1);
-                    has_error = true;
-                }
-            }
-            if has_error {
-                println!();
-            }
         }
 
-        response
+        let mut points = None;
+
+        if redraw_points {
+            let mut regular_points = vec![];
+            let mut draggable_points = vec![];
+            let mut focussed_points = vec![];
+
+            for e in &self.expressions {
+                match &e.output {
+                    Output::DraggablePoint(p) => {
+                        let mut p = p.clone();
+                        if e.has_focus() {
+                            p.width *= 1.15;
+                            draggable_points.push(p);
+                        } else {
+                            draggable_points.push(p);
+                        }
+                    }
+                    Output::Value { points, .. } => {
+                        if e.has_focus() {
+                            for mut p in points.iter().cloned() {
+                                p.width *= 1.2;
+                                focussed_points.push(p);
+                            }
+                        } else {
+                            regular_points.extend_from_slice(points);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            regular_points.append(&mut draggable_points);
+            regular_points.append(&mut focussed_points);
+
+            points = Some(regular_points);
+        }
+
+        self.expressions_changed = false;
+
+        if response.requested_redraw {
+            // If something wanted a redraw then some heights probably got
+            // altered so it would be good to reclamp the scroll
+            self.scroll(0.0);
+        }
+
+        (response, points)
     }
 
     pub fn render(
@@ -646,7 +922,7 @@ impl ExpressionList {
                 | QuadKind::HighlightBox
                 | QuadKind::GrayBox
                 | QuadKind::TransparentToWhiteGradient
-                | QuadKind::RoundedBox => (DVec2::splat(0.0), DVec2::splat(1.0)),
+                | QuadKind::OutputValueBox => (DVec2::splat(0.0), DVec2::splat(1.0)),
             };
             let kind = kind.index();
             let uv0 = uv0
@@ -683,7 +959,7 @@ impl ExpressionList {
                 kind,
             });
         };
-        let mut next_y = bounds.pos.y;
+        let mut next_y = bounds.pos.y - self.scroll;
         let separator_width = ctx.round_nonzero(Self::SEPARATOR_WIDTH);
         let expression_width = bounds.size.x - separator_width;
 

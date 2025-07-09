@@ -14,7 +14,7 @@ const TRANSLUCENT_BLACK_BOX = 3u;
 const HIGHLIGHT_BOX = 4u;
 const GRAY_BOX = 5u;
 const TRANSPARENT_TO_WHITE_GRADIENT = 6u;
-const ROUNDED_BOX = 7u;
+const OUTPUT_VALUE_BOX = 7u;
 
 struct Vertex {
     @location(0) position: vec2f,
@@ -73,7 +73,7 @@ fn fs_latex(in: VertexOutput) -> @location(0) vec4f {
         case TRANSPARENT_TO_WHITE_GRADIENT {
             return vec4(1.0, 1.0, 1.0, in.uv.x);
         }
-        case ROUNDED_BOX {
+        case OUTPUT_VALUE_BOX {
             const RADIUS = 4.0;
             const STROKE_COLOR = vec3(0.84);
             const FILL_COLOR = vec3(0.96);

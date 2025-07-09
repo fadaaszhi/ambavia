@@ -205,7 +205,7 @@ pub enum QuadKind {
     HighlightBox,
     GrayBox,
     TransparentToWhiteGradient,
-    RoundedBox,
+    OutputValueBox,
 }
 
 impl QuadKind {
@@ -219,7 +219,7 @@ impl QuadKind {
             HighlightBox => 4,
             GrayBox => 5,
             TransparentToWhiteGradient => 6,
-            RoundedBox => 7,
+            OutputValueBox => 7,
         }
     }
 }

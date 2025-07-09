@@ -1,8 +1,12 @@
 use glam::{DVec2, Vec2, dvec2, uvec2};
-use winit::event::{ElementState, MouseButton};
+use winit::{
+    event::{ElementState, MouseButton},
+    window::CursorIcon,
+};
 
 use crate::{
     Bounds, Context, Event, Response,
+    expression_list::ExpressionId,
     utility::{flip_y, snap},
 };
 
@@ -20,9 +24,19 @@ impl Default for Viewport {
     }
 }
 
+#[derive(Clone)]
+pub struct Point {
+    pub p: DVec2,
+    pub width: f32,
+    pub color: [f32; 4],
+    pub draggable: Option<ExpressionId>,
+}
+
 pub struct GraphPaper {
     viewport: Viewport,
-    dragging: bool,
+    dragging: Option<Option<ExpressionId>>,
+    hovered_point: Option<ExpressionId>,
+    points: Vec<Point>,
 
     depth_texture: wgpu::Texture,
     pipeline: wgpu::RenderPipeline,
@@ -159,6 +173,10 @@ fn create_bind_group(
     })
 }
 
+fn draggable_point_width(width: f32) -> f32 {
+    32f32.clamp(width, 2.0 * width) + width
+}
+
 impl GraphPaper {
     fn write(
         &mut self,
@@ -290,7 +308,9 @@ impl GraphPaper {
         );
         GraphPaper {
             viewport: Default::default(),
-            dragging: false,
+            dragging: None,
+            hovered_point: None,
+            points: vec![],
 
             depth_texture,
             pipeline,
@@ -304,7 +324,16 @@ impl GraphPaper {
         }
     }
 
-    pub fn update(&mut self, ctx: &Context, event: &Event, bounds: Bounds) -> Response {
+    pub fn set_geometry(&mut self, points: Vec<Point>) {
+        self.points = points;
+    }
+
+    pub fn update(
+        &mut self,
+        ctx: &Context,
+        event: &Event,
+        bounds: Bounds,
+    ) -> (Response, Option<(ExpressionId, DVec2)>) {
         let mut response = Response::default();
 
         let to_vp = |vp: &Viewport, p: DVec2| {
@@ -313,51 +342,83 @@ impl GraphPaper {
         let from_vp = |vp: &Viewport, p: DVec2| {
             flip_y(p - vp.center) / vp.width * bounds.size.x + bounds.pos + 0.5 * bounds.size
         };
-        let mut zoom = |amount: f64| {
-            let origin = from_vp(&self.viewport, DVec2::ZERO);
+        let zoom = |vp: &mut Viewport, amount: f64| {
+            let origin = from_vp(vp, DVec2::ZERO);
             let p = if amount > 1.0 && (ctx.cursor - origin).abs().max_element() < 25.0 {
                 origin
             } else {
                 ctx.cursor
             };
-            let p_vp = to_vp(&self.viewport, p);
-            self.viewport.width /= amount;
-            self.viewport.center += p_vp - to_vp(&self.viewport, p);
-            response.request_redraw();
-            response.consume_event();
+            let p_vp = to_vp(vp, p);
+            vp.width /= amount;
+            vp.center += p_vp - to_vp(vp, p);
         };
+        let mut dragged_point = None;
+        let new_hovered_point = self.dragging.unwrap_or_else(|| {
+            for p in self.points.iter().rev() {
+                if let Some(i) = p.draggable
+                    && from_vp(&self.viewport, p.p).distance(ctx.cursor)
+                        < draggable_point_width(p.width) as f64 / 2.0
+                {
+                    return Some(i);
+                }
+            }
+            None
+        });
+        if new_hovered_point != self.hovered_point {
+            self.hovered_point = new_hovered_point;
+            response.request_redraw();
+        }
 
         match event {
             Event::MouseInput(ElementState::Pressed, MouseButton::Left)
                 if bounds.contains(ctx.cursor) =>
             {
-                self.dragging = true;
+                self.dragging = Some(self.hovered_point.or(None));
                 response.consume_event();
             }
-            Event::MouseInput(ElementState::Released, MouseButton::Left) if self.dragging => {
-                self.dragging = false;
+            Event::MouseInput(ElementState::Released, MouseButton::Left)
+                if self.dragging.is_some() =>
+            {
+                self.dragging = None;
                 response.consume_event();
             }
             Event::CursorMoved { previous_cursor } => {
-                if self.dragging {
+                if let Some(point) = self.dragging {
                     let diff =
                         to_vp(&self.viewport, ctx.cursor) - to_vp(&self.viewport, *previous_cursor);
 
-                    self.viewport.center -= diff;
+                    if let Some(i) = point {
+                        if let Some(p) = self.points.iter().find(|p| p.draggable == Some(i)) {
+                            dragged_point = Some((i, p.p + diff));
+                        } else {
+                            self.dragging = None;
+                        }
+                    } else {
+                        self.viewport.center -= diff;
+                    }
                     response.request_redraw();
                     response.consume_event();
                 }
             }
             Event::MouseWheel(delta) if bounds.contains(ctx.cursor) => {
-                zoom((delta.y * 0.0015).exp2());
+                zoom(&mut self.viewport, (delta.y * 0.0015).exp2());
+                response.request_redraw();
+                response.consume_event();
             }
             Event::PinchGesture(delta) if bounds.contains(ctx.cursor) => {
-                zoom(delta.exp());
+                zoom(&mut self.viewport, delta.exp());
+                response.request_redraw();
+                response.consume_event();
             }
             _ => {}
         }
 
-        response
+        if self.hovered_point.is_some() {
+            response.cursor_icon = CursorIcon::AllScroll;
+        }
+
+        (response, dragged_point)
     }
 
     pub fn render(
@@ -494,6 +555,37 @@ impl GraphPaper {
         vertices.push(Vertex::BREAK);
         vertices.push(Vertex::new((physical.left() as f32, origin.y), shape));
         vertices.push(Vertex::new((physical.right() as f32, origin.y), shape));
+
+        for Point {
+            p,
+            width,
+            color,
+            draggable,
+        } in &self.points
+        {
+            let p = to_physical(*p).as_vec2();
+            let mut width = *width;
+
+            if draggable.is_some() {
+                let shape = shapes.len() as u32;
+                let mut color = *color;
+                color[3] *= 0.35;
+                let draggable_width = draggable_point_width(width);
+                shapes.push(Shape::point(
+                    color,
+                    ctx.scale_factor as f32 * draggable_width,
+                ));
+                vertices.push(Vertex::new(p, shape));
+
+                if self.hovered_point == *draggable {
+                    width = draggable_width;
+                }
+            }
+
+            let shape = shapes.len() as u32;
+            shapes.push(Shape::point(*color, ctx.scale_factor as f32 * width));
+            vertices.push(Vertex::new(p, shape));
+        }
 
         (shapes, vertices)
     }

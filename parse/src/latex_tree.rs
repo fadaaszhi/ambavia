@@ -2,7 +2,7 @@ use std::fmt;
 
 pub type Nodes<'a> = Vec<Node<'a>>;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Node<'a> {
     DelimitedGroup(Nodes<'a>),
     SubSup {

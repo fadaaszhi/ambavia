@@ -84,6 +84,10 @@ fn parse_nodes_into_name_subscript(nodes: &[Node]) -> Result<String, String> {
         }
     }
 
+    if subscript.is_empty() {
+        return Err("name subscript cannot be empty".into());
+    }
+
     Ok(subscript)
 }
 

@@ -198,6 +198,9 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
             operands,
             operators,
         } => {
+            if operands.len() > 2 {
+                todo!();
+            }
             let mut a = compile_expression(&operands[0], builder);
             let mut jifs = vec![];
             let mut old_c = None;

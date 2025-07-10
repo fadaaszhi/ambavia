@@ -131,7 +131,7 @@ fn create_graph_texture(
         mip_level_count: 1,
         sample_count: MSAA_SAMPLE_COUNT,
         dimension: wgpu::TextureDimension::D2,
-        format: format,
+        format,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     })

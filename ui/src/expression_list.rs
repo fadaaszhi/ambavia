@@ -11,6 +11,7 @@ use crate::{
     graph::Point,
     math_field::{Cursor, Interactiveness, MathField, Message, UserSelection},
     ui::{Bounds, Context, Event, QuadKind, Response},
+    utility::{mix, unmix},
 };
 use eval::{compiler::compile_assignments, vm::Vm};
 use parse::{
@@ -26,7 +27,13 @@ enum Output {
     #[default]
     None,
     Error(String),
-    // Slider { .. },
+    Slider {
+        value: f64,
+        min: f64,
+        max: f64,
+        dragging: Option<f64>,
+        hovered: bool,
+    },
     DraggablePoint(Point),
     Value {
         field: MathField,
@@ -46,6 +53,28 @@ impl Output {
         Output::Value { field, points }
     }
 
+    fn set_slider(&mut self, new_value: f64, new_min: f64, new_max: f64) {
+        if let Output::Slider {
+            value, min, max, ..
+        } = self
+            && *value == new_value
+            && *min == new_min
+            && *max == new_max
+        {
+            return;
+        }
+        *self = Output::Slider {
+            value: new_value,
+            min: new_min,
+            max: new_max,
+            dragging: None,
+            hovered: false,
+        };
+    }
+
+    const SLIDER_BAR_RADIUS: f64 = 3.0;
+    const SLIDER_POINT_RADIUS: f64 = 11.0;
+
     fn update(
         &mut self,
         ctx: &Context,
@@ -53,10 +82,74 @@ impl Output {
         padding: f64,
         top_left: DVec2,
         width: f64,
-    ) -> (Response, Bounds) {
+    ) -> (Response, Option<f64>, Bounds) {
         match self {
             Output::None | Output::Error(_) | Output::DraggablePoint(_) => {
-                (Response::default(), Bounds::default())
+                (Response::default(), None, Bounds::default())
+            }
+            Output::Slider {
+                value,
+                min,
+                max,
+                dragging,
+                hovered,
+            } => {
+                let mut response = Response::default();
+                let point_radius = ctx.round_nonzero(Self::SLIDER_POINT_RADIUS);
+                let left = top_left.x + padding;
+                let right = top_left.x + width - padding;
+                let mut point = dvec2(
+                    mix(left, right, unmix(*value, *min, *max).clamp(0.0, 1.0)),
+                    top_left.y + point_radius,
+                );
+                let point_bounds = Bounds {
+                    pos: point - point_radius,
+                    size: DVec2::splat(2.0 * point_radius),
+                };
+                let new_hovered = point_bounds.contains(ctx.cursor);
+                let mut new_value = None;
+
+                match event {
+                    Event::CursorMoved { .. } if dragging.is_some() => {
+                        let offset = dragging.unwrap();
+                        point.x = (ctx.cursor.x + offset).clamp(left, right);
+                        *value = mix(*min, *max, unmix(point.x, left, right));
+                        new_value = Some(*value);
+                        response.consume_event();
+                        response.request_redraw();
+                    }
+                    Event::MouseInput(ElementState::Pressed, MouseButton::Left) if *hovered => {
+                        *dragging = Some(point.x - ctx.cursor.x);
+                        response.consume_event();
+                    }
+                    Event::MouseInput(ElementState::Released, MouseButton::Left)
+                        if dragging.is_some() =>
+                    {
+                        *dragging = None;
+                        response.consume_event();
+                    }
+                    _ => {}
+                }
+
+                let new_hovered = new_hovered || dragging.is_some();
+
+                if *hovered != new_hovered {
+                    *hovered = new_hovered;
+                    response.request_redraw();
+                }
+
+                if dragging.is_some() {
+                    response.cursor_icon = CursorIcon::Grabbing;
+                } else if *hovered {
+                    response.cursor_icon = CursorIcon::Grab;
+                }
+
+                let bounds = Bounds {
+                    pos: top_left,
+                    size: dvec2(width, point_radius * 2.0),
+                };
+
+                (response, new_value, bounds)
             }
             Output::Value { field, .. } => {
                 let size = field.expression_size().map(|s| ctx.ceil(s));
@@ -83,7 +176,7 @@ impl Output {
                     field.set_selection((clamp(anchor.clone()), clamp(focus.clone())));
                 }
 
-                (response, bounds)
+                (response, None, bounds)
             }
         }
     }
@@ -98,6 +191,45 @@ impl Output {
     ) -> f64 {
         match self {
             Output::None | Output::Error(_) | Output::DraggablePoint(_) => 0.0,
+            Output::Slider {
+                value,
+                min,
+                max,
+                hovered,
+                ..
+            } => {
+                let point_radius = ctx.round_nonzero(Self::SLIDER_POINT_RADIUS);
+                let bar_radius = ctx.round_nonzero(Self::SLIDER_BAR_RADIUS);
+                let left = top_left.x + padding;
+                let right = top_left.x + width - padding;
+                let point = dvec2(
+                    mix(left, right, unmix(*value, *min, *max).clamp(0.0, 1.0)),
+                    top_left.y + point_radius,
+                );
+                let bounds = Bounds {
+                    pos: top_left,
+                    size: dvec2(width, point_radius * 2.0),
+                };
+
+                draw_quad(
+                    ctx.scale_factor * (dvec2(left, point.y) - bar_radius),
+                    ctx.scale_factor * (dvec2(right, point.y) + bar_radius),
+                    QuadKind::SliderBar,
+                );
+                draw_quad(
+                    ctx.scale_factor * (point - point_radius),
+                    ctx.scale_factor * (point + point_radius),
+                    QuadKind::SliderPointOuter,
+                );
+                let inner_radius = if *hovered { point_radius } else { bar_radius };
+                draw_quad(
+                    ctx.scale_factor * (point - inner_radius),
+                    ctx.scale_factor * (point + inner_radius),
+                    QuadKind::SliderPointInner,
+                );
+
+                bounds.size.y
+            }
             Output::Value { field, .. } => {
                 let size = field.expression_size().map(|s| ctx.ceil(s));
                 let right = top_left.x + width - 0.5 * padding;
@@ -158,9 +290,26 @@ impl Expression {
         };
         height += field_bounds.size.y;
         height += 0.5 * padding;
-        let (output_response, output_bounds) =
+        let (output_response, new_value, output_bounds) =
             self.output
                 .update(ctx, event, padding, top_left + dvec2(0.0, height), width);
+
+        if let Some(value) = new_value {
+            use latex_tree::Node::Char as C;
+            let name = self
+                .field
+                .to_latex()
+                .iter()
+                .take_while(|n| n != &&C('='))
+                .cloned()
+                .collect::<Vec<_>>();
+            let mut latex = name;
+            latex.push(C('='));
+            latex.extend(value.to_string().chars().map(C));
+            self.set_latex(&latex);
+            message = Some(Message::ContentsChanged);
+        }
+
         response = response.or(output_response);
         height += output_bounds.size.y;
         height += 0.5 * padding;
@@ -189,7 +338,9 @@ impl Expression {
             if m == Some(Message::ContentsChanged) {
                 self.parse_ast();
             }
-            message = m;
+            if message.is_none() {
+                message = m;
+            }
             r
         }));
 
@@ -690,7 +841,6 @@ impl ExpressionList {
                     let mut list: TiVec<ExpressionIndex, _> = ti_vec![];
 
                     for (i, e) in self.expressions.iter_mut_enumerated() {
-                        e.output = Output::None;
                         let ast = match &e.ast {
                             Some(Ok(ast)) => ast,
                             Some(Err(err)) => {
@@ -712,23 +862,30 @@ impl ExpressionList {
                                 _ => None,
                             }
                         }
-                        if let parse::ast::ExpressionListEntry::Assignment { value, .. } = ast
-                            && let parse::ast::Expression::BinaryOperation {
+                        if let parse::ast::ExpressionListEntry::Assignment { value, .. } = ast {
+                            if let Some(value) = get_number(value) {
+                                e.output.set_slider(value, -10.0, 10.0);
+                            } else if let parse::ast::Expression::BinaryOperation {
                                 operation: parse::ast::BinaryOperator::Point,
                                 left,
                                 right,
                             } = value
-                            && let Some(x) = get_number(left)
-                            && let Some(y) = get_number(right)
-                        {
-                            let mut latex = vec![C('=')];
-                            point(&mut latex, x, y);
-                            e.output = Output::DraggablePoint(Point {
-                                p: dvec2(x, y),
-                                width: 8.0,
-                                color: colors[i.0 % colors.len()],
-                                draggable: Some(i),
-                            });
+                                && let Some(x) = get_number(left)
+                                && let Some(y) = get_number(right)
+                            {
+                                let mut latex = vec![C('=')];
+                                point(&mut latex, x, y);
+                                e.output = Output::DraggablePoint(Point {
+                                    p: dvec2(x, y),
+                                    width: 8.0,
+                                    color: colors[i.0 % colors.len()],
+                                    draggable: Some(i),
+                                });
+                            } else {
+                                e.output = Output::None;
+                            }
+                        } else {
+                            e.output = Output::None;
                         }
                         list.push(ast);
                         ei_to_oi.push(i);
@@ -917,12 +1074,7 @@ impl ExpressionList {
                 QuadKind::MsdfGlyph(uv0, uv1) | QuadKind::TranslucentMsdfGlyph(uv0, uv1) => {
                     (uv0, uv1)
                 }
-                QuadKind::BlackBox
-                | QuadKind::TranslucentBlackBox
-                | QuadKind::HighlightBox
-                | QuadKind::GrayBox
-                | QuadKind::TransparentToWhiteGradient
-                | QuadKind::OutputValueBox => (DVec2::splat(0.0), DVec2::splat(1.0)),
+                _ => (DVec2::splat(0.0), DVec2::splat(1.0)),
             };
             let kind = kind.index();
             let uv0 = uv0

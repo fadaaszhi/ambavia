@@ -15,6 +15,9 @@ const HIGHLIGHT_BOX = 4u;
 const GRAY_BOX = 5u;
 const TRANSPARENT_TO_WHITE_GRADIENT = 6u;
 const OUTPUT_VALUE_BOX = 7u;
+const SLIDER_BAR = 8u;
+const SLIDER_POINT_OUTER = 9u;
+const SLIDER_POINT_INNER = 10u;
 
 struct Vertex {
     @location(0) position: vec2f,
@@ -85,6 +88,17 @@ fn fs_latex(in: VertexOutput) -> @location(0) vec4f {
             let sd = sd_rounded_box(size * (in.uv - 0.5), size / 2.0, vec4(radius));
             let color = mix(STROKE_COLOR, FILL_COLOR, saturate(0.5 - (sd + stroke_width)));
             return vec4(color, saturate(0.5 - sd));
+        }
+        case SLIDER_BAR, SLIDER_POINT_OUTER, SLIDER_POINT_INNER {
+            var color: vec4f;
+            if in.kind == SLIDER_BAR {
+                color = vec4(0.898, 0.898, 0.898, 1.0);
+            } else {
+                color = vec4(0.184, 0.447, 0.863, select(1.0, 0.35, in.kind == SLIDER_POINT_OUTER));
+            }
+
+            let sd = sd_rounded_box(size * (in.uv - 0.5), size / 2.0, vec4(size.y / 2.0));
+            return color * vec4(1.0, 1.0, 1.0, saturate(0.5 - sd));
         }
         default {
             // https://github.com/Chlumsky/msdfgen

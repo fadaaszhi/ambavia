@@ -206,6 +206,9 @@ pub enum QuadKind {
     GrayBox,
     TransparentToWhiteGradient,
     OutputValueBox,
+    SliderBar,
+    SliderPointOuter,
+    SliderPointInner,
 }
 
 impl QuadKind {
@@ -220,6 +223,9 @@ impl QuadKind {
             GrayBox => 5,
             TransparentToWhiteGradient => 6,
             OutputValueBox => 7,
+            SliderBar => 8,
+            SliderPointOuter => 9,
+            SliderPointInner => 10,
         }
     }
 }

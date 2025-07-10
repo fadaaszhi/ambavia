@@ -271,13 +271,14 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
         } => {
             let list_values = lists
                 .iter()
+                .rev()
                 .map(|a| compile_expression(&a.value, builder))
                 .collect::<Vec<_>>();
 
             let mut result = builder.build_list(tc_list_to_ib_base(*ty), vec![]);
             let mut variables = vec![];
 
-            for (Assignment { id, .. }, value) in zip(lists, &list_values) {
+            for (Assignment { id, .. }, value) in zip(lists.iter().rev(), &list_values) {
                 let count = builder.count_specific(value);
                 let i = builder.load_const(0.0);
                 let loop_start = builder.label();

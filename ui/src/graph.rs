@@ -112,6 +112,7 @@ impl Vertex {
     }
 }
 
+// Must be 1 or 4
 const MSAA_SAMPLE_COUNT: u32 = 4;
 
 fn create_graph_texture(
@@ -494,12 +495,21 @@ impl GraphPaper {
             }]),
         );
         self.write(device, queue, &shapes, &vertices);
+        let graph_texture_view = self.graph_texture.create_view(&Default::default());
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("graph_paper"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &self.graph_texture.create_view(&Default::default()),
-                resolve_target: Some(view),
+                view: if MSAA_SAMPLE_COUNT > 1 {
+                    &graph_texture_view
+                } else {
+                    view
+                },
+                resolve_target: if MSAA_SAMPLE_COUNT > 1 {
+                    Some(view)
+                } else {
+                    None
+                },
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
                     store: wgpu::StoreOp::Store,

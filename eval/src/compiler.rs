@@ -67,7 +67,7 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
 
             for v in &vector_values[1..] {
                 let c = builder.count_specific(v);
-                builder.instr2_in_place(Min, &count, c);
+                builder.instr2_in_place(MinInternal, &count, c);
             }
 
             let i = builder.load_const(0.0);
@@ -144,7 +144,7 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
 
                 let left_count = builder.count_specific(&left);
                 let right_count = builder.count_specific(&right);
-                let count = builder.instr2(Min, left_count, right_count);
+                let count = builder.instr2(MinInternal, left_count, right_count);
 
                 let i = builder.load_const(0.0);
                 let loop_start = builder.label();
@@ -314,27 +314,59 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
             builder.swap_pop(&mut result, list_values);
             result
         }
-        Expression::BuiltIn(built_in) => match built_in {
-            BuiltIn::CountNumberList(arg)
-            | BuiltIn::CountPointList(arg)
-            | BuiltIn::CountPolygonList(arg)
-            | BuiltIn::TotalNumberList(arg)
-            | BuiltIn::TotalPointList(arg)
-            | BuiltIn::Polygon(arg) => {
-                let arg = compile_expression(arg, builder);
-                builder.instr1(
-                    match built_in {
-                        BuiltIn::CountNumberList(_) => Count,
-                        BuiltIn::CountPointList(_) => Count2,
-                        BuiltIn::CountPolygonList(_) => CountPolygonList,
-                        BuiltIn::TotalNumberList(_) => Total,
-                        BuiltIn::TotalPointList(_) => Total2,
-                        BuiltIn::Polygon(_) => Polygon,
-                    },
-                    arg,
-                )
+        Expression::BuiltIn { name, args } => {
+            let args = args
+                .iter()
+                .map(|e| compile_expression(e, builder))
+                .collect::<Vec<_>>();
+            let mut args = args.into_iter();
+            let mut arg = || args.next().unwrap();
+            match name {
+                BuiltIn::Ln => builder.instr1(Ln, arg()),
+                BuiltIn::Exp => builder.instr1(Exp, arg()),
+                BuiltIn::Erf => builder.instr1(Erf, arg()),
+                BuiltIn::Sin => builder.instr1(Sin, arg()),
+                BuiltIn::Cos => builder.instr1(Cos, arg()),
+                BuiltIn::Tan => builder.instr1(Tan, arg()),
+                BuiltIn::Sinh => builder.instr1(Sinh, arg()),
+                BuiltIn::Cosh => builder.instr1(Cosh, arg()),
+                BuiltIn::Tanh => builder.instr1(Tanh, arg()),
+                BuiltIn::Asin => builder.instr1(Asin, arg()),
+                BuiltIn::Acos => builder.instr1(Acos, arg()),
+                BuiltIn::Atan => builder.instr1(Atan, arg()),
+                BuiltIn::Atan2 => builder.instr2(Atan2, arg(), arg()),
+                BuiltIn::Asinh => builder.instr1(Asinh, arg()),
+                BuiltIn::Acosh => builder.instr1(Acosh, arg()),
+                BuiltIn::Atanh => builder.instr1(Atanh, arg()),
+                BuiltIn::Abs => builder.instr1(Abs, arg()),
+                BuiltIn::Sgn => builder.instr1(Sgn, arg()),
+                BuiltIn::Round => builder.instr1(Round, arg()),
+                BuiltIn::Floor => builder.instr1(Floor, arg()),
+                BuiltIn::Ceil => builder.instr1(Ceil, arg()),
+                BuiltIn::Mod => builder.instr2(Mod, arg(), arg()),
+                BuiltIn::Midpoint => builder.instr2(Midpoint, arg(), arg()),
+                BuiltIn::Distance => builder.instr2(Distance, arg(), arg()),
+                BuiltIn::Min => builder.instr1(Min, arg()),
+                BuiltIn::Max => builder.instr1(Max, arg()),
+                BuiltIn::Median => builder.instr1(Median, arg()),
+                BuiltIn::TotalNumber => builder.instr1(Total, arg()),
+                BuiltIn::TotalPoint => builder.instr1(Total2, arg()),
+                BuiltIn::MeanNumber => builder.instr1(Mean, arg()),
+                BuiltIn::MeanPoint => builder.instr1(Mean2, arg()),
+                BuiltIn::CountNumber => builder.instr1(Count, arg()),
+                BuiltIn::CountPoint => builder.instr1(Count2, arg()),
+                BuiltIn::CountPolygon => builder.instr1(CountPolygonList, arg()),
+                BuiltIn::UniqueNumber => builder.instr1(Unique, arg()),
+                BuiltIn::UniquePoint => builder.instr1(Unique2, arg()),
+                BuiltIn::UniquePolygon => builder.instr1(UniquePolygon, arg()),
+                BuiltIn::Sort => builder.instr1(Sort, arg()),
+                BuiltIn::SortKeyNumber => builder.instr2(SortKey, arg(), arg()),
+                BuiltIn::SortKeyPoint => builder.instr2(SortKey2, arg(), arg()),
+                BuiltIn::SortKeyPolygon => builder.instr2(SortKeyPolygon, arg(), arg()),
+                BuiltIn::Polygon => builder.instr1(Polygon, arg()),
+                BuiltIn::Join => todo!(),
             }
-        },
+        }
     }
 }
 

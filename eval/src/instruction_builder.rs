@@ -158,16 +158,19 @@ impl InstructionBuilder {
 
     pub fn instr1(&mut self, instr: Instruction, a: Value) -> Value {
         let (a_type, return_type) = match instr {
-            Neg | Abs | Floor | Ceil | Log2 | Sqrt | Sin | Cos | Tan | Asin | Acos | Atan => {
+            Neg | Sqrt | Ln | Exp | Erf | Sin | Cos | Tan | Sinh | Cosh | Tanh | Asin | Acos
+            | Atan | Asinh | Acosh | Atanh | Abs | Sgn | Round | Floor | Ceil => {
                 (Type::Number, Type::Number)
             }
             Neg2 => (Type::Point, Type::Point),
             PointX | PointY | Hypot => (Type::Point, Type::Number),
-            Count => (Type::NumberList, Type::Number),
+            Min | Max | Median | Total | Mean | Count => (Type::NumberList, Type::Number),
+            Total2 | Mean2 => (Type::PointList, Type::Point),
             Count2 => (Type::PointList, Type::Number),
             CountPolygonList => (Type::PolygonList, Type::Number),
-            Total => (Type::NumberList, Type::Number),
-            Total2 => (Type::PointList, Type::Point),
+            Unique | Sort => (Type::NumberList, Type::NumberList),
+            Unique2 => (Type::PointList, Type::PointList),
+            UniquePolygon => (Type::PolygonList, Type::PolygonList),
             Polygon => (Type::PointList, Type::Polygon),
             _ => panic!("instruction '{instr:?}' not unary"),
         };
@@ -182,17 +185,19 @@ impl InstructionBuilder {
 
     pub fn instr2(&mut self, instr: Instruction, a: Value, b: Value) -> Value {
         let (a_type, b_type, return_type) = match instr {
-            Add | Sub | Mul | Div | Pow | Mod | Atan2 | Min => {
-                (Type::Number, Type::Number, Type::Number)
-            }
+            Add | Sub | Mul | Div | Pow | Atan2 | Mod => (Type::Number, Type::Number, Type::Number),
             Equal | LessThan | LessThanEqual | GreaterThan | GreaterThanEqual => {
                 (Type::Number, Type::Number, Type::Bool)
             }
-            Add2 | Sub2 => (Type::Point, Type::Point, Type::Point),
+            Add2 | Sub2 | Midpoint => (Type::Point, Type::Point, Type::Point),
             Mul1_2 => (Type::Number, Type::Point, Type::Point),
             Mul2_1 | Div2_1 => (Type::Point, Type::Number, Type::Point),
             Dot | Distance => (Type::Point, Type::Point, Type::Number),
             Point => (Type::Number, Type::Number, Type::Point),
+            SortKey => (Type::NumberList, Type::NumberList, Type::NumberList),
+            SortKey2 => (Type::PointList, Type::NumberList, Type::PointList),
+            SortKeyPolygon => (Type::PolygonList, Type::NumberList, Type::PolygonList),
+            MinInternal => (Type::Number, Type::Number, Type::Number),
             Index => (Type::NumberList, Type::Number, Type::Number),
             Index2 => (Type::PointList, Type::Number, Type::Point),
             IndexPolygonList => (Type::PolygonList, Type::Number, Type::Polygon),
@@ -213,6 +218,10 @@ impl InstructionBuilder {
         let c = self.instr2(instr, a.clone_private(), b);
         assert_eq!(c.ty, a.ty);
         self.stack[c.index].name = a.name;
+    }
+
+    pub fn join(&mut self, _base: BaseType, _list: Vec<Value>) -> Value {
+        todo!("probably gotta lazily evaluate args instead of all at once up front")
     }
 
     pub fn unchecked_index(&mut self, list: &Value, index: Value) -> Value {

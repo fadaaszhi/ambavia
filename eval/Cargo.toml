@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 parse = { workspace = true }
 typed-index-collections = { workspace = true }
+medians = "3.0.12"
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }

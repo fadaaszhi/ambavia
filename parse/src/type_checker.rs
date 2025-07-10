@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, collections::HashMap};
+use std::{borrow::Borrow, collections::HashMap, iter::zip};
 
 use derive_more::{From, Into};
 use typed_index_collections::{TiSlice, TiVec, ti_vec};
@@ -131,14 +131,52 @@ pub enum BinaryOperator {
     FilterPolygonList,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BuiltIn {
-    CountNumberList(Box<TypedExpression>),
-    CountPointList(Box<TypedExpression>),
-    CountPolygonList(Box<TypedExpression>),
-    TotalNumberList(Box<TypedExpression>),
-    TotalPointList(Box<TypedExpression>),
-    Polygon(Box<TypedExpression>),
+    // Log
+    Ln,
+    Exp,
+    Erf,
+    Sin,
+    Cos,
+    Tan,
+    Sinh,
+    Cosh,
+    Tanh,
+    Asin,
+    Acos,
+    Atan,
+    Atan2,
+    Asinh,
+    Acosh,
+    Atanh,
+    Abs,
+    Sgn,
+    Round,
+    Floor,
+    Ceil,
+    Mod,
+    Midpoint,
+    Distance,
+    Min,
+    Max,
+    Median,
+    TotalNumber,
+    TotalPoint,
+    MeanNumber,
+    MeanPoint,
+    CountNumber,
+    CountPoint,
+    CountPolygon,
+    UniqueNumber,
+    UniquePoint,
+    UniquePolygon,
+    Sort,
+    SortKeyNumber,
+    SortKeyPoint,
+    SortKeyPolygon,
+    Polygon,
+    Join,
 }
 
 #[derive(Debug, PartialEq)]
@@ -184,7 +222,10 @@ pub enum Expression {
         body: Body,
         lists: Vec<Assignment>,
     },
-    BuiltIn(BuiltIn),
+    BuiltIn {
+        name: BuiltIn,
+        args: Vec<TypedExpression>,
+    },
 }
 
 #[derive(Debug, PartialEq)]
@@ -634,10 +675,10 @@ impl TypeChecker {
                         ),
                         B::Polygon => te(
                             Type::Polygon,
-                            Expression::BuiltIn(BuiltIn::Polygon(Box::new(te(
-                                Type::PointList,
-                                Expression::List(vec![]),
-                            )))),
+                            Expression::BuiltIn {
+                                name: BuiltIn::Polygon,
+                                args: vec![te(Type::PointList, Expression::List(vec![]))],
+                            },
                         ),
                         B::Bool => te(
                             Type::Bool,
@@ -734,187 +775,342 @@ impl TypeChecker {
                 ))
             }
             nr::Expression::BuiltIn { name, args } => {
-                let mut args = self.check_expressions(args)?;
-                let validate_args_count = |callee, expected| {
-                    if args.len() != expected {
-                        Err(format!(
-                            "function '{callee}' requires {}{}",
-                            if args.len() > expected { "only " } else { "" },
-                            if expected == 1 {
-                                "1 argument".into()
-                            } else {
-                                format!("{expected} arguments")
-                            }
-                        ))
-                    } else {
-                        Ok(())
-                    }
+                use BuiltIn as Bi;
+                use Type::{
+                    EmptyList as EL, Number as N, NumberList as NL, Point as P, PointList as PL,
+                    Polygon as Pg, PolygonList as PgL,
                 };
+                use nr::BuiltIn as Nb;
+                let args = self.check_expressions(args)?;
 
-                match name {
-                    nr::BuiltIn::Count => {
-                        validate_args_count("count", 1)?;
-                        let arg = args.pop().unwrap();
-
-                        match arg.ty {
-                            Type::NumberList => Ok(te(
-                                Type::Number,
-                                Expression::BuiltIn(BuiltIn::CountNumberList(Box::new(arg))),
-                            )),
-                            Type::PointList => Ok(te(
-                                Type::Number,
-                                Expression::BuiltIn(BuiltIn::CountPointList(Box::new(arg))),
-                            )),
-                            Type::PolygonList => Ok(te(
-                                Type::Number,
-                                Expression::BuiltIn(BuiltIn::CountPolygonList(Box::new(arg))),
-                            )),
-                            Type::EmptyList => Ok(te(Type::Number, Expression::Number(0.0))),
-                            t => Err(format!("function 'count' cannot be applied to {t}")),
+                if args.len() == 1 && args[0].ty == Type::EmptyList {
+                    match name {
+                        Nb::Min | Nb::Max | Nb::Median | Nb::Mean => {
+                            return Ok(te(N, Expression::Number(f64::NAN)));
                         }
-                    }
-                    nr::BuiltIn::Total => {
-                        validate_args_count("total", 1)?;
-                        let arg = args.pop().unwrap();
-
-                        match arg.ty {
-                            Type::NumberList => Ok(te(
-                                Type::Number,
-                                Expression::BuiltIn(BuiltIn::TotalNumberList(Box::new(arg))),
-                            )),
-                            Type::PointList => Ok(te(
-                                Type::Point,
-                                Expression::BuiltIn(BuiltIn::TotalPointList(Box::new(arg))),
-                            )),
-                            Type::EmptyList => Ok(te(Type::Number, Expression::Number(0.0))),
-                            t => Err(format!("function 'total' cannot be applied to {t}")),
+                        Nb::Count | Nb::Total => return Ok(te(N, Expression::Number(0.0))),
+                        Nb::Unique => return empty_list(B::Empty),
+                        Nb::Sort => return empty_list(B::Number),
+                        Nb::Polygon => {
+                            return Ok(te(
+                                Pg,
+                                Expression::BuiltIn {
+                                    name: Bi::Polygon,
+                                    args: vec![],
+                                },
+                            ));
                         }
+                        _ => {}
                     }
-                    nr::BuiltIn::Polygon => {
-                        // ([number],[number]) -> polygon
-                        // ([number], number ) -> polygon
-                        // ( number ,[number]) -> polygon
-                        //
-                        // ([point]) -> polygon
-                        // (point,...) -> polygon (maybe broadcast)
+                }
 
-                        if args.len() == 2
-                            && let (Type::NumberList, Type::NumberList)
-                            | (Type::NumberList, Type::Number)
-                            | (Type::NumberList, Type::EmptyList)
-                            | (Type::Number, Type::NumberList)
-                            | (Type::Number, Type::EmptyList)
-                            | (Type::EmptyList, Type::NumberList)
-                            | (Type::EmptyList, Type::Number)
-                            | (Type::EmptyList, Type::EmptyList) = (args[0].ty, args[1].ty)
-                        {
-                            let [x, y] = args.try_into().unwrap();
-                            if x.ty == Type::EmptyList || y.ty == Type::EmptyList {
-                                Ok(te(
-                                    Type::Polygon,
-                                    Expression::BuiltIn(BuiltIn::Polygon(Box::new(te(
-                                        Type::PointList,
-                                        Expression::List(vec![]),
-                                    )))),
-                                ))
-                            } else {
-                                let broadcast_x = x.ty.is_list();
-                                let broadcast_y = y.ty.is_list();
-                                let x = self.create_assignment(x);
-                                let y = self.create_assignment(y);
-                                let body = Box::new(te(
-                                    Type::Point,
-                                    Expression::BinaryOperation {
-                                        operation: BinaryOperator::Point,
-                                        left: Box::new(te(
-                                            Type::Number,
-                                            Expression::Identifier(x.id),
-                                        )),
-                                        right: Box::new(te(
-                                            Type::Number,
-                                            Expression::Identifier(y.id),
-                                        )),
-                                    },
-                                ));
-                                let (scalars, vectors) = match (broadcast_x, broadcast_y) {
-                                    (true, true) => (vec![], vec![x, y]),
-                                    (true, false) => (vec![y], vec![x]),
-                                    (false, true) => (vec![x], vec![y]),
-                                    (false, false) => unreachable!(),
-                                };
-                                Ok(te(
-                                    Type::Polygon,
-                                    Expression::BuiltIn(BuiltIn::Polygon(Box::new(te(
-                                        Type::PointList,
-                                        Expression::Broadcast {
-                                            scalars,
-                                            vectors,
-                                            body,
-                                        },
-                                    )))),
-                                ))
-                            }
-                        } else if args.len() == 1 && args[0].ty == Type::PointList {
-                            Ok(te(
-                                Type::Polygon,
-                                Expression::BuiltIn(BuiltIn::Polygon(Box::new(
-                                    args.pop().unwrap(),
-                                ))),
-                            ))
-                        } else {
-                            let mut is_empty = false;
-                            let mut is_broadcast = false;
-                            for a in &args {
-                                if !matches!(a.ty.base(), BaseType::Point | BaseType::Empty) {
-                                    return Err("function 'polygon' requires several points".into());
-                                }
-                                is_empty |= a.ty.base() == BaseType::Empty;
-                                is_broadcast |= a.ty.is_list();
-                            }
-
-                            if is_empty {
-                                Ok(te(Type::PolygonList, Expression::List(vec![])))
-                            } else if is_broadcast {
-                                let assignments = args
-                                    .into_iter()
-                                    .map(|a| self.create_assignment(a))
-                                    .collect::<Vec<_>>();
-                                let body = Box::new(te(
-                                    Type::Polygon,
-                                    Expression::BuiltIn(BuiltIn::Polygon(Box::new(te(
-                                        Type::PointList,
-                                        Expression::List(
-                                            assignments
-                                                .iter()
-                                                .map(|a| {
-                                                    te(Type::Point, Expression::Identifier(a.id))
-                                                })
-                                                .collect(),
-                                        ),
-                                    )))),
-                                ));
-                                let (vectors, scalars) =
-                                    assignments.into_iter().partition(|a| a.value.ty.is_list());
-                                Ok(te(
-                                    Type::PolygonList,
+                if *name == Nb::Polygon
+                    && args.len() == 2
+                    && let (Type::NumberList, Type::NumberList)
+                    | (Type::NumberList, Type::Number)
+                    | (Type::NumberList, Type::EmptyList)
+                    | (Type::Number, Type::NumberList)
+                    | (Type::Number, Type::EmptyList)
+                    | (Type::EmptyList, Type::NumberList)
+                    | (Type::EmptyList, Type::Number)
+                    | (Type::EmptyList, Type::EmptyList) = (args[0].ty, args[1].ty)
+                {
+                    let [x, y] = args.try_into().unwrap();
+                    if x.ty == Type::EmptyList || y.ty == Type::EmptyList {
+                        return Ok(te(
+                            Type::Polygon,
+                            Expression::BuiltIn {
+                                name: Bi::Polygon,
+                                args: vec![te(Type::PointList, Expression::List(vec![]))],
+                            },
+                        ));
+                    } else {
+                        let broadcast_x = x.ty.is_list();
+                        let broadcast_y = y.ty.is_list();
+                        let x = self.create_assignment(x);
+                        let y = self.create_assignment(y);
+                        let body = Box::new(te(
+                            Type::Point,
+                            Expression::BinaryOperation {
+                                operation: BinaryOperator::Point,
+                                left: Box::new(te(Type::Number, Expression::Identifier(x.id))),
+                                right: Box::new(te(Type::Number, Expression::Identifier(y.id))),
+                            },
+                        ));
+                        let (scalars, vectors) = match (broadcast_x, broadcast_y) {
+                            (true, true) => (vec![], vec![x, y]),
+                            (true, false) => (vec![y], vec![x]),
+                            (false, true) => (vec![x], vec![y]),
+                            (false, false) => unreachable!(),
+                        };
+                        return Ok(te(
+                            Type::Polygon,
+                            Expression::BuiltIn {
+                                name: BuiltIn::Polygon,
+                                args: vec![te(
+                                    Type::PointList,
                                     Expression::Broadcast {
                                         scalars,
                                         vectors,
                                         body,
                                     },
-                                ))
-                            } else {
-                                Ok(te(
-                                    Type::Polygon,
-                                    Expression::BuiltIn(BuiltIn::Polygon(Box::new(te(
-                                        Type::PointList,
-                                        Expression::List(args),
-                                    )))),
-                                ))
+                                )],
+                            },
+                        ));
+                    }
+                }
+
+                if *name == Nb::Sort && args.len() == 2 {
+                    match (args[0].ty, args[1].ty) {
+                        (EL, EL | NL) => return empty_list(B::Empty),
+                        (l @ (NL | PL | PgL), EL) => return empty_list(l.base()),
+                        _ => {}
+                    }
+                }
+
+                if *name == Nb::Join {
+                    let mut first_non_empty: Option<Type> = None;
+                    let mut new_args = vec![];
+
+                    for a in args {
+                        if a.ty == EL {
+                            continue;
+                        }
+                        let ty = first_non_empty.get_or_insert(a.ty);
+                        if ty.base() != a.ty.base() {
+                            return Err(format!("cannot join {ty} and {}", a.ty));
+                        }
+                        new_args.push(a);
+                    }
+
+                    let Some(ty) = first_non_empty else {
+                        assert_eq!(new_args, vec![]);
+                        return empty_list(B::Empty);
+                    };
+                    if new_args.iter().all(|a| !a.ty.is_list()) {
+                        return Ok(te(Type::list_of(ty.base()), Expression::List(new_args)));
+                    }
+                    if new_args.len() == 1 {
+                        let a = new_args.pop().unwrap();
+                        assert!(a.ty.is_list());
+                        return Ok(a);
+                    }
+                    return Ok(te(
+                        Type::list_of(ty.base()),
+                        Expression::BuiltIn {
+                            name: Bi::Join,
+                            args: new_args,
+                        },
+                    ));
+                }
+
+                let overloads: &[(&[Type], Type, BuiltIn)] = match name {
+                    Nb::Ln => &[(&[N], N, Bi::Ln)],
+                    Nb::Exp => &[(&[N], N, Bi::Exp)],
+                    Nb::Erf => &[(&[N], N, Bi::Erf)],
+                    Nb::Sin => &[(&[N], N, Bi::Sin)],
+                    Nb::Cos => &[(&[N], N, Bi::Cos)],
+                    Nb::Tan => &[(&[N], N, Bi::Tan)],
+                    Nb::Sec => todo!(),
+                    Nb::Csc => todo!(),
+                    Nb::Cot => todo!(),
+                    Nb::Sinh => &[(&[N], N, Bi::Sinh)],
+                    Nb::Cosh => &[(&[N], N, Bi::Cosh)],
+                    Nb::Tanh => &[(&[N], N, Bi::Tanh)],
+                    Nb::Sech => todo!(),
+                    Nb::Csch => todo!(),
+                    Nb::Coth => todo!(),
+                    Nb::Asin => &[(&[N], N, Bi::Asin)],
+                    Nb::Acos => &[(&[N], N, Bi::Acos)],
+                    Nb::Atan => &[(&[N], N, Bi::Atan), (&[N, N], N, Bi::Atan2)],
+                    Nb::Asec => todo!(),
+                    Nb::Acsc => todo!(),
+                    Nb::Acot => todo!(),
+                    Nb::Asinh => &[(&[N], N, Bi::Asinh)],
+                    Nb::Acosh => &[(&[N], N, Bi::Acosh)],
+                    Nb::Atanh => &[(&[N], N, Bi::Atanh)],
+                    Nb::Asech => todo!(),
+                    Nb::Acsch => todo!(),
+                    Nb::Acoth => todo!(),
+                    Nb::Abs => &[(&[N], N, Bi::Abs)],
+                    Nb::Sgn => &[(&[N], N, Bi::Sgn)],
+                    Nb::Round => &[(&[N], N, Bi::Round)],
+                    Nb::Floor => &[(&[N], N, Bi::Floor)],
+                    Nb::Ceil => &[(&[N], N, Bi::Ceil)],
+                    Nb::Mod => &[(&[N, N], N, Bi::Mod)],
+                    Nb::Midpoint => &[(&[P, P], P, Bi::Midpoint)],
+                    Nb::Distance => &[(&[P, P], N, Bi::Distance)],
+                    Nb::Min => &[(&[NL], N, Bi::Min)],
+                    Nb::Max => &[(&[NL], N, Bi::Max)],
+                    Nb::Median => &[(&[NL], N, Bi::Median)],
+                    Nb::Total => &[(&[NL], N, Bi::TotalNumber), (&[PL], P, Bi::TotalPoint)],
+                    Nb::Mean => &[(&[NL], N, Bi::MeanNumber), (&[PL], P, Bi::MeanPoint)],
+                    Nb::Count => &[
+                        (&[NL], N, Bi::CountNumber),
+                        (&[PL], N, Bi::CountPoint),
+                        (&[PgL], N, Bi::CountPolygon),
+                    ],
+                    Nb::Unique => &[
+                        (&[NL], NL, Bi::UniqueNumber),
+                        (&[PL], PL, Bi::UniquePoint),
+                        (&[PgL], PgL, Bi::UniquePolygon),
+                    ],
+                    Nb::Sort => &[
+                        (&[NL], NL, Bi::Sort),
+                        (&[NL, NL], NL, Bi::SortKeyNumber),
+                        (&[PL, NL], PL, Bi::SortKeyPoint),
+                        (&[PgL, NL], PgL, Bi::SortKeyPolygon),
+                    ],
+                    Nb::Polygon => &[(&[PL], Pg, Bi::Polygon)],
+                    Nb::Join => unreachable!(),
+                };
+
+                'overload: for (arg_tys, ret_ty, builtin) in overloads {
+                    'normal: {
+                        if arg_tys.len() != args.len() {
+                            break 'normal;
+                        }
+
+                        let broadcastable = !ret_ty.is_list();
+                        let mut do_broadcast = false;
+                        let mut empty = false;
+                        for (a, t) in zip(&args, *arg_tys) {
+                            if a.ty == *t {
+                                continue;
                             }
+                            if broadcastable && !t.is_list() {
+                                if a.ty == Type::EmptyList {
+                                    empty = true;
+                                    continue;
+                                }
+                                if Type::single(a.ty.base()) == *t {
+                                    do_broadcast = true;
+                                    continue;
+                                }
+                            }
+                            break 'normal;
+                        }
+
+                        if empty {
+                            return empty_list(B::Empty);
+                        }
+
+                        if do_broadcast {
+                            let assignments = args
+                                .into_iter()
+                                .map(|a| self.create_assignment(a))
+                                .collect::<Vec<_>>();
+                            let body = Box::new(te(
+                                *ret_ty,
+                                Expression::BuiltIn {
+                                    name: *builtin,
+                                    args: assignments
+                                        .iter()
+                                        .map(|a| te(Type::Point, Expression::Identifier(a.id)))
+                                        .collect(),
+                                },
+                            ));
+                            let mut vectors = vec![];
+                            let mut scalars = vec![];
+                            for (a, t) in zip(assignments, *arg_tys) {
+                                if a.value.ty == *t {
+                                    scalars.push(a);
+                                } else {
+                                    vectors.push(a);
+                                }
+                            }
+                            return Ok(te(
+                                Type::list_of(ret_ty.base()),
+                                Expression::Broadcast {
+                                    scalars,
+                                    vectors,
+                                    body,
+                                },
+                            ));
+                        } else {
+                            return Ok(te(
+                                *ret_ty,
+                                Expression::BuiltIn {
+                                    name: *builtin,
+                                    args,
+                                },
+                            ));
+                        }
+                    }
+
+                    // splat
+                    if !ret_ty.is_list()
+                        && arg_tys.len() == 1
+                        && let t = arg_tys[0]
+                        && t.is_list()
+                    {
+                        let b = Type::single(t.base());
+                        let mut do_broadcast = false;
+                        let mut empty = false;
+                        for a in &args {
+                            if a.ty == b {
+                                continue;
+                            }
+                            if a.ty == Type::EmptyList {
+                                empty = true;
+                                continue;
+                            }
+                            if Type::single(a.ty.base()) == b {
+                                do_broadcast = true;
+                                continue;
+                            }
+                            continue 'overload;
+                        }
+
+                        if empty {
+                            return empty_list(B::Empty);
+                        }
+
+                        if do_broadcast {
+                            let assignments = args
+                                .into_iter()
+                                .map(|a| self.create_assignment(a))
+                                .collect::<Vec<_>>();
+                            let body = Box::new(te(
+                                *ret_ty,
+                                Expression::BuiltIn {
+                                    name: *builtin,
+                                    args: vec![te(
+                                        t,
+                                        Expression::List(
+                                            assignments
+                                                .iter()
+                                                .map(|a| te(b, Expression::Identifier(a.id)))
+                                                .collect(),
+                                        ),
+                                    )],
+                                },
+                            ));
+                            let (vectors, scalars) =
+                                assignments.into_iter().partition(|a| a.value.ty.is_list());
+                            return Ok(te(
+                                Type::list_of(ret_ty.base()),
+                                Expression::Broadcast {
+                                    scalars,
+                                    vectors,
+                                    body,
+                                },
+                            ));
+                        } else {
+                            return Ok(te(
+                                *ret_ty,
+                                Expression::BuiltIn {
+                                    name: *builtin,
+                                    args: vec![te(t, Expression::List(args))],
+                                },
+                            ));
                         }
                     }
                 }
+
+                Err(format!(
+                    "function '{name:?}' cannot be applied to these arguments"
+                ))
             }
         }
     }

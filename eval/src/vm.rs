@@ -43,30 +43,55 @@ pub enum Instruction {
 
     PointX,
     PointY,
-    Abs,
-    Floor,
-    Ceil,
-    Mod,
-    Log2,
+    Hypot,
     Sqrt,
+
+    Ln,
+    Exp,
+    Erf,
     Sin,
     Cos,
     Tan,
+    Sinh,
+    Cosh,
+    Tanh,
     Asin,
     Acos,
     Atan,
     Atan2,
+    Asinh,
+    Acosh,
+    Atanh,
+    Abs,
+    Sgn,
+    Round,
+    Floor,
+    Ceil,
+    Mod,
+    Midpoint,
     Distance,
     Min,
-    Hypot,
-
+    Max,
+    Median,
+    Total,
+    Total2,
+    Mean,
+    Mean2,
     Count,
     Count2,
     CountPolygonList,
-    Total,
-    Total2,
+    Unique,
+    Unique2,
+    UniquePolygon,
+    Sort,
+    SortKey,
+    SortKey2,
+    SortKeyPolygon,
     Polygon,
+    Join(usize),
+    JoinPolygon(usize),
 
+    MinInternal,
     Index,
     Index2,
     IndexPolygonList,
@@ -446,31 +471,25 @@ impl<'a> Vm<'a> {
                     self.pop().number();
                     self.push(y);
                 }
-                Instruction::Abs => {
-                    let a = self.pop().number();
-                    self.push(a.abs());
-                }
-                Instruction::Floor => {
-                    let a = self.pop().number();
-                    self.push(a.floor());
-                }
-                Instruction::Ceil => {
-                    let a = self.pop().number();
-                    self.push(a.ceil());
-                }
-                Instruction::Mod => {
-                    let b = self.pop().number();
-                    let a = self.pop().number();
-                    self.push(a - (a / b).floor() * b);
-                }
-                Instruction::Log2 => {
-                    let a = self.pop().number();
-                    self.push(a.log2());
+                Instruction::Hypot => {
+                    let y = self.pop().number();
+                    let x = self.pop().number();
+                    self.push(x.hypot(y));
                 }
                 Instruction::Sqrt => {
                     let a = self.pop().number();
                     self.push(a.sqrt());
                 }
+
+                Instruction::Ln => {
+                    let a = self.pop().number();
+                    self.push(a.ln());
+                }
+                Instruction::Exp => {
+                    let a = self.pop().number();
+                    self.push(a.exp());
+                }
+                Instruction::Erf => todo!(),
                 Instruction::Sin => {
                     let a = self.pop().number();
                     self.push(a.sin());
@@ -482,6 +501,18 @@ impl<'a> Vm<'a> {
                 Instruction::Tan => {
                     let a = self.pop().number();
                     self.push(a.tan());
+                }
+                Instruction::Sinh => {
+                    let a = self.pop().number();
+                    self.push(a.sinh());
+                }
+                Instruction::Cosh => {
+                    let a = self.pop().number();
+                    self.push(a.cosh());
+                }
+                Instruction::Tanh => {
+                    let a = self.pop().number();
+                    self.push(a.tanh());
                 }
                 Instruction::Asin => {
                     let a = self.pop().number();
@@ -496,9 +527,62 @@ impl<'a> Vm<'a> {
                     self.push(a.atan());
                 }
                 Instruction::Atan2 => {
-                    let x = self.pop().number();
-                    let y = self.pop().number();
-                    self.push(y.atan2(x));
+                    let b = self.pop().number();
+                    let a = self.pop().number();
+                    self.push(a.atan2(b));
+                }
+                Instruction::Asinh => {
+                    let a = self.pop().number();
+                    self.push(a.asinh());
+                }
+                Instruction::Acosh => {
+                    let a = self.pop().number();
+                    self.push(a.acosh());
+                }
+                Instruction::Atanh => {
+                    let a = self.pop().number();
+                    self.push(a.atanh());
+                }
+                Instruction::Abs => {
+                    let a = self.pop().number();
+                    self.push(a.abs());
+                }
+                Instruction::Sgn => {
+                    let a = self.pop().number();
+                    self.push(if a < 0.0 {
+                        -1.0
+                    } else if a > 0.0 {
+                        1.0
+                    } else if a == 0.0 {
+                        0.0
+                    } else {
+                        f64::NAN
+                    });
+                }
+                Instruction::Round => {
+                    let a = self.pop().number();
+                    self.push(a.round());
+                }
+                Instruction::Floor => {
+                    let a = self.pop().number();
+                    self.push(a.floor());
+                }
+                Instruction::Ceil => {
+                    let a = self.pop().number();
+                    self.push(a.ceil());
+                }
+                Instruction::Mod => {
+                    let b = self.pop().number();
+                    let a = self.pop().number();
+                    self.push(a - (a / b).floor() * b);
+                }
+                Instruction::Midpoint => {
+                    let by = self.pop().number();
+                    let bx = self.pop().number();
+                    let ay = self.pop().number();
+                    let ax = self.pop().number();
+                    self.push((ax + bx) / 2.0);
+                    self.push((ay + by) / 2.0);
                 }
                 Instruction::Distance => {
                     let by = self.pop().number();
@@ -508,16 +592,79 @@ impl<'a> Vm<'a> {
                     self.push((bx - ax).hypot(by - ay));
                 }
                 Instruction::Min => {
-                    let b = self.pop().number();
-                    let a = self.pop().number();
-                    self.push(a.min(b));
+                    let a = self.pop().list();
+                    let a = a.borrow();
+                    if a.is_empty() {
+                        self.push(f64::NAN);
+                    } else {
+                        let mut result = f64::INFINITY;
+                        for x in a.iter() {
+                            if x.is_nan() {
+                                result = f64::NAN;
+                                break;
+                            }
+                            result = x.min(result);
+                        }
+                        self.push(result);
+                    }
                 }
-                Instruction::Hypot => {
-                    let y = self.pop().number();
-                    let x = self.pop().number();
-                    self.push(x.hypot(y));
+                Instruction::Max => {
+                    let a = self.pop().list();
+                    let a = a.borrow();
+                    if a.is_empty() {
+                        self.push(f64::NAN);
+                    } else {
+                        let mut result = -f64::INFINITY;
+                        for x in a.iter() {
+                            if x.is_nan() {
+                                result = f64::NAN;
+                                break;
+                            }
+                            result = x.max(result);
+                        }
+                        self.push(result);
+                    }
                 }
-
+                Instruction::Median => {
+                    let a = self.pop().list();
+                    let a = a.borrow();
+                    if a.is_empty() || a.contains(&f64::NAN) {
+                        self.push(f64::NAN);
+                    } else {
+                        self.push(medians::Medianf64::medf_unchecked(a.as_slice()));
+                    }
+                }
+                Instruction::Total => {
+                    let a = self.pop().list();
+                    self.push(a.borrow().iter().sum::<f64>());
+                }
+                Instruction::Total2 => {
+                    let a = self.pop().list();
+                    let (x, y) = a
+                        .borrow()
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .fold((0.0, 0.0), |(x, y), p| (x + p[0], y + p[1]));
+                    self.push(x);
+                    self.push(y);
+                }
+                Instruction::Mean => {
+                    let a = self.pop().list();
+                    let a = a.borrow();
+                    self.push(a.iter().sum::<f64>() / a.len() as f64);
+                }
+                Instruction::Mean2 => {
+                    let a = self.pop().list();
+                    let a = a.borrow();
+                    let (x, y) = a
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .fold((0.0, 0.0), |(x, y), p| (x + p[0], y + p[1]));
+                    self.push(x / a.len() as f64);
+                    self.push(y / a.len() as f64);
+                }
                 Instruction::Count => {
                     let a = self.pop().list();
                     self.push(a.borrow().len() as f64);
@@ -530,23 +677,64 @@ impl<'a> Vm<'a> {
                     let a = self.pop().polygon_list();
                     self.push(a.borrow().len() as f64);
                 }
-                Instruction::Total => {
-                    let a = self.pop().list();
-                    self.push(a.borrow().iter().sum::<f64>());
+                Instruction::Unique => todo!(),
+                Instruction::Unique2 => todo!(),
+                Instruction::UniquePolygon => todo!(),
+                Instruction::Sort => {
+                    let mut a = Rc::unwrap_or_clone(self.pop().list()).take();
+                    a.sort_unstable_by(f64::total_cmp);
+                    self.push(Rc::new(RefCell::new(a)));
                 }
-                Instruction::Total2 => {
-                    let a = self.pop().list();
-                    let (x, y) = a
-                        .borrow()
-                        .chunks_exact(2)
-                        .fold((0.0, 0.0), |(x, y), b| (x + b[0], y + b[1]));
-                    self.push(x);
-                    self.push(y);
+                Instruction::SortKey => {
+                    let key = self.pop().list();
+                    let key = key.borrow();
+                    let list = self.pop().list();
+                    let list = list.borrow();
+                    let mut indices = (0..key.len().min(list.len())).collect::<Vec<_>>();
+                    indices.sort_by(|a, b| key[*a].total_cmp(&key[*b]));
+                    self.push(Rc::new(RefCell::new(
+                        indices.iter().map(|&i| list[i]).collect::<Vec<_>>(),
+                    )));
+                }
+                Instruction::SortKey2 => {
+                    let key = self.pop().list();
+                    let key = key.borrow();
+                    let list = self.pop().list();
+                    let list = list.borrow();
+                    let mut indices = (0..key.len().min(list.len() / 2)).collect::<Vec<_>>();
+                    indices.sort_by(|a, b| key[*a].total_cmp(&key[*b]));
+                    self.push(Rc::new(RefCell::new(
+                        indices
+                            .iter()
+                            .flat_map(|&i| [list[2 * i], list[2 * i + 1]])
+                            .collect::<Vec<_>>(),
+                    )));
+                }
+                Instruction::SortKeyPolygon => {
+                    let key = self.pop().list();
+                    let key = key.borrow();
+                    let list = self.pop().polygon_list();
+                    let list = list.borrow();
+                    let mut indices = (0..key.len().min(list.len())).collect::<Vec<_>>();
+                    indices.sort_by(|a, b| key[*a].total_cmp(&key[*b]));
+                    self.push(Rc::new(RefCell::new(
+                        indices
+                            .iter()
+                            .map(|&i| Rc::clone(&list[i]))
+                            .collect::<Vec<_>>(),
+                    )));
                 }
                 Instruction::Polygon => {
                     // noop
                 }
+                Instruction::Join(_count) => todo!(),
+                Instruction::JoinPolygon(_count) => todo!(),
 
+                Instruction::MinInternal => {
+                    let b = self.pop().number();
+                    let a = self.pop().number();
+                    self.push(a.min(b));
+                }
                 Instruction::Index => {
                     let b = self.pop().number().floor() - 1.0;
                     let a = self.pop().list();

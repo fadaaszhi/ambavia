@@ -13,8 +13,10 @@ use rstest::rstest;
 enum Value {
     Number(f64),
     Point(f64, f64),
+    Polygon(Vec<(f64, f64)>),
     NumberList(Vec<f64>),
     PointList(Vec<(f64, f64)>),
+    PolygonList(Vec<Vec<(f64, f64)>>),
     EmptyList,
 }
 
@@ -27,8 +29,15 @@ impl PartialEq for Value {
                 l.len() == r.len() && zip(l, r).all(|(l, r)| eq(l, r))
             }
             (Self::Point(lx, ly), Self::Point(rx, ry)) => eq(lx, rx) && eq(ly, ry),
-            (Self::PointList(l), Self::PointList(r)) => {
+            (Self::PointList(l), Self::PointList(r)) | (Self::Polygon(l), Self::Polygon(r)) => {
                 l.len() == r.len() && zip(l, r).all(|((lx, ly), (rx, ry))| eq(lx, rx) && eq(ly, ry))
+            }
+            (Self::PolygonList(l), Self::PolygonList(r)) => {
+                l.len() == r.len()
+                    && zip(l, r).all(|(l, r)| {
+                        l.len() == r.len()
+                            && zip(l, r).all(|((lx, ly), (rx, ry))| eq(lx, rx) && eq(ly, ry))
+                    })
             }
             (Self::EmptyList, Self::EmptyList) => true,
             _ => false,
@@ -84,6 +93,10 @@ impl<const N: usize> From<[(i64, i64); N]> for Value {
     }
 }
 
+fn polygon<const N: usize>(points: [(i64, i64); N]) -> Value {
+    Value::Polygon(points.map(|(x, y)| (x as f64, y as f64)).into())
+}
+
 fn assert_expression_eq<'a>(source: &str, value: Value) {
     println!("expression: {source}");
     let tree = parse_latex(source).unwrap();
@@ -117,14 +130,32 @@ fn assert_expression_eq<'a>(source: &str, value: Value) {
                 vm.vars[index].clone().number(),
                 vm.vars[index + 1].clone().number()
             ),
-            Type::PointList => {
+            Type::PointList | Type::Polygon => {
                 let a = vm.vars[index].clone().list();
                 let list = a
                     .borrow()
                     .chunks(2)
                     .map(|p| (p[0], p[1]))
                     .collect::<Vec<_>>();
-                Value::PointList(list)
+                (if ty == Type::PointList {
+                    Value::PointList
+                } else {
+                    Value::Polygon
+                })(list)
+            }
+            Type::PolygonList => {
+                let a = vm.vars[index].clone().polygon_list();
+                let list = a
+                    .borrow()
+                    .iter()
+                    .map(|a| {
+                        a.borrow()
+                            .chunks(2)
+                            .map(|p| (p[0], p[1]))
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>();
+                Value::PolygonList(list)
             }
             Type::Bool | Type::BoolList => unreachable!(),
             Type::EmptyList => Value::EmptyList,
@@ -176,6 +207,7 @@ const NAN: f64 = f64::NAN;
 #[case(r"[(1,2), (3,4), (5,6)][[7...9]>=8]", [(3, 4), (5, 6)])]
 #[case(r"[1,2][[7...9]>=8]", [2])]
 #[case(r"[][[7...9]>=8] + (1,2)", [(0, 0); 0])]
+#[case(r"\polygon(4,[5,6,7])", polygon([(4, 5), (4, 6), (4, 7)]))]
 fn expression_eq(#[case] expression: &str, #[case] expected: impl Into<Value>) {
     assert_expression_eq(expression, expected.into());
 }

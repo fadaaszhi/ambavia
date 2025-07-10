@@ -6,17 +6,8 @@ use crate::vm::Instruction::{self, *};
 pub enum BaseType {
     Number,
     Point,
+    Polygon,
     Bool,
-}
-
-impl BaseType {
-    fn size(&self) -> usize {
-        match self {
-            BaseType::Number => 1,
-            BaseType::Point => 2,
-            BaseType::Bool => 1,
-        }
-    }
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -25,6 +16,8 @@ enum Type {
     NumberList,
     Point,
     PointList,
+    Polygon,
+    PolygonList,
     Bool,
     BoolList,
 }
@@ -32,7 +25,13 @@ enum Type {
 impl Type {
     fn size(&self) -> usize {
         match self {
-            Type::Number | Type::NumberList | Type::PointList | Type::Bool | Type::BoolList => 1,
+            Type::Number
+            | Type::NumberList
+            | Type::PointList
+            | Type::Polygon
+            | Type::PolygonList
+            | Type::Bool
+            | Type::BoolList => 1,
             Type::Point => 2,
         }
     }
@@ -41,6 +40,7 @@ impl Type {
         match self {
             Type::Number | Type::NumberList => BaseType::Number,
             Type::Point | Type::PointList => BaseType::Point,
+            Type::Polygon | Type::PolygonList => BaseType::Polygon,
             Type::Bool | Type::BoolList => BaseType::Bool,
         }
     }
@@ -49,6 +49,7 @@ impl Type {
         match base {
             BaseType::Number => Type::NumberList,
             BaseType::Point => Type::PointList,
+            BaseType::Polygon => Type::PolygonList,
             BaseType::Bool => Type::BoolList,
         }
     }
@@ -57,12 +58,16 @@ impl Type {
         match base {
             BaseType::Number => Type::Number,
             BaseType::Point => Type::Point,
+            BaseType::Polygon => Type::Polygon,
             BaseType::Bool => Type::Bool,
         }
     }
 
     fn is_list(&self) -> bool {
-        matches!(self, Type::NumberList | Type::PointList | Type::BoolList)
+        matches!(
+            self,
+            Type::NumberList | Type::PointList | Type::PolygonList | Type::BoolList
+        )
     }
 }
 
@@ -73,6 +78,8 @@ impl std::fmt::Display for Type {
             Type::NumberList => "a list of numbers",
             Type::Point => "a point",
             Type::PointList => "a list of points",
+            Type::Polygon => "a polygon",
+            Type::PolygonList => "a list of polygons",
             Type::Bool => "a true/false value",
             Type::BoolList => "a list of true/false values",
         })
@@ -158,13 +165,15 @@ impl InstructionBuilder {
             PointX | PointY | Hypot => (Type::Point, Type::Number),
             Count => (Type::NumberList, Type::Number),
             Count2 => (Type::PointList, Type::Number),
+            CountPolygonList => (Type::PolygonList, Type::Number),
             Total => (Type::NumberList, Type::Number),
             Total2 => (Type::PointList, Type::Point),
+            Polygon => (Type::PointList, Type::Polygon),
             _ => panic!("instruction '{instr:?}' not unary"),
         };
         self.assert_pop(a, a_type);
 
-        if instr != Point {
+        if instr != Polygon {
             self.instructions.push(instr);
         }
 
@@ -186,6 +195,7 @@ impl InstructionBuilder {
             Point => (Type::Number, Type::Number, Type::Point),
             Index => (Type::NumberList, Type::Number, Type::Number),
             Index2 => (Type::PointList, Type::Number, Type::Point),
+            IndexPolygonList => (Type::PolygonList, Type::Number, Type::Polygon),
             BuildListFromRange => (Type::Number, Type::Number, Type::NumberList),
             _ => panic!("instruction '{instr:?}' not binary"),
         };
@@ -210,10 +220,10 @@ impl InstructionBuilder {
         self.assert_exists(list, list.ty);
         assert!(list.ty.is_list());
         self.assert_pop(index, Type::Number);
-        self.instructions.push(match base.size() {
-            1 => UncheckedIndex,
-            2 => UncheckedIndex2,
-            _ => unreachable!(),
+        self.instructions.push(match base {
+            BaseType::Number | BaseType::Bool => UncheckedIndex,
+            BaseType::Point => UncheckedIndex2,
+            BaseType::Polygon => UncheckedIndexPolygonList,
         }(self.position_from_top(list)));
         self.create_and_push_value(Type::single(base))
     }
@@ -223,7 +233,11 @@ impl InstructionBuilder {
         for v in list.into_iter().rev() {
             self.assert_pop(v, Type::single(base));
         }
-        self.instructions.push(BuildList(n * base.size()));
+        self.instructions.push(match base {
+            BaseType::Number | BaseType::Bool => BuildList(n),
+            BaseType::Point => BuildList(2 * n),
+            BaseType::Polygon => BuildPolygonList(n),
+        });
         self.create_and_push_value(Type::list_of(base))
     }
 
@@ -232,10 +246,10 @@ impl InstructionBuilder {
         self.assert_exists(list, list.ty);
         assert!(list.ty.is_list());
         self.assert_pop(v, Type::single(base));
-        self.instructions.push(match base.size() {
-            1 => Append,
-            2 => Append2,
-            _ => unreachable!(),
+        self.instructions.push(match base {
+            BaseType::Number | BaseType::Bool => Append,
+            BaseType::Point => Append2,
+            BaseType::Polygon => AppendPolygonList,
         }(self.position_from_top(list)));
     }
 
@@ -385,10 +399,10 @@ impl InstructionBuilder {
     pub fn count_specific(&mut self, list: &Value) -> Value {
         self.assert_exists(list, list.ty);
         assert!(list.ty.is_list());
-        self.instructions.push(match list.ty.base().size() {
-            1 => CountSpecific,
-            2 => CountSpecific2,
-            _ => unreachable!(),
+        self.instructions.push(match list.ty.base() {
+            BaseType::Number | BaseType::Bool => CountSpecific,
+            BaseType::Point => CountSpecific2,
+            BaseType::Polygon => CountSpecificPolygonList,
         }(self.position_from_top(list)));
         self.create_and_push_value(Type::Number)
     }

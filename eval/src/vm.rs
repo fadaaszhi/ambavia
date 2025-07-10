@@ -62,19 +62,26 @@ pub enum Instruction {
 
     Count,
     Count2,
+    CountPolygonList,
     Total,
     Total2,
+    Polygon,
 
     Index,
     Index2,
+    IndexPolygonList,
     UncheckedIndex(usize),
     UncheckedIndex2(usize),
+    UncheckedIndexPolygonList(usize),
     BuildList(usize),
+    BuildPolygonList(usize),
     BuildListFromRange,
     Append(usize),
     Append2(usize),
+    AppendPolygonList(usize),
     CountSpecific(usize),
     CountSpecific2(usize),
+    CountSpecificPolygonList(usize),
 
     StartArgs,
     EndArgs(usize),
@@ -84,10 +91,13 @@ pub enum Instruction {
     Return2,
 }
 
+type RcVec<T> = Rc<RefCell<Vec<T>>>;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Number(f64),
-    List(Rc<RefCell<Vec<f64>>>),
+    List(RcVec<f64>),
+    PolygonList(RcVec<RcVec<f64>>),
 }
 
 impl Value {
@@ -98,10 +108,17 @@ impl Value {
         }
     }
 
-    pub fn list(self) -> Rc<RefCell<Vec<f64>>> {
+    pub fn list(self) -> RcVec<f64> {
         match self {
             Value::List(v) => v,
             _ => panic!("value is not a list: {self:?}"),
+        }
+    }
+
+    pub fn polygon_list(self) -> RcVec<RcVec<f64>> {
+        match self {
+            Value::PolygonList(v) => v,
+            _ => panic!("value is not a polygon list: {self:?}"),
         }
     }
 }
@@ -118,6 +135,12 @@ impl From<Rc<RefCell<Vec<f64>>>> for Value {
     }
 }
 
+impl From<Rc<RefCell<Vec<Rc<RefCell<Vec<f64>>>>>>> for Value {
+    fn from(value: Rc<RefCell<Vec<Rc<RefCell<Vec<f64>>>>>>) -> Self {
+        Value::PolygonList(value)
+    }
+}
+
 impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -129,6 +152,24 @@ impl std::fmt::Display for Value {
                     list.borrow()
                         .iter()
                         .map(|x| format!("{x}"))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )
+            }
+            Value::PolygonList(list) => {
+                write!(
+                    f,
+                    "[{}]",
+                    list.borrow()
+                        .iter()
+                        .map(|list| format!(
+                            "[{}]",
+                            list.borrow()
+                                .iter()
+                                .map(|x| format!("{x}"))
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        ))
                         .collect::<Vec<_>>()
                         .join(",")
                 )
@@ -485,6 +526,10 @@ impl<'a> Vm<'a> {
                     let a = self.pop().list();
                     self.push(a.borrow().len() as f64 / 2.0);
                 }
+                Instruction::CountPolygonList => {
+                    let a = self.pop().polygon_list();
+                    self.push(a.borrow().len() as f64);
+                }
                 Instruction::Total => {
                     let a = self.pop().list();
                     self.push(a.borrow().iter().sum::<f64>());
@@ -497,6 +542,9 @@ impl<'a> Vm<'a> {
                         .fold((0.0, 0.0), |(x, y), b| (x + b[0], y + b[1]));
                     self.push(x);
                     self.push(y);
+                }
+                Instruction::Polygon => {
+                    // noop
                 }
 
                 Instruction::Index => {
@@ -523,6 +571,17 @@ impl<'a> Vm<'a> {
                         self.push(a[b as usize + 1]);
                     }
                 }
+                Instruction::IndexPolygonList => {
+                    let b = self.pop().number().floor() - 1.0;
+                    let a = self.pop().polygon_list();
+                    let a = a.borrow();
+
+                    self.push(if b < 0.0 || b >= a.len() as f64 {
+                        Rc::new(RefCell::new(vec![]))
+                    } else {
+                        Rc::clone(&a[b as usize])
+                    });
+                }
                 Instruction::UncheckedIndex(index) => {
                     let b = self.pop().number() as usize;
                     let a = self.peek(index).list();
@@ -535,6 +594,11 @@ impl<'a> Vm<'a> {
                     self.push(a[b]);
                     self.push(a[b + 1]);
                 }
+                Instruction::UncheckedIndexPolygonList(index) => {
+                    let b = self.pop().number() as usize;
+                    let a = self.peek(index).polygon_list();
+                    self.push(Rc::clone(&a.borrow()[b]));
+                }
                 Instruction::BuildList(count) => {
                     let mut list = vec![0.0; count];
 
@@ -544,12 +608,22 @@ impl<'a> Vm<'a> {
 
                     self.push(Rc::new(RefCell::new(list)));
                 }
+                Instruction::BuildPolygonList(count) => {
+                    let mut list = vec![];
+
+                    for _ in 0..count {
+                        list.push(self.pop().list());
+                    }
+
+                    list.reverse();
+                    self.push(Rc::new(RefCell::new(list)));
+                }
                 Instruction::BuildListFromRange => {
                     let b = self.pop().number().round() as i64;
                     let a = self.pop().number().round() as i64;
 
                     self.push(Rc::new(RefCell::new(if a <= b {
-                        (a..=b).map(|i| i as f64).collect()
+                        (a..=b).map(|i| i as f64).collect::<Vec<_>>()
                     } else {
                         (b..=a).rev().map(|i| i as f64).collect()
                     })));
@@ -566,6 +640,10 @@ impl<'a> Vm<'a> {
                     a.push(bx);
                     a.push(by);
                 }
+                Instruction::AppendPolygonList(index) => {
+                    let a = self.pop().list();
+                    self.peek(index).clone().polygon_list().borrow_mut().push(a);
+                }
                 Instruction::CountSpecific(index) => {
                     let a = self.peek(index).list();
                     self.push(a.borrow().len() as f64);
@@ -573,6 +651,10 @@ impl<'a> Vm<'a> {
                 Instruction::CountSpecific2(index) => {
                     let a = self.peek(index).list();
                     self.push(a.borrow().len() as f64 / 2.0);
+                }
+                Instruction::CountSpecificPolygonList(index) => {
+                    let a = self.peek(index).polygon_list();
+                    self.push(a.borrow().len() as f64);
                 }
 
                 Instruction::StartArgs => {

@@ -15,9 +15,10 @@ fn tc_list_to_ib_base(ty: TcType) -> IbBaseType {
     match ty {
         TcType::NumberList => IbBaseType::Number,
         TcType::PointList => IbBaseType::Point,
+        TcType::PolygonList => IbBaseType::Polygon,
         TcType::BoolList => IbBaseType::Bool,
         TcType::EmptyList => IbBaseType::Number,
-        TcType::Number | TcType::Bool | TcType::Point => unreachable!(),
+        TcType::Number | TcType::Bool | TcType::Point | TcType::Polygon => unreachable!(),
     }
 }
 
@@ -123,15 +124,20 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
 
             if matches!(
                 operation,
-                BinaryOperator::FilterNumberList | BinaryOperator::FilterPointList
+                BinaryOperator::FilterNumberList
+                    | BinaryOperator::FilterPointList
+                    | BinaryOperator::FilterPolygonList
             ) {
                 let mut result = builder.build_list(
                     match ty {
                         TcType::NumberList => IbBaseType::Number,
                         TcType::PointList => IbBaseType::Point,
+                        TcType::PolygonList => IbBaseType::Polygon,
                         TcType::BoolList => IbBaseType::Bool,
                         TcType::EmptyList => IbBaseType::Number,
-                        _ => unreachable!(),
+                        TcType::Number | TcType::Point | TcType::Polygon | TcType::Bool => {
+                            unreachable!()
+                        }
                     },
                     vec![],
                 );
@@ -186,7 +192,10 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
                     BinaryOperator::Point => Point,
                     BinaryOperator::IndexNumberList => Index,
                     BinaryOperator::IndexPointList => Index2,
-                    BinaryOperator::FilterNumberList | BinaryOperator::FilterPointList => {
+                    BinaryOperator::IndexPolygonList => IndexPolygonList,
+                    BinaryOperator::FilterNumberList
+                    | BinaryOperator::FilterPointList
+                    | BinaryOperator::FilterPolygonList => {
                         unreachable!()
                     }
                 },
@@ -307,15 +316,19 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
         Expression::BuiltIn(built_in) => match built_in {
             BuiltIn::CountNumberList(arg)
             | BuiltIn::CountPointList(arg)
+            | BuiltIn::CountPolygonList(arg)
             | BuiltIn::TotalNumberList(arg)
-            | BuiltIn::TotalPointList(arg) => {
+            | BuiltIn::TotalPointList(arg)
+            | BuiltIn::Polygon(arg) => {
                 let arg = compile_expression(arg, builder);
                 builder.instr1(
                     match built_in {
                         BuiltIn::CountNumberList(_) => Count,
                         BuiltIn::CountPointList(_) => Count2,
+                        BuiltIn::CountPolygonList(_) => CountPolygonList,
                         BuiltIn::TotalNumberList(_) => Total,
                         BuiltIn::TotalPointList(_) => Total2,
+                        BuiltIn::Polygon(_) => Polygon,
                     },
                     arg,
                 )
@@ -403,6 +416,11 @@ mod tests {
                 builder.instr2(Point, x, y)
             }
             TcType::PointList => builder.build_list(IbBaseType::Point, vec![]),
+            TcType::Polygon => {
+                let p = builder.build_list(IbBaseType::Point, vec![]);
+                builder.instr1(Polygon, p)
+            }
+            TcType::PolygonList => builder.build_list(IbBaseType::Polygon, vec![]),
             TcType::EmptyList => panic!("why"),
             TcType::Bool | TcType::BoolList => panic!("bruh"),
         };

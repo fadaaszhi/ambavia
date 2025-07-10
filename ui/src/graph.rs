@@ -24,19 +24,27 @@ impl Default for Viewport {
     }
 }
 
-#[derive(Clone)]
-pub struct Point {
-    pub p: DVec2,
+#[derive(Debug, Clone)]
+pub enum GeometryKind {
+    Line(Vec<DVec2>),
+    Point {
+        p: DVec2,
+        draggable: Option<ExpressionId>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct Geometry {
     pub width: f32,
     pub color: [f32; 4],
-    pub draggable: Option<ExpressionId>,
+    pub kind: GeometryKind,
 }
 
 pub struct GraphPaper {
     viewport: Viewport,
     dragging: Option<Option<ExpressionId>>,
     hovered_point: Option<ExpressionId>,
-    points: Vec<Point>,
+    geometry: Vec<Geometry>,
 
     graph_texture: wgpu::Texture,
     depth_texture: wgpu::Texture,
@@ -342,7 +350,7 @@ impl GraphPaper {
             viewport: Default::default(),
             dragging: None,
             hovered_point: None,
-            points: vec![],
+            geometry: vec![],
 
             graph_texture,
             depth_texture,
@@ -357,8 +365,8 @@ impl GraphPaper {
         }
     }
 
-    pub fn set_geometry(&mut self, points: Vec<Point>) {
-        self.points = points;
+    pub fn set_geometry(&mut self, geometry: Vec<Geometry>) {
+        self.geometry = geometry;
     }
 
     pub fn update(
@@ -388,10 +396,14 @@ impl GraphPaper {
         };
         let mut dragged_point = None;
         let new_hovered_point = self.dragging.unwrap_or_else(|| {
-            for p in self.points.iter().rev() {
-                if let Some(i) = p.draggable
-                    && from_vp(&self.viewport, p.p).distance(ctx.cursor)
-                        < draggable_point_width(p.width) as f64 / 2.0
+            for g in self.geometry.iter().rev() {
+                if let GeometryKind::Point {
+                    p,
+                    draggable: Some(i),
+                    ..
+                } = g.kind
+                    && from_vp(&self.viewport, p).distance(ctx.cursor)
+                        < draggable_point_width(g.width) as f64 / 2.0
                 {
                     return Some(i);
                 }
@@ -422,8 +434,16 @@ impl GraphPaper {
                         to_vp(&self.viewport, ctx.cursor) - to_vp(&self.viewport, *previous_cursor);
 
                     if let Some(i) = point {
-                        if let Some(p) = self.points.iter().find(|p| p.draggable == Some(i)) {
-                            dragged_point = Some((i, p.p + diff));
+                        if let Some(p) = self.geometry.iter().find_map(|g| {
+                            if let GeometryKind::Point { p, draggable } = g.kind
+                                && draggable == Some(i)
+                            {
+                                Some(p)
+                            } else {
+                                None
+                            }
+                        }) {
+                            dragged_point = Some((i, p + diff));
                         } else {
                             self.dragging = None;
                         }
@@ -605,35 +625,41 @@ impl GraphPaper {
         vertices.push(Vertex::new((physical.left() as f32, origin.y), shape));
         vertices.push(Vertex::new((physical.right() as f32, origin.y), shape));
 
-        for Point {
-            p,
-            width,
-            color,
-            draggable,
-        } in &self.points
-        {
-            let p = to_physical(*p).as_vec2();
-            let mut width = *width;
+        for Geometry { width, color, kind } in &self.geometry {
+            match kind {
+                GeometryKind::Line(points) => {
+                    let shape = shapes.len() as u32;
+                    shapes.push(Shape::line(*color, ctx.scale_factor as f32 * width));
+                    for p in points {
+                        let p = to_physical(*p).as_vec2();
+                        vertices.push(Vertex::new(p, shape));
+                    }
+                }
+                GeometryKind::Point { p, draggable } => {
+                    let p = to_physical(*p).as_vec2();
+                    let mut width = *width;
 
-            if draggable.is_some() {
-                let shape = shapes.len() as u32;
-                let mut color = *color;
-                color[3] *= 0.35;
-                let draggable_width = draggable_point_width(width);
-                shapes.push(Shape::point(
-                    color,
-                    ctx.scale_factor as f32 * draggable_width,
-                ));
-                vertices.push(Vertex::new(p, shape));
+                    if draggable.is_some() {
+                        let shape = shapes.len() as u32;
+                        let mut color = *color;
+                        color[3] *= 0.35;
+                        let draggable_width = draggable_point_width(width);
+                        shapes.push(Shape::point(
+                            color,
+                            ctx.scale_factor as f32 * draggable_width,
+                        ));
+                        vertices.push(Vertex::new(p, shape));
 
-                if self.hovered_point == *draggable {
-                    width = draggable_width;
+                        if self.hovered_point == *draggable {
+                            width = draggable_width;
+                        }
+                    }
+
+                    let shape = shapes.len() as u32;
+                    shapes.push(Shape::point(*color, ctx.scale_factor as f32 * width));
+                    vertices.push(Vertex::new(p, shape));
                 }
             }
-
-            let shape = shapes.len() as u32;
-            shapes.push(Shape::point(*color, ctx.scale_factor as f32 * width));
-            vertices.push(Vertex::new(p, shape));
         }
 
         (shapes, vertices)

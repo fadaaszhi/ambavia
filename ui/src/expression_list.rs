@@ -8,7 +8,10 @@ use winit::{
 };
 
 use crate::{
-    graph::Point,
+    graph::{
+        Geometry,
+        GeometryKind::{Line, Point},
+    },
     math_field::{Cursor, Interactiveness, MathField, Message, UserSelection},
     ui::{Bounds, Context, Event, QuadKind, Response},
     utility::{mix, unmix},
@@ -34,15 +37,16 @@ enum Output {
         dragging: Option<f64>,
         hovered: bool,
     },
-    DraggablePoint(Point),
+    DraggablePoint(Geometry),
     Value {
         field: MathField,
-        points: Vec<Point>,
+        points: Vec<Geometry>,
     },
+    Polygon(Vec<Geometry>),
 }
 
 impl Output {
-    fn new_value(latex: &[latex_tree::Node], points: Vec<Point>) -> Output {
+    fn new_value(latex: &[latex_tree::Node], points: Vec<Geometry>) -> Output {
         let mut field = MathField::from(latex);
         field.interactiveness = Interactiveness::Select;
         field.scale = 18.0;
@@ -84,7 +88,7 @@ impl Output {
         width: f64,
     ) -> (Response, Option<f64>, Bounds) {
         match self {
-            Output::None | Output::Error(_) | Output::DraggablePoint(_) => {
+            Output::None | Output::Error(_) | Output::DraggablePoint(_) | Output::Polygon(_) => {
                 (Response::default(), None, Bounds::default())
             }
             Output::Slider {
@@ -190,7 +194,7 @@ impl Output {
         draw_quad: &mut impl FnMut(DVec2, DVec2, QuadKind),
     ) -> f64 {
         match self {
-            Output::None | Output::Error(_) | Output::DraggablePoint(_) => 0.0,
+            Output::None | Output::Error(_) | Output::DraggablePoint(_) | Output::Polygon(_) => 0.0,
             Output::Slider {
                 value,
                 min,
@@ -407,7 +411,7 @@ impl Expression {
     }
 }
 
-#[derive(Clone, Copy, From, Into, Add, Sub, PartialEq)]
+#[derive(Debug, Clone, Copy, From, Into, Add, Sub, PartialEq)]
 pub struct ExpressionId(usize);
 
 pub struct ExpressionList {
@@ -622,6 +626,24 @@ impl ExpressionList {
         });
 
         let expressions = [
+            // "n=10",
+            // "p_{00}=\\left(-1.6,-5.35\\right)",
+            // "p_{10}=\\left(6.05,0.15\\right)",
+            // "p_{01}=\\left(-5.5,2.73\\right)",
+            // "p_{11}=\\left(2.3,4.62\\right)",
+            // "",
+            // "q_{1}=p_{10}-p_{00}",
+            // "q_{2}=p_{11}-p_{01}",
+            // "q_{3}=p_{01}-p_{00}",
+            // "q_{4}=p_{11}-p_{10}",
+            // "W\\left(x,y\\right)=x.xy.y-x.yy.x",
+            // "u=0.52",
+            // "v=0.7",
+            // "\\alpha_{1}=\\frac{W\\left(p_{11}-p_{00},q_{2}\\right)}{W\\left(uq_{1}+q_{4},q_{2}\\right)}q_{1}",
+            // "\\alpha_{2}=\\frac{W\\left(p_{10}-p_{01},q_{1}\\right)}{W\\left(uq_{2}-q_{4},q_{1}\\right)}q_{2}",
+            // "\\alpha=\\alpha_{2}-\\alpha_{1}",
+            // "p=p_{00}+u\\alpha_{1}+v\\frac{W\\left(\\alpha_{1},q_{3}\\right)}{W\\left(\\alpha_{2}-v\\alpha,q_{3}\\right)}\\left(q_{3}+u\\alpha\\right)",
+            // "p\\operatorname{for}u=\\frac{\\left[0...n\\right]}{n},v=\\frac{\\left[0...n\\right]}{n}",
         ];
         Self {
             expressions: expressions
@@ -690,7 +712,7 @@ impl ExpressionList {
         ctx: &Context,
         event: &Event,
         bounds: Bounds,
-    ) -> (Response, Option<Vec<Point>>) {
+    ) -> (Response, Option<Vec<Geometry>>) {
         self.height = bounds.size.y;
         let mut response = Response::default();
         let mut redraw_points = false;
@@ -875,11 +897,13 @@ impl ExpressionList {
                             {
                                 let mut latex = vec![C('=')];
                                 point(&mut latex, x, y);
-                                e.output = Output::DraggablePoint(Point {
-                                    p: dvec2(x, y),
+                                e.output = Output::DraggablePoint(Geometry {
                                     width: 8.0,
                                     color: colors[i.0 % colors.len()],
-                                    draggable: Some(i),
+                                    kind: Point {
+                                        p: dvec2(x, y),
+                                        draggable: Some(i),
+                                    },
                                 });
                             } else {
                                 e.output = Output::None;
@@ -910,16 +934,19 @@ impl ExpressionList {
                                         let mut nodes = vec![C('=')];
 
                                         let color = colors[i.0 % colors.len()];
-                                        let mut points = vec![];
+                                        let mut geometry = vec![];
                                         let mut draw_point = |x: f64, y: f64| {
-                                            points.push(Point {
-                                                p: dvec2(x, y),
+                                            geometry.push(Geometry {
                                                 width: 8.0,
                                                 color,
-                                                draggable: None,
-                                            })
+                                                kind: Point {
+                                                    p: dvec2(x, y),
+                                                    draggable: None,
+                                                },
+                                            });
                                         };
                                         let list_limit = 10;
+                                        let mut is_polygon = false;
 
                                         match ty {
                                             Type::Number => {
@@ -977,12 +1004,52 @@ impl ExpressionList {
                                                 list.push(C(']'));
                                                 nodes.push(Node::DelimitedGroup(list));
                                             }
+                                            Type::Polygon => {
+                                                is_polygon = true;
+                                                let a = vm.vars[v].clone().list();
+                                                let a = a.borrow();
+                                                geometry.push(Geometry {
+                                                    width: 2.5,
+                                                    color,
+                                                    kind: Line(
+                                                        a.chunks(2)
+                                                            .chain(a.chunks(2).take(
+                                                                if a.len() > 2 { 1 } else { 0 },
+                                                            ))
+                                                            .map(|p| dvec2(p[0], p[1]))
+                                                            .collect(),
+                                                    ),
+                                                });
+                                            }
+                                            Type::PolygonList => {
+                                                is_polygon = true;
+                                                let a = vm.vars[v].clone().polygon_list();
+                                                geometry.extend(a.borrow().iter().map(|a| {
+                                                    let a = a.borrow();
+                                                    Geometry {
+                                                        width: 2.5,
+                                                        color,
+                                                        kind: Line(
+                                                            a.chunks(2)
+                                                                .chain(a.chunks(2).take(
+                                                                    if a.len() > 2 { 1 } else { 0 },
+                                                                ))
+                                                                .map(|p| dvec2(p[0], p[1]))
+                                                                .collect(),
+                                                        ),
+                                                    }
+                                                }));
+                                            }
                                             Type::Bool | Type::BoolList => unreachable!(),
                                             Type::EmptyList => nodes
                                                 .push(Node::DelimitedGroup(vec![C('['), C(']')])),
                                         }
 
-                                        Output::new_value(&nodes, points)
+                                        if is_polygon {
+                                            Output::Polygon(geometry)
+                                        } else {
+                                            Output::new_value(&nodes, geometry)
+                                        }
                                     }
                                     Err(e) => Output::Error(format!("type error: {e}")),
                                 },
@@ -1006,12 +1073,12 @@ impl ExpressionList {
             }
         }
 
-        let mut points = None;
+        let mut geometry = None;
 
         if redraw_points {
-            let mut regular_points = vec![];
+            let mut regular_geometry = vec![];
             let mut draggable_points = vec![];
-            let mut focussed_points = vec![];
+            let mut focussed_geometry = vec![];
 
             for e in &self.expressions {
                 match &e.output {
@@ -1024,24 +1091,30 @@ impl ExpressionList {
                             draggable_points.push(p);
                         }
                     }
-                    Output::Value { points, .. } => {
+                    Output::Value {
+                        points: geometry, ..
+                    }
+                    | Output::Polygon(geometry) => {
                         if e.has_focus() {
-                            for mut p in points.iter().cloned() {
-                                p.width *= 1.2;
-                                focussed_points.push(p);
+                            for mut g in geometry.iter().cloned() {
+                                g.width *= match g.kind {
+                                    Line(_) => 1.4,
+                                    Point { .. } => 1.2,
+                                };
+                                focussed_geometry.push(g);
                             }
                         } else {
-                            regular_points.extend_from_slice(points);
+                            regular_geometry.extend_from_slice(geometry);
                         }
                     }
                     _ => {}
                 }
             }
 
-            regular_points.append(&mut draggable_points);
-            regular_points.append(&mut focussed_points);
+            regular_geometry.append(&mut draggable_points);
+            regular_geometry.append(&mut focussed_geometry);
 
-            points = Some(regular_points);
+            geometry = Some(regular_geometry);
         }
 
         self.expressions_changed = false;
@@ -1052,7 +1125,7 @@ impl ExpressionList {
             self.scroll(0.0);
         }
 
-        (response, points)
+        (response, geometry)
     }
 
     pub fn render(

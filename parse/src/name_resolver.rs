@@ -54,6 +54,7 @@ pub enum Expression {
 pub enum BuiltIn {
     Count,
     Total,
+    Polygon,
 }
 
 impl BuiltIn {
@@ -62,6 +63,7 @@ impl BuiltIn {
         Some(match name {
             "count" => Count,
             "total" => Total,
+            "polygon" => Polygon,
             _ => return None,
         })
     }

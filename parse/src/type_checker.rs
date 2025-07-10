@@ -10,6 +10,7 @@ pub use crate::name_resolver::{ComparisonOperator, SumProdKind};
 pub enum BaseType {
     Number,
     Point,
+    Polygon,
     Bool,
     Empty,
 }
@@ -20,6 +21,8 @@ pub enum Type {
     NumberList,
     Point,
     PointList,
+    Polygon,
+    PolygonList,
     Bool,
     BoolList,
     EmptyList,
@@ -30,6 +33,7 @@ impl Type {
         match self {
             Type::Number | Type::NumberList => BaseType::Number,
             Type::Point | Type::PointList => BaseType::Point,
+            Type::Polygon | Type::PolygonList => BaseType::Polygon,
             Type::Bool | Type::BoolList => BaseType::Bool,
             Type::EmptyList => BaseType::Empty,
         }
@@ -39,6 +43,7 @@ impl Type {
         match base {
             BaseType::Number => Type::NumberList,
             BaseType::Point => Type::PointList,
+            BaseType::Polygon => Type::PolygonList,
             BaseType::Bool => Type::BoolList,
             BaseType::Empty => Type::EmptyList,
         }
@@ -48,6 +53,7 @@ impl Type {
         match base {
             BaseType::Number => Type::Number,
             BaseType::Point => Type::Point,
+            BaseType::Polygon => Type::Polygon,
             BaseType::Bool => Type::Bool,
             BaseType::Empty => Type::Number,
         }
@@ -56,7 +62,11 @@ impl Type {
     pub fn is_list(&self) -> bool {
         matches!(
             self,
-            Type::NumberList | Type::PointList | Type::BoolList | Type::EmptyList
+            Type::NumberList
+                | Type::PointList
+                | Type::PolygonList
+                | Type::BoolList
+                | Type::EmptyList
         )
     }
 }
@@ -68,6 +78,8 @@ impl std::fmt::Display for Type {
             Type::NumberList => "a list of numbers",
             Type::Point => "a point",
             Type::PointList => "a list of points",
+            Type::Polygon => "a polygon",
+            Type::PolygonList => "a list of polygons",
             Type::Bool => "a true/false value",
             Type::BoolList => "a list of true/false values",
             Type::EmptyList => "an empty list",
@@ -113,16 +125,20 @@ pub enum BinaryOperator {
     Point,
     IndexNumberList,
     IndexPointList,
+    IndexPolygonList,
     FilterNumberList,
     FilterPointList,
+    FilterPolygonList,
 }
 
 #[derive(Debug, PartialEq)]
 pub enum BuiltIn {
     CountNumberList(Box<TypedExpression>),
     CountPointList(Box<TypedExpression>),
+    CountPolygonList(Box<TypedExpression>),
     TotalNumberList(Box<TypedExpression>),
     TotalPointList(Box<TypedExpression>),
+    Polygon(Box<TypedExpression>),
 }
 
 #[derive(Debug, PartialEq)]
@@ -457,10 +473,15 @@ impl TypeChecker {
                         (Type::NumberList, B::Empty) => return empty_list(B::Number),
                         (Type::PointList, B::Number) => (B::Point, O::IndexPointList),
                         (Type::PointList, B::Empty) => return empty_list(B::Point),
+                        (Type::PolygonList, B::Number) => (B::Polygon, O::IndexPolygonList),
+                        (Type::PolygonList, B::Empty) => return empty_list(B::Polygon),
                         (Type::EmptyList, B::Number) => (B::Number, O::IndexNumberList),
                         (Type::EmptyList, B::Bool) => return empty_list(B::Empty),
                         (Type::EmptyList, B::Empty) => return empty_list(B::Empty),
-                        (ty @ (Type::NumberList | Type::PointList), B::Bool) => {
+                        (
+                            ty @ (Type::NumberList | Type::PointList | Type::PolygonList),
+                            B::Bool,
+                        ) => {
                             return Ok(if !right.ty.is_list() {
                                 te(
                                     ty,
@@ -474,10 +495,11 @@ impl TypeChecker {
                                 te(
                                     ty,
                                     Expression::BinaryOperation {
-                                        operation: if ty == Type::PointList {
-                                            O::FilterPointList
-                                        } else {
-                                            O::FilterNumberList
+                                        operation: match ty {
+                                            Type::NumberList => O::FilterNumberList,
+                                            Type::PointList => O::FilterPointList,
+                                            Type::PolygonList => O::FilterPolygonList,
+                                            _ => unreachable!(),
                                         },
                                         left: Box::new(left),
                                         right: Box::new(right),
@@ -610,6 +632,13 @@ impl TypeChecker {
                                 right: Box::new(te(Type::Number, Expression::Number(f64::NAN))),
                             },
                         ),
+                        B::Polygon => te(
+                            Type::Polygon,
+                            Expression::BuiltIn(BuiltIn::Polygon(Box::new(te(
+                                Type::PointList,
+                                Expression::List(vec![]),
+                            )))),
+                        ),
                         B::Bool => te(
                             Type::Bool,
                             Expression::ChainedComparison {
@@ -736,6 +765,10 @@ impl TypeChecker {
                                 Type::Number,
                                 Expression::BuiltIn(BuiltIn::CountPointList(Box::new(arg))),
                             )),
+                            Type::PolygonList => Ok(te(
+                                Type::Number,
+                                Expression::BuiltIn(BuiltIn::CountPolygonList(Box::new(arg))),
+                            )),
                             Type::EmptyList => Ok(te(Type::Number, Expression::Number(0.0))),
                             t => Err(format!("function 'count' cannot be applied to {t}")),
                         }
@@ -755,6 +788,130 @@ impl TypeChecker {
                             )),
                             Type::EmptyList => Ok(te(Type::Number, Expression::Number(0.0))),
                             t => Err(format!("function 'total' cannot be applied to {t}")),
+                        }
+                    }
+                    nr::BuiltIn::Polygon => {
+                        // ([number],[number]) -> polygon
+                        // ([number], number ) -> polygon
+                        // ( number ,[number]) -> polygon
+                        //
+                        // ([point]) -> polygon
+                        // (point,...) -> polygon (maybe broadcast)
+
+                        if args.len() == 2
+                            && let (Type::NumberList, Type::NumberList)
+                            | (Type::NumberList, Type::Number)
+                            | (Type::NumberList, Type::EmptyList)
+                            | (Type::Number, Type::NumberList)
+                            | (Type::Number, Type::EmptyList)
+                            | (Type::EmptyList, Type::NumberList)
+                            | (Type::EmptyList, Type::Number)
+                            | (Type::EmptyList, Type::EmptyList) = (args[0].ty, args[1].ty)
+                        {
+                            let [x, y] = args.try_into().unwrap();
+                            if x.ty == Type::EmptyList || y.ty == Type::EmptyList {
+                                Ok(te(
+                                    Type::Polygon,
+                                    Expression::BuiltIn(BuiltIn::Polygon(Box::new(te(
+                                        Type::PointList,
+                                        Expression::List(vec![]),
+                                    )))),
+                                ))
+                            } else {
+                                let broadcast_x = x.ty.is_list();
+                                let broadcast_y = y.ty.is_list();
+                                let x = self.create_assignment(x);
+                                let y = self.create_assignment(y);
+                                let body = Box::new(te(
+                                    Type::Point,
+                                    Expression::BinaryOperation {
+                                        operation: BinaryOperator::Point,
+                                        left: Box::new(te(
+                                            Type::Number,
+                                            Expression::Identifier(x.id),
+                                        )),
+                                        right: Box::new(te(
+                                            Type::Number,
+                                            Expression::Identifier(y.id),
+                                        )),
+                                    },
+                                ));
+                                let (scalars, vectors) = match (broadcast_x, broadcast_y) {
+                                    (true, true) => (vec![], vec![x, y]),
+                                    (true, false) => (vec![y], vec![x]),
+                                    (false, true) => (vec![x], vec![y]),
+                                    (false, false) => unreachable!(),
+                                };
+                                Ok(te(
+                                    Type::Polygon,
+                                    Expression::BuiltIn(BuiltIn::Polygon(Box::new(te(
+                                        Type::PointList,
+                                        Expression::Broadcast {
+                                            scalars,
+                                            vectors,
+                                            body,
+                                        },
+                                    )))),
+                                ))
+                            }
+                        } else if args.len() == 1 && args[0].ty == Type::PointList {
+                            Ok(te(
+                                Type::Polygon,
+                                Expression::BuiltIn(BuiltIn::Polygon(Box::new(
+                                    args.pop().unwrap(),
+                                ))),
+                            ))
+                        } else {
+                            let mut is_empty = false;
+                            let mut is_broadcast = false;
+                            for a in &args {
+                                if !matches!(a.ty.base(), BaseType::Point | BaseType::Empty) {
+                                    return Err("function 'polygon' requires several points".into());
+                                }
+                                is_empty |= a.ty.base() == BaseType::Empty;
+                                is_broadcast |= a.ty.is_list();
+                            }
+
+                            if is_empty {
+                                Ok(te(Type::PolygonList, Expression::List(vec![])))
+                            } else if is_broadcast {
+                                let assignments = args
+                                    .into_iter()
+                                    .map(|a| self.create_assignment(a))
+                                    .collect::<Vec<_>>();
+                                let body = Box::new(te(
+                                    Type::Polygon,
+                                    Expression::BuiltIn(BuiltIn::Polygon(Box::new(te(
+                                        Type::PointList,
+                                        Expression::List(
+                                            assignments
+                                                .iter()
+                                                .map(|a| {
+                                                    te(Type::Point, Expression::Identifier(a.id))
+                                                })
+                                                .collect(),
+                                        ),
+                                    )))),
+                                ));
+                                let (vectors, scalars) =
+                                    assignments.into_iter().partition(|a| a.value.ty.is_list());
+                                Ok(te(
+                                    Type::PolygonList,
+                                    Expression::Broadcast {
+                                        scalars,
+                                        vectors,
+                                        body,
+                                    },
+                                ))
+                            } else {
+                                Ok(te(
+                                    Type::Polygon,
+                                    Expression::BuiltIn(BuiltIn::Polygon(Box::new(te(
+                                        Type::PointList,
+                                        Expression::List(args),
+                                    )))),
+                                ))
+                            }
                         }
                     }
                 }

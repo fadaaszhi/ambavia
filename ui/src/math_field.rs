@@ -13,8 +13,8 @@ use crate::{
     math_field::tree::{
         BigOp as BigOpE, Bracket as BracketE,
         Node::{self, *},
-        TexturedQuad, Tree, ends_in_operatorname, new_big_op, new_bracket, new_char, new_frac,
-        new_radical, new_script, new_script_lower, new_script_upper, new_sqrt, to_latex,
+        OPERATORNAMES, TexturedQuad, Tree, ends_in_operatorname, new_big_op, new_bracket, new_char,
+        new_frac, new_radical, new_script, new_script_lower, new_script_upper, new_sqrt, to_latex,
     },
     ui::{Bounds, Context, Event, QuadKind, Response},
     utility::{mix, snap},
@@ -436,14 +436,34 @@ impl Tree {
             (">=", '≥'),
             ("*", '⋅'),
         ];
+        let previous_text = self
+            .iter()
+            .rev()
+            .map_while(|(_, n)| match n {
+                Node::Char { ch, .. } if ch.is_ascii_alphabetic() => Some(*ch),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .iter()
+            .rev()
+            .collect::<String>();
+        let mut previous_text = previous_text.as_str();
+        while let Some(name) = OPERATORNAMES
+            .iter()
+            .find(|name| previous_text.starts_with(*name))
+        {
+            previous_text = &previous_text[name.len()..];
+        }
         for (find, replace) in replacements {
+            // Hacky and still not correct - doesn't handle uniquepsilon
             let char_count = find.chars().count();
+            let var_prefix = find.starts_with("var");
+            let non_ascii_alphabetic = find.chars().any(|c| !c.is_ascii_alphabetic());
             if i + 1 >= char_count
-                && find
-                    .chars()
-                    .rev()
-                    .enumerate()
-                    .all(|(j, c)| self[i - j].1.is_char(c))
+                && find.chars().rev().enumerate().all(|(j, c)| {
+                    self[i - j].1.is_char(c)
+                        && (var_prefix || non_ascii_alphabetic || j < previous_text.len())
+                })
             {
                 let index = i + 1 - char_count;
                 self.drain(index..i + 1);

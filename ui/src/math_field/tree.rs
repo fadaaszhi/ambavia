@@ -48,7 +48,7 @@ const CHAR_DEPTH: f64 = 0.462;
 const EMPTY_WIDTH: f64 = 0.5;
 
 // Reverse alphabetical order makes it so "tan" doesn't stop "tanh" from being chosen.
-const OPERATORNAMES: &[&str] = &[
+pub const OPERATORNAMES: &[&str] = &[
     "with", "width", "varp", "variance", "var", "unique", "tscore", "total", "tone", "tanh", "tan",
     "stdevp", "stdev", "stddevp", "stddev", "stdDevP", "stdDev", "spearman", "sort", "sinh", "sin",
     "signum", "sign", "shuffle", "sgn", "sech", "sec", "round", "rgb", "real", "random",

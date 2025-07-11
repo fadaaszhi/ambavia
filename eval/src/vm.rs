@@ -1,7 +1,9 @@
 use std::{cell::RefCell, fmt::Write, rc::Rc};
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[repr(u8)]
+use strum::{Display, EnumCount, EnumDiscriminants, FromRepr};
+
+#[derive(Debug, Clone, Copy, PartialEq, EnumCount, EnumDiscriminants)]
+#[strum_discriminants(derive(FromRepr, Display))]
 pub enum Instruction {
     Start,
     Halt,
@@ -115,31 +117,6 @@ pub enum Instruction {
     JumpIfFalse(usize),
     Return1,
     Return2,
-}
-
-impl Instruction {
-    fn discriminant(&self) -> u8 {
-        // SAFETY: Because `Self` is marked `repr(u8)`, its layout is a `repr(C)` `union`
-        // between `repr(C)` structs, each of which has the `u8` discriminant as its first
-        // field, so we can read the discriminant without offsetting the pointer.
-        unsafe { *<*const _>::from(self).cast::<u8>() }
-    }
-
-    /// `discriminant` must be a value returned by `Instruction::discriminant()`
-    unsafe fn from_discriminant(discriminant: u8) -> Self {
-        let mut uninit = std::mem::MaybeUninit::<Instruction>::uninit();
-        let ptr = uninit.as_mut_ptr() as *mut u8;
-        unsafe {
-            std::ptr::write_bytes(ptr, 0, std::mem::size_of::<Instruction>());
-            *ptr = discriminant;
-            uninit.assume_init()
-        }
-    }
-
-    fn name(&self) -> String {
-        let name = format!("{self:?}");
-        name.split(['(', ' ']).next().unwrap_or(&name).to_string()
-    }
 }
 
 type RcVec<T> = Rc<RefCell<Vec<T>>>;
@@ -305,13 +282,13 @@ impl<'a> Vm<'a> {
         }
 
         const COUNT_INSTRUCTIONS: bool = false;
-        let mut instruction_counts = [0; 256];
+        let mut instruction_counts = [0; Instruction::COUNT];
 
         while self.pc < self.program.len() {
             let instruction = self.program[self.pc];
 
             if COUNT_INSTRUCTIONS {
-                instruction_counts[instruction.discriminant() as usize] += 1;
+                instruction_counts[InstructionDiscriminants::from(instruction) as usize] += 1;
             }
 
             if print_trace {
@@ -910,7 +887,7 @@ impl<'a> Vm<'a> {
             for (i, c) in instruction_counts.iter().enumerate() {
                 if *c > 0 {
                     counts.push((
-                        unsafe { Instruction::from_discriminant(i as u8) }.name(),
+                        InstructionDiscriminants::from_repr(i).unwrap().to_string(),
                         *c,
                     ));
                 }

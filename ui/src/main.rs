@@ -85,6 +85,7 @@ impl App {
             .get_default_config(&adapter, size.x, size.y)
             .unwrap();
         config.format = config.format.remove_srgb_suffix();
+        config.present_mode = wgpu::PresentMode::Fifo;
         let present_modes = surface.get_capabilities(&adapter).present_modes;
         if present_modes.contains(&wgpu::PresentMode::Mailbox) {
             config.present_mode = wgpu::PresentMode::Mailbox;

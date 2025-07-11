@@ -796,7 +796,7 @@ impl TypeChecker {
                                 Pg,
                                 Expression::BuiltIn {
                                     name: Bi::Polygon,
-                                    args: vec![],
+                                    args: vec![te(PL, Expression::List(vec![]))],
                                 },
                             ));
                         }

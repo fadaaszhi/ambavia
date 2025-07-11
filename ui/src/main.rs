@@ -164,7 +164,7 @@ impl App {
                 // logical? I think it's already logical because my trackpad
                 // feels less sensitive when I decrease my Mac's scale factor.
                 WindowEvent::MouseWheel { delta, .. } => Event::MouseWheel(match delta {
-                    winit::event::MouseScrollDelta::LineDelta(x, y) => vec2(x, y).as_dvec2() * 20.0,
+                    winit::event::MouseScrollDelta::LineDelta(x, y) => vec2(x, y).as_dvec2() * 60.0,
                     winit::event::MouseScrollDelta::PixelDelta(delta) => delta.as_glam(),
                 }),
                 WindowEvent::MouseInput { state, button, .. } => Event::MouseInput(state, button),

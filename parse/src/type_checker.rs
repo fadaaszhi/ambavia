@@ -134,48 +134,91 @@ pub enum BinaryOperator {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BuiltIn {
     // Log
+    /// ([`Type::Number`]) => [`Type::Number`]
     Ln,
+    /// ([`Type::Number`]) => [`Type::Number`]
     Exp,
+    /// ([`Type::Number`]) => [`Type::Number`]
     Erf,
+    /// ([`Type::Number`]) => [`Type::Number`]
     Sin,
+    /// ([`Type::Number`]) => [`Type::Number`]
     Cos,
+    /// ([`Type::Number`]) => [`Type::Number`]
     Tan,
+    /// ([`Type::Number`]) => [`Type::Number`]
     Sinh,
+    /// ([`Type::Number`]) => [`Type::Number`]
     Cosh,
+    /// ([`Type::Number`]) => [`Type::Number`]
     Tanh,
+    /// ([`Type::Number`]) => [`Type::Number`]
     Asin,
+    /// ([`Type::Number`]) => [`Type::Number`]
     Acos,
+    /// ([`Type::Number`]) => [`Type::Number`]
     Atan,
+    /// ([`Type::Number`], [`Type::Number`]) => [`Type::Number`]
     Atan2,
+    /// ([`Type::Number`]) => [`Type::Number`]
     Asinh,
+    /// ([`Type::Number`]) => [`Type::Number`]
     Acosh,
+    /// ([`Type::Number`]) => [`Type::Number`]
     Atanh,
+    /// ([`Type::Number`]) => [`Type::Number`]
     Abs,
+    /// ([`Type::Number`]) => [`Type::Number`]
     Sgn,
+    /// ([`Type::Number`]) => [`Type::Number`]
     Round,
+    /// ([`Type::Number`]) => [`Type::Number`]
     Floor,
+    /// ([`Type::Number`]) => [`Type::Number`]
     Ceil,
+    /// ([`Type::Number`], [`Type::Number`]) => [`Type::Number`]
     Mod,
+    /// ([`Type::Point`], [`Type::Point`]) => [`Type::Point`]
     Midpoint,
+    /// ([`Type::Point`], [`Type::Point`]) => [`Type::Number`]
     Distance,
+    ///  ([`Type::NumberList`]) => [`Type::Number`]
     Min,
+    ///  ([`Type::NumberList`]) => [`Type::Number`]
     Max,
+    ///  ([`Type::NumberList`]) => [`Type::Number`]
     Median,
+    ///  ([`Type::NumberList`]) => [`Type::Number`]
     TotalNumber,
+    ///  ([`Type::PointList`]) => [`Type::Point`]
     TotalPoint,
+    ///  ([`Type::NumberList`]) => [`Type::Number`]
     MeanNumber,
+    ///  ([`Type::PointList`]) => [`Type::Point`]
     MeanPoint,
+    ///  ([`Type::NumberList`]) => [`Type::Number`]
     CountNumber,
+    ///  ([`Type::PointList`]) => [`Type::Number`]
     CountPoint,
+    ///  ([`Type::PolygonList`]) => [`Type::Number`]
     CountPolygon,
+    ///  ([`Type::NumberList`]) => [`Type::NumberList`]
     UniqueNumber,
+    ///  ([`Type::PointList`]) => [`Type::PointList`]
     UniquePoint,
+    ///  ([`Type::PolygonList`]) => [`Type::PolygonList`]
     UniquePolygon,
+    /// ([`Type::NumberList`]) => [`Type::NumberList`]
     Sort,
+    /// ([`Type::NumberList`], [`Type::NumberList`]) => [`Type::NumberList`]
     SortKeyNumber,
+    /// ([`Type::PointList`], [`Type::NumberList`]) => [`Type::PointList`]
     SortKeyPoint,
+    /// ([`Type::PolygonList`], [`Type::NumberList`]) => [`Type::PolygonList`]
     SortKeyPolygon,
+    /// ([`Type::PointList`]) => [`Type::Polygon`]
     Polygon,
+    ///TODO
     Join,
 }
 

@@ -667,7 +667,10 @@ impl<'a> Resolver<'a> {
                     d,
                 )
             }
-            ast::Expression::SumProd { .. } => todo!(),
+            ast::Expression::SumProd { .. } => (
+                Err("todo: sum and prod are not supported yet".into()),
+                Dependencies::none(),
+            ),
             ast::Expression::With {
                 body,
                 substitutions,
@@ -811,7 +814,9 @@ pub fn resolve_names(
                     }
                 }
                 ExpressionListEntry::FunctionDeclaration { .. } => None,
-                ExpressionListEntry::Relation(..) => todo!(),
+                ExpressionListEntry::Relation(..) => {
+                    Some(Err("todo: relations are not supported yet".into()))
+                }
                 ExpressionListEntry::Expression(expression) => {
                     Some(match resolver.resolve_expression(expression) {
                         (Ok(value), _) => {

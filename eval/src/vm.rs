@@ -110,8 +110,12 @@ pub enum Instruction {
     SortKey2,
     SortKeyPolygon,
     Polygon,
-    Join(usize),
-    JoinPolygon(usize),
+    Push,
+    Push2,
+    PushPolygon,
+    Concat,
+    Concat2,
+    ConcatPolygon,
 
     MinInternal,
     Index,
@@ -844,8 +848,37 @@ impl<'a> Vm<'a> {
                 Instruction::Polygon => {
                     // noop
                 }
-                Instruction::Join(_count) => todo!(),
-                Instruction::JoinPolygon(_count) => todo!(),
+                Instruction::Push => {
+                    let b = self.pop().number();
+                    let a = Rc::unwrap_or_clone(self.pop().list());
+                    a.borrow_mut().push(b);
+                    self.push(Rc::new(a));
+                }
+                Instruction::Push2 => {
+                    let y = self.pop().number();
+                    let x = self.pop().number();
+                    let a = Rc::unwrap_or_clone(self.pop().list());
+                    a.borrow_mut().extend([x, y]);
+                    self.push(Rc::new(a));
+                }
+                Instruction::PushPolygon => {
+                    let b = self.pop().list();
+                    let a = Rc::unwrap_or_clone(self.pop().polygon_list());
+                    a.borrow_mut().push(b);
+                    self.push(Rc::new(a));
+                }
+                Instruction::Concat | Instruction::Concat2 => {
+                    let b = self.pop().list();
+                    let a = Rc::unwrap_or_clone(self.pop().list());
+                    a.borrow_mut().extend_from_slice(&b.borrow());
+                    self.push(Rc::new(a));
+                }
+                Instruction::ConcatPolygon => {
+                    let b = self.pop().polygon_list();
+                    let a = Rc::unwrap_or_clone(self.pop().polygon_list());
+                    a.borrow_mut().extend_from_slice(&b.borrow());
+                    self.push(Rc::new(a));
+                }
 
                 Instruction::MinInternal => {
                     let b = self.pop().number();

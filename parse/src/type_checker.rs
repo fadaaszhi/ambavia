@@ -242,8 +242,12 @@ pub enum BuiltIn {
     SortKeyPolygon,
     /// ([`Type::PointList`]) => [`Type::Polygon`]
     Polygon,
-    ///TODO
-    Join,
+    /// (...[[`Type::Number`] | [`Type::NumberList`]]) => [`Type::NumberList`]
+    JoinNumber,
+    /// (...[[`Type::Point`] | [`Type::PointList`]]) => [`Type::PointList`]
+    JoinPoint,
+    /// (...[[`Type::Polygon`] | [`Type::PolygonList`]]) => [`Type::PolygonList`]
+    JoinPolygon,
 }
 
 #[derive(Debug, PartialEq)]
@@ -954,18 +958,15 @@ impl TypeChecker {
                         assert_eq!(new_args, vec![]);
                         return empty_list(B::Empty);
                     };
-                    if new_args.iter().all(|a| !a.ty.is_list()) {
-                        return Ok(te(Type::list_of(ty.base()), Expression::List(new_args)));
-                    }
-                    if new_args.len() == 1 {
-                        let a = new_args.pop().unwrap();
-                        assert!(a.ty.is_list());
-                        return Ok(a);
-                    }
                     return Ok(te(
                         Type::list_of(ty.base()),
                         Expression::BuiltIn {
-                            name: Bi::Join,
+                            name: match ty.base() {
+                                B::Number => Bi::JoinNumber,
+                                B::Point => Bi::JoinPoint,
+                                B::Polygon => Bi::JoinPolygon,
+                                _ => unreachable!(),
+                            },
                             args: new_args,
                         },
                     ));

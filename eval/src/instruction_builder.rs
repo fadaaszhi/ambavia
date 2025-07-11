@@ -198,6 +198,12 @@ impl InstructionBuilder {
             SortKey => (Type::NumberList, Type::NumberList, Type::NumberList),
             SortKey2 => (Type::PointList, Type::NumberList, Type::PointList),
             SortKeyPolygon => (Type::PolygonList, Type::NumberList, Type::PolygonList),
+            Push => (Type::NumberList, Type::Number, Type::NumberList),
+            Push2 => (Type::PointList, Type::Point, Type::PointList),
+            PushPolygon => (Type::PolygonList, Type::Polygon, Type::PolygonList),
+            Concat => (Type::NumberList, Type::NumberList, Type::NumberList),
+            Concat2 => (Type::PointList, Type::PointList, Type::PointList),
+            ConcatPolygon => (Type::PolygonList, Type::PolygonList, Type::PolygonList),
             MinInternal => (Type::Number, Type::Number, Type::Number),
             Index => (Type::NumberList, Type::Number, Type::Number),
             Index2 => (Type::PointList, Type::Number, Type::Point),
@@ -219,10 +225,6 @@ impl InstructionBuilder {
         let c = self.instr2(instr, a.clone_private(), b);
         assert_eq!(c.ty, a.ty);
         self.stack[c.index].name = a.name;
-    }
-
-    pub fn join(&mut self, _base: BaseType, _list: Vec<Value>) -> Value {
-        todo!("probably gotta lazily evaluate args instead of all at once up front")
     }
 
     pub fn unchecked_index(&mut self, list: &Value, index: Value) -> Value {

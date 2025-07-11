@@ -1,5 +1,12 @@
-use std::{cell::RefCell, fmt::Write, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::HashSet,
+    fmt::Write,
+    hash::{DefaultHasher, Hash, Hasher},
+    rc::Rc,
+};
 
+use ordered_float::OrderedFloat;
 use strum::{Display, EnumCount, EnumDiscriminants, FromRepr};
 
 #[derive(Debug, Clone, Copy, PartialEq, EnumCount, EnumDiscriminants)]
@@ -747,9 +754,49 @@ impl<'a> Vm<'a> {
                     let a = self.pop().polygon_list();
                     self.push(a.borrow().len() as f64);
                 }
-                Instruction::Unique => todo!(),
-                Instruction::Unique2 => todo!(),
-                Instruction::UniquePolygon => todo!(),
+                Instruction::Unique => {
+                    let a = self.pop().list();
+                    let mut seen = HashSet::new();
+                    self.push(Rc::new(RefCell::new(
+                        a.borrow()
+                            .iter()
+                            .cloned()
+                            .filter(|&x| seen.insert(OrderedFloat(x)))
+                            .collect::<Vec<_>>(),
+                    )));
+                }
+                Instruction::Unique2 => {
+                    let a = self.pop().list();
+                    let mut seen = HashSet::new();
+                    self.push(Rc::new(RefCell::new(
+                        a.borrow()
+                            .as_chunks::<2>()
+                            .0
+                            .iter()
+                            .cloned()
+                            .filter(|&[x, y]| seen.insert((OrderedFloat(x), OrderedFloat(y))))
+                            .flatten()
+                            .collect::<Vec<_>>(),
+                    )));
+                }
+                Instruction::UniquePolygon => {
+                    let a = self.pop().polygon_list();
+                    let mut seen = HashSet::new();
+                    self.push(Rc::new(RefCell::new(
+                        a.borrow()
+                            .iter()
+                            .filter(|p| {
+                                let p = p.borrow();
+                                let mut h = DefaultHasher::new();
+                                for &x in p.as_slice() {
+                                    OrderedFloat(x).hash(&mut h);
+                                }
+                                seen.insert(h.finish())
+                            })
+                            .cloned()
+                            .collect::<Vec<_>>(),
+                    )));
+                }
                 Instruction::Sort => {
                     let mut a = Rc::unwrap_or_clone(self.pop().list()).take();
                     a.sort_unstable_by(f64::total_cmp);

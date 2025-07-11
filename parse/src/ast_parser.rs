@@ -98,8 +98,9 @@ fn parse_assignment(tokens: &mut Tokens, min_bp: u8) -> Result<(String, Expressi
         sup,
     } = tokens.peek()
     {
-        identifier.push('_');
+        identifier += "_{";
         identifier += &parse_nodes_into_name_subscript(sub)?;
+        identifier += "}";
 
         if sup.is_some() {
             return Err(format!(

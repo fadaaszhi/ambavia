@@ -1,6 +1,7 @@
 use std::{cell::RefCell, fmt::Write, rc::Rc};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[repr(u8)]
 pub enum Instruction {
     Start,
     Halt,
@@ -114,6 +115,31 @@ pub enum Instruction {
     JumpIfFalse(usize),
     Return1,
     Return2,
+}
+
+impl Instruction {
+    fn discriminant(&self) -> u8 {
+        // SAFETY: Because `Self` is marked `repr(u8)`, its layout is a `repr(C)` `union`
+        // between `repr(C)` structs, each of which has the `u8` discriminant as its first
+        // field, so we can read the discriminant without offsetting the pointer.
+        unsafe { *<*const _>::from(self).cast::<u8>() }
+    }
+
+    /// `discriminant` must be a value returned by `Instruction::discriminant()`
+    unsafe fn from_discriminant(discriminant: u8) -> Self {
+        let mut uninit = std::mem::MaybeUninit::<Instruction>::uninit();
+        let ptr = uninit.as_mut_ptr() as *mut u8;
+        unsafe {
+            std::ptr::write_bytes(ptr, 0, std::mem::size_of::<Instruction>());
+            *ptr = discriminant;
+            uninit.assume_init()
+        }
+    }
+
+    fn name(&self) -> String {
+        let name = format!("{self:?}");
+        name.split(['(', ' ']).next().unwrap_or(&name).to_string()
+    }
 }
 
 type RcVec<T> = Rc<RefCell<Vec<T>>>;
@@ -278,8 +304,15 @@ impl<'a> Vm<'a> {
             self.pc = start + 1;
         }
 
+        const COUNT_INSTRUCTIONS: bool = false;
+        let mut instruction_counts = [0; 256];
+
         while self.pc < self.program.len() {
             let instruction = self.program[self.pc];
+
+            if COUNT_INSTRUCTIONS {
+                instruction_counts[instruction.discriminant() as usize] += 1;
+            }
 
             if print_trace {
                 print!("{} {:?}", self.pc, instruction);
@@ -870,6 +903,33 @@ impl<'a> Vm<'a> {
                     self.pc = self.stack.remove(self.stack.len() - 3).number() as usize;
                 }
             }
+        }
+
+        if COUNT_INSTRUCTIONS {
+            let mut counts = vec![];
+            for (i, c) in instruction_counts.iter().enumerate() {
+                if *c > 0 {
+                    counts.push((
+                        unsafe { Instruction::from_discriminant(i as u8) }.name(),
+                        *c,
+                    ));
+                }
+            }
+            counts.push((
+                "Total Instruction Count".into(),
+                counts.iter().map(|(_, c)| c).sum(),
+            ));
+            counts.sort_by_key(|(_, c)| -*c);
+            let l = counts
+                .iter()
+                .map(|(_, c)| c.to_string().len())
+                .max()
+                .unwrap_or(0);
+
+            for (n, c) in counts {
+                println!("{c: >l$} {n}");
+            }
+            println!();
         }
     }
 }

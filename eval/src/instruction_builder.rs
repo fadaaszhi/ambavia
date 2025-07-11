@@ -158,8 +158,9 @@ impl InstructionBuilder {
 
     pub fn instr1(&mut self, instr: Instruction, a: Value) -> Value {
         let (a_type, return_type) = match instr {
-            Neg | Sqrt | Ln | Exp | Erf | Sin | Cos | Tan | Sinh | Cosh | Tanh | Asin | Acos
-            | Atan | Asinh | Acosh | Atanh | Abs | Sgn | Round | Floor | Ceil => {
+            Neg | Sqrt | Ln | Exp | Erf | Sin | Cos | Tan | Sec | Csc | Cot | Sinh | Cosh
+            | Tanh | Sech | Csch | Coth | Asin | Acos | Atan | Asec | Acsc | Acot | Asinh
+            | Acosh | Atanh | Asech | Acsch | Acoth | Abs | Sgn | Round | Floor | Ceil => {
                 (Type::Number, Type::Number)
             }
             Neg2 => (Type::Point, Type::Point),

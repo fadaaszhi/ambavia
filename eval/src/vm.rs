@@ -55,16 +55,28 @@ pub enum Instruction {
     Sin,
     Cos,
     Tan,
+    Sec,
+    Csc,
+    Cot,
     Sinh,
     Cosh,
     Tanh,
+    Sech,
+    Csch,
+    Coth,
     Asin,
     Acos,
     Atan,
     Atan2,
+    Asec,
+    Acsc,
+    Acot,
     Asinh,
     Acosh,
     Atanh,
+    Asech,
+    Acsch,
+    Acoth,
     Abs,
     Sgn,
     Round,
@@ -512,6 +524,18 @@ impl<'a> Vm<'a> {
                     let a = self.pop().number();
                     self.push(a.tan());
                 }
+                Instruction::Sec => {
+                    let a = self.pop().number();
+                    self.push(1.0 / a.cos());
+                }
+                Instruction::Csc => {
+                    let a = self.pop().number();
+                    self.push(1.0 / a.sin());
+                }
+                Instruction::Cot => {
+                    let a = self.pop().number();
+                    self.push(1.0 / a.tan());
+                }
                 Instruction::Sinh => {
                     let a = self.pop().number();
                     self.push(a.sinh());
@@ -523,6 +547,18 @@ impl<'a> Vm<'a> {
                 Instruction::Tanh => {
                     let a = self.pop().number();
                     self.push(a.tanh());
+                }
+                Instruction::Sech => {
+                    let a = self.pop().number();
+                    self.push(1.0 / a.cosh());
+                }
+                Instruction::Csch => {
+                    let a = self.pop().number();
+                    self.push(1.0 / a.sinh());
+                }
+                Instruction::Coth => {
+                    let a = self.pop().number();
+                    self.push(1.0 / a.tanh());
                 }
                 Instruction::Asin => {
                     let a = self.pop().number();
@@ -541,6 +577,18 @@ impl<'a> Vm<'a> {
                     let a = self.pop().number();
                     self.push(a.atan2(b));
                 }
+                Instruction::Asec => {
+                    let a = self.pop().number();
+                    self.push((1.0 / a).acos());
+                }
+                Instruction::Acsc => {
+                    let a = self.pop().number();
+                    self.push((1.0 / a).asin());
+                }
+                Instruction::Acot => {
+                    let a = self.pop().number();
+                    self.push((1.0 / a).atan());
+                }
                 Instruction::Asinh => {
                     let a = self.pop().number();
                     self.push(a.asinh());
@@ -552,6 +600,18 @@ impl<'a> Vm<'a> {
                 Instruction::Atanh => {
                     let a = self.pop().number();
                     self.push(a.atanh());
+                }
+                Instruction::Asech => {
+                    let a = self.pop().number();
+                    self.push((1.0 / a).acosh());
+                }
+                Instruction::Acsch => {
+                    let a = self.pop().number();
+                    self.push((1.0 / a).asinh());
+                }
+                Instruction::Acoth => {
+                    let a = self.pop().number();
+                    self.push((1.0 / a).atanh());
                 }
                 Instruction::Abs => {
                     let a = self.pop().number();

@@ -147,11 +147,23 @@ pub enum BuiltIn {
     /// ([`Type::Number`]) => [`Type::Number`]
     Tan,
     /// ([`Type::Number`]) => [`Type::Number`]
+    Sec,
+    /// ([`Type::Number`]) => [`Type::Number`]
+    Csc,
+    /// ([`Type::Number`]) => [`Type::Number`]
+    Cot,
+    /// ([`Type::Number`]) => [`Type::Number`]
     Sinh,
     /// ([`Type::Number`]) => [`Type::Number`]
     Cosh,
     /// ([`Type::Number`]) => [`Type::Number`]
     Tanh,
+    /// ([`Type::Number`]) => [`Type::Number`]
+    Sech,
+    /// ([`Type::Number`]) => [`Type::Number`]
+    Csch,
+    /// ([`Type::Number`]) => [`Type::Number`]
+    Coth,
     /// ([`Type::Number`]) => [`Type::Number`]
     Asin,
     /// ([`Type::Number`]) => [`Type::Number`]
@@ -161,11 +173,23 @@ pub enum BuiltIn {
     /// ([`Type::Number`], [`Type::Number`]) => [`Type::Number`]
     Atan2,
     /// ([`Type::Number`]) => [`Type::Number`]
+    Asec,
+    /// ([`Type::Number`]) => [`Type::Number`]
+    Acsc,
+    /// ([`Type::Number`]) => [`Type::Number`]
+    Acot,
+    /// ([`Type::Number`]) => [`Type::Number`]
     Asinh,
     /// ([`Type::Number`]) => [`Type::Number`]
     Acosh,
     /// ([`Type::Number`]) => [`Type::Number`]
     Atanh,
+    /// ([`Type::Number`]) => [`Type::Number`]
+    Asech,
+    /// ([`Type::Number`]) => [`Type::Number`]
+    Acsch,
+    /// ([`Type::Number`]) => [`Type::Number`]
+    Acoth,
     /// ([`Type::Number`]) => [`Type::Number`]
     Abs,
     /// ([`Type::Number`]) => [`Type::Number`]
@@ -954,27 +978,27 @@ impl TypeChecker {
                     Nb::Sin => &[(&[N], N, Bi::Sin)],
                     Nb::Cos => &[(&[N], N, Bi::Cos)],
                     Nb::Tan => &[(&[N], N, Bi::Tan)],
-                    Nb::Sec => todo!(),
-                    Nb::Csc => todo!(),
-                    Nb::Cot => todo!(),
+                    Nb::Sec => &[(&[N], N, Bi::Sec)],
+                    Nb::Csc => &[(&[N], N, Bi::Csc)],
+                    Nb::Cot => &[(&[N], N, Bi::Cot)],
                     Nb::Sinh => &[(&[N], N, Bi::Sinh)],
                     Nb::Cosh => &[(&[N], N, Bi::Cosh)],
                     Nb::Tanh => &[(&[N], N, Bi::Tanh)],
-                    Nb::Sech => todo!(),
-                    Nb::Csch => todo!(),
-                    Nb::Coth => todo!(),
+                    Nb::Sech => &[(&[N], N, Bi::Sech)],
+                    Nb::Csch => &[(&[N], N, Bi::Csch)],
+                    Nb::Coth => &[(&[N], N, Bi::Coth)],
                     Nb::Asin => &[(&[N], N, Bi::Asin)],
                     Nb::Acos => &[(&[N], N, Bi::Acos)],
                     Nb::Atan => &[(&[N], N, Bi::Atan), (&[N, N], N, Bi::Atan2)],
-                    Nb::Asec => todo!(),
-                    Nb::Acsc => todo!(),
-                    Nb::Acot => todo!(),
+                    Nb::Asec => &[(&[N], N, Bi::Asec)],
+                    Nb::Acsc => &[(&[N], N, Bi::Acsc)],
+                    Nb::Acot => &[(&[N], N, Bi::Acot)],
                     Nb::Asinh => &[(&[N], N, Bi::Asinh)],
                     Nb::Acosh => &[(&[N], N, Bi::Acosh)],
                     Nb::Atanh => &[(&[N], N, Bi::Atanh)],
-                    Nb::Asech => todo!(),
-                    Nb::Acsch => todo!(),
-                    Nb::Acoth => todo!(),
+                    Nb::Asech => &[(&[N], N, Bi::Asech)],
+                    Nb::Acsch => &[(&[N], N, Bi::Acsch)],
+                    Nb::Acoth => &[(&[N], N, Bi::Acoth)],
                     Nb::Abs => &[(&[N], N, Bi::Abs)],
                     Nb::Sgn => &[(&[N], N, Bi::Sgn)],
                     Nb::Round => &[(&[N], N, Bi::Round)],

@@ -142,10 +142,17 @@ impl Output {
                     response.request_redraw();
                 }
 
+                #[cfg(not(windows))]
+                let (grab, grabbing) = (CursorIcon::Grab, CursorIcon::Grabbing);
+
+                // https://github.com/rust-windowing/winit/issues/1043
+                #[cfg(windows)]
+                let (grab, grabbing) = (CursorIcon::EwResize, CursorIcon::EwResize);
+
                 if dragging.is_some() {
-                    response.cursor_icon = CursorIcon::Grabbing;
+                    response.cursor_icon = grabbing;
                 } else if *hovered {
-                    response.cursor_icon = CursorIcon::Grab;
+                    response.cursor_icon = grab;
                 }
 
                 let bounds = Bounds {

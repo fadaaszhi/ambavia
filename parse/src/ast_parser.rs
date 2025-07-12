@@ -1989,7 +1989,7 @@ mod tests {
                             left: bx(Num(4.0)),
                             right: bx(For {
                                 body: bx(Id("c".into())),
-                                lists: vec![("c_4".into(), Num(2.0)), ("d".into(), Num(6.0))],
+                                lists: vec![("c_{4}".into(), Num(2.0)), ("d".into(), Num(6.0))],
                             })
                         }
                     ),

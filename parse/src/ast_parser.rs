@@ -59,14 +59,73 @@ fn parse_number(tokens: &mut Tokens) -> Result<Expression, String> {
     }
 }
 
-fn parse_ident_frag(tokens: &mut Tokens) -> Result<String, String> {
-    match tokens.next() {
-        Token::IdentFrag(x) => Ok(x.clone()),
-        other => Err(format!(
-            "expected identifier, found {}",
-            other.to_small_string()
-        )),
+fn trig_inverse(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "sin" => "arcsin",
+        "cos" => "arccos",
+        "tan" => "arctan",
+        "sec" => "arcsec",
+        "csc" => "arccsc",
+        "cot" => "arccot",
+        "sinh" => "arcsinh",
+        "cosh" => "arccosh",
+        "tanh" => "arctanh",
+        "sech" => "arcsech",
+        "csch" => "arccsch",
+        "coth" => "arccoth",
+        "arcsin" => "sin",
+        "arccos" => "cos",
+        "arctan" => "tan",
+        "arcsec" => "sec",
+        "arccsc" => "csc",
+        "arccot" => "cot",
+        "arcsinh" | "arsinh" => "sinh",
+        "arccosh" | "arcosh" => "cosh",
+        "arctanh" | "artanh" => "tanh",
+        "arcsech" | "arsech" => "sech",
+        "arccsch" | "arcsch" => "csch",
+        "arccoth" | "arcoth" => "coth",
+        _ => return None,
+    })
+}
+
+fn allows_no_parentheses(name: &str) -> bool {
+    match name {
+        "sin" | "cos" | "tan" | "sec" | "csc" | "cot" | "sinh" | "cosh" | "tanh" | "sech"
+        | "csch" | "coth" | "arcsin" | "arccos" | "arctan" | "arcsec" | "arccsc" | "arccot"
+        | "arcsinh" | "arsinh" | "arccosh" | "arcosh" | "arctanh" | "artanh" | "arcsech"
+        | "arsech" | "arccsch" | "arcsch" | "arccoth" | "arcoth" | "ln" => true,
+        _ => false,
     }
+}
+
+fn parse_ident_frag(tokens: &mut Tokens) -> Result<String, String> {
+    let mut name = match tokens.next() {
+        Token::IdentFrag(name) => name.clone(),
+        other => {
+            return Err(format!(
+                "expected identifier, found {}",
+                other.to_small_string()
+            ));
+        }
+    };
+    if let Some(inverse) = trig_inverse(&name)
+        && let Token::SubSup {
+            sub: None,
+            sup: Some(sup),
+        } = tokens.peek()
+    {
+        let sup = flatten(sup)?;
+        if sup.as_slice() == &[Token::Minus, Token::Number("1".into())] {
+            name = inverse.into();
+        } else if sup.as_slice() == &[Token::Number("2".into())] {
+            name += "^2";
+        } else {
+            return Err(format!("only {name}^2 and {name}^-1 are supported"));
+        }
+        tokens.next();
+    }
+    Ok(name)
 }
 
 fn parse_nodes_into_name_subscript(nodes: &[Node]) -> Result<String, String> {
@@ -334,7 +393,43 @@ fn parse_expression(tokens: &mut Tokens, min_bp: u8) -> Result<Expression, Strin
         } else {
             match tokens.peek() {
                 Token::Number(_) => parse_number(tokens)?,
-                Token::IdentFrag(_) => Expression::Identifier(parse_ident_frag(tokens)?),
+                Token::IdentFrag(_) => {
+                    let name = parse_ident_frag(tokens)?;
+                    if allows_no_parentheses(name.strip_suffix("^2").unwrap_or(&name))
+                        && tokens.peek() != &Token::LParen
+                    {
+                        let arg = match tokens.peek() {
+                            Token::LBracket => parse_list(tokens, false)?,
+                            Token::LPipe => {
+                                tokens.next();
+                                let arg = Box::new(parse_expression(tokens, 0)?);
+                                tokens.expect(Token::RPipe)?;
+                                Expression::UnaryOperation {
+                                    operation: UnaryOperator::Norm,
+                                    arg,
+                                }
+                            }
+                            _ => parse_expression(tokens, get_infix_op(&Token::Plus).unwrap().2)?,
+                        };
+                        if let Some(name) = name.strip_suffix("^2") {
+                            Expression::BinaryOperation {
+                                operation: BinaryOperator::Pow,
+                                left: Box::new(Expression::Call {
+                                    callee: name.into(),
+                                    args: vec![arg],
+                                }),
+                                right: Box::new(Expression::Number(2.0)),
+                            }
+                        } else {
+                            Expression::Call {
+                                callee: name,
+                                args: vec![arg],
+                            }
+                        }
+                    } else {
+                        Expression::Identifier(name)
+                    }
+                }
                 Token::Frac { num, den } => {
                     let frac = Expression::BinaryOperation {
                         operation: BinaryOperator::Div,
@@ -535,7 +630,14 @@ fn parse_expression(tokens: &mut Tokens, min_bp: u8) -> Result<Expression, Strin
                     }
 
                     tokens.expect(Token::RParen)?;
-                    left = Expression::CallOrMultiply { callee, args };
+                    left = if let Some(callee) = callee.strip_suffix("^2") {
+                        Expression::Call {
+                            callee: callee.into(),
+                            args,
+                        }
+                    } else {
+                        Expression::CallOrMultiply { callee, args }
+                    };
                     continue;
                 }
                 Token::Sqrt { .. }
@@ -554,16 +656,7 @@ fn parse_expression(tokens: &mut Tokens, min_bp: u8) -> Result<Expression, Strin
                 ),
                 Token::Dot => {
                     tokens.next();
-                    let callee = match tokens.next() {
-                        Token::IdentFrag(callee) => callee.clone(),
-                        other => {
-                            return Err(format!(
-                                "{} expected identifier, found {}",
-                                Token::Dot.to_small_string(),
-                                other.to_small_string()
-                            ));
-                        }
-                    };
+                    let callee = parse_ident_frag(tokens)?;
                     left = match callee.as_str() {
                         "x" => Expression::UnaryOperation {
                             operation: UnaryOperator::PointX,
@@ -578,9 +671,17 @@ fn parse_expression(tokens: &mut Tokens, min_bp: u8) -> Result<Expression, Strin
                             if tokens.peek() == &Token::LParen {
                                 args = parse_args(tokens, args)?;
                             }
-                            Expression::Call {
-                                callee: callee.clone(),
-                                args,
+                            if let Some(callee) = callee.strip_suffix("^2") {
+                                Expression::BinaryOperation {
+                                    operation: BinaryOperator::Pow,
+                                    left: Box::new(Expression::Call {
+                                        callee: callee.into(),
+                                        args,
+                                    }),
+                                    right: Box::new(Expression::Number(2.0)),
+                                }
+                            } else {
+                                Expression::Call { callee, args }
                             }
                         }
                     };
@@ -1150,6 +1251,59 @@ mod tests {
                     right: bx(Num(3.0))
                 }),
                 right: bx(Id("k".into()))
+            })
+        );
+        assert_eq!(tokens.next(), &T::EndOfInput);
+    }
+
+    #[test]
+    fn trig_exponent() {
+        let tokens = [
+            T::IdentFrag("a".into()),
+            T::IdentFrag("sin".into()),
+            T::SubSup {
+                sub: None,
+                sup: Some(&[Node::Char('-'), Node::Char('1')]),
+            },
+            T::Number("5".into()),
+            T::IdentFrag("x".into()),
+            T::Plus,
+            T::IdentFrag("arctan".into()),
+            T::SubSup {
+                sub: None,
+                sup: Some(&[Node::Char('2')]),
+            },
+            T::Minus,
+            T::Number("3".into()),
+        ];
+        let mut tokens = Tokens::new(&tokens, T::EndOfInput);
+        assert_eq!(
+            parse_expression(&mut tokens, 0),
+            Ok(Bop {
+                operation: Add,
+                left: bx(Bop {
+                    operation: Mul,
+                    left: bx(Id("a".into())),
+                    right: bx(Call {
+                        callee: "arcsin".into(),
+                        args: vec![Bop {
+                            operation: Mul,
+                            left: bx(Num(5.0)),
+                            right: bx(Id("x".into()))
+                        }]
+                    })
+                }),
+                right: bx(Bop {
+                    operation: Pow,
+                    left: bx(Call {
+                        callee: "arctan".into(),
+                        args: vec![Uop {
+                            operation: Neg,
+                            arg: bx(Num(3.0))
+                        }]
+                    }),
+                    right: bx(Num(2.0))
+                })
             })
         );
         assert_eq!(tokens.next(), &T::EndOfInput);

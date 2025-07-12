@@ -642,6 +642,7 @@ impl Tree {
         }
 
         let mut i = 0;
+        let mut previous_was_operatorname = false;
         'outer: while i < self.nodes.len() {
             for &name in OPERATORNAMES {
                 let count = name.chars().count();
@@ -649,6 +650,7 @@ impl Tree {
                     && zip(name.chars(), &self.nodes[i..]).all(|(c, (_, n))| n.is_char(c))
                 {
                     let add_space_before = i > 0
+                        && !previous_was_operatorname
                         && match &self.nodes[i - 1].1 {
                             Node::BigOp { .. }
                             | Node::Char {
@@ -700,6 +702,7 @@ impl Tree {
                     }
 
                     i += count;
+                    previous_was_operatorname = true;
                     continue 'outer;
                 }
             }
@@ -777,6 +780,9 @@ impl Tree {
                         upper.bounds.scale(SCRIPT_UPPER_SCALE);
                         upper.bounds.position.y = SCRIPT_MIDDLE - upper.bounds.depth;
                         bounds.union(&upper.bounds);
+                    }
+                    if previous_was_operatorname {
+                        bounds.width += OPERATORNAME_SPACE;
                     }
                 }
                 Node::Radical {
@@ -924,6 +930,7 @@ impl Tree {
             bounds.position.x += self.bounds.width;
             self.bounds.union(bounds);
             i += 1;
+            previous_was_operatorname = false;
         }
     }
 

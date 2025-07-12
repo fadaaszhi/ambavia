@@ -436,7 +436,7 @@ impl Tree {
             (">=", '≥'),
             ("*", '⋅'),
         ];
-        let previous_text = self
+        let previous_text = self[..i + 1]
             .iter()
             .rev()
             .map_while(|(_, n)| match n {

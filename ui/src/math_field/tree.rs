@@ -643,6 +643,21 @@ impl Tree {
 
         let mut i = 0;
         let mut previous_was_operatorname = false;
+
+        fn add_space_after_operatorname(next_node: &Node) -> bool {
+            match next_node {
+                Node::Bracket { .. }
+                | Node::Script { .. }
+                | Node::BigOp { .. }
+                | Node::Char {
+                    ch:
+                        '.' | '+' | '-' | '*' | '=' | '<' | '>' | ',' | ':' | '×' | '÷' | '→' | '⋅',
+                    ..
+                } => false,
+                _ => true,
+            }
+        }
+
         'outer: while i < self.nodes.len() {
             for &name in OPERATORNAMES {
                 let count = name.chars().count();
@@ -662,18 +677,7 @@ impl Tree {
                             _ => true,
                         };
                     let add_space_after = i + count < self.nodes.len()
-                        && match &self.nodes[i + count].1 {
-                            Node::Bracket { .. }
-                            | Node::Script { .. }
-                            | Node::BigOp { .. }
-                            | Node::Char {
-                                ch:
-                                    '.' | '+' | '-' | '*' | '=' | '<' | '>' | ',' | ':' | '×' | '÷'
-                                    | '→' | '⋅',
-                                ..
-                            } => false,
-                            _ => true,
-                        };
+                        && add_space_after_operatorname(&self.nodes[i + count].1);
 
                     for (j, (c, (bounds, node))) in
                         zip(name.chars(), &mut self.nodes[i..]).enumerate()
@@ -729,6 +733,9 @@ impl Tree {
                         ..
                     },
                 );
+            let previous_operatorname_requires_space = previous_was_operatorname
+                && i + 1 < self.nodes.len()
+                && add_space_after_operatorname(&self.nodes[i + 1].1);
             let (bounds, node) = &mut self.nodes[i];
             *bounds = Bounds::default();
 
@@ -781,7 +788,7 @@ impl Tree {
                         upper.bounds.position.y = SCRIPT_MIDDLE - upper.bounds.depth;
                         bounds.union(&upper.bounds);
                     }
-                    if previous_was_operatorname {
+                    if previous_operatorname_requires_space {
                         bounds.width += OPERATORNAME_SPACE;
                     }
                 }

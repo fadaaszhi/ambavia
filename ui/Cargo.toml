@@ -19,5 +19,5 @@ image = { version = "0.25.6", default-features = false, features = [
 ] }
 pollster = "0.4.0"
 glam = { version = "0.30.4", features = ["bytemuck"] }
-wgpu = "25.0.2"
+wgpu = "26.0"
 winit = "0.30.11"

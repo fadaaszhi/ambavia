@@ -525,6 +525,7 @@ impl GraphPaper {
                 } else {
                     view
                 },
+                depth_slice: None,
                 resolve_target: if MSAA_SAMPLE_COUNT > 1 {
                     Some(view)
                 } else {

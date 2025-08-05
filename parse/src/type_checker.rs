@@ -196,6 +196,8 @@ pub enum BuiltIn {
     Sgn,
     /// ([`Type::Number`]) => [`Type::Number`]
     Round,
+    /// ([`Type::Number`], [`Type::Number`]) => [`Type::Number`]
+    RoundWithPrecision,
     /// ([`Type::Number`]) => [`Type::Number`]
     Floor,
     /// ([`Type::Number`]) => [`Type::Number`]
@@ -1002,7 +1004,7 @@ impl TypeChecker {
                     Nb::Acoth => &[(&[N], N, Bi::Acoth)],
                     Nb::Abs => &[(&[N], N, Bi::Abs)],
                     Nb::Sgn => &[(&[N], N, Bi::Sgn)],
-                    Nb::Round => &[(&[N], N, Bi::Round)],
+                    Nb::Round => &[(&[N], N, Bi::Round), (&[N, N], N, Bi::RoundWithPrecision)],
                     Nb::Floor => &[(&[N], N, Bi::Floor)],
                     Nb::Ceil => &[(&[N], N, Bi::Ceil)],
                     Nb::Mod => &[(&[N, N], N, Bi::Mod)],

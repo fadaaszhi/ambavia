@@ -376,6 +376,7 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
                     BuiltIn::Abs => builder.instr1(Abs, arg()),
                     BuiltIn::Sgn => builder.instr1(Sgn, arg()),
                     BuiltIn::Round => builder.instr1(Round, arg()),
+                    BuiltIn::RoundWithPrecision => builder.instr2(RoundWithPrecision, arg(), arg()),
                     BuiltIn::Floor => builder.instr1(Floor, arg()),
                     BuiltIn::Ceil => builder.instr1(Ceil, arg()),
                     BuiltIn::Mod => builder.instr2(Mod, arg(), arg()),

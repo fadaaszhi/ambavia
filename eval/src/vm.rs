@@ -87,6 +87,7 @@ pub enum Instruction {
     Abs,
     Sgn,
     Round,
+    RoundWithPrecision,
     Floor,
     Ceil,
     Mod,
@@ -643,6 +644,12 @@ impl<'a> Vm<'a> {
                 Instruction::Round => {
                     let a = self.pop().number();
                     self.push(a.round());
+                }
+                Instruction::RoundWithPrecision => {
+                    let b = self.pop().number();
+                    let a = self.pop().number();
+                    let p = 10f64.powi(b.round().clamp(-1e3, 1e3) as i32);
+                    self.push((a * p).round() / p);
                 }
                 Instruction::Floor => {
                     let a = self.pop().number();

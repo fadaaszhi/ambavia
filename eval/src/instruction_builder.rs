@@ -186,7 +186,9 @@ impl InstructionBuilder {
 
     pub fn instr2(&mut self, instr: Instruction, a: Value, b: Value) -> Value {
         let (a_type, b_type, return_type) = match instr {
-            Add | Sub | Mul | Div | Pow | Atan2 | Mod => (Type::Number, Type::Number, Type::Number),
+            Add | Sub | Mul | Div | Pow | Atan2 | RoundWithPrecision | Mod => {
+                (Type::Number, Type::Number, Type::Number)
+            }
             Equal | LessThan | LessThanEqual | GreaterThan | GreaterThanEqual => {
                 (Type::Number, Type::Number, Type::Bool)
             }

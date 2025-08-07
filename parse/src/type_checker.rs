@@ -215,6 +215,8 @@ pub enum BuiltIn {
     /// ([`Type::Number`]) => [`Type::Number`]
     Acoth,
     /// ([`Type::Number`]) => [`Type::Number`]
+    Abs,
+    /// ([`Type::Number`]) => [`Type::Number`]
     Sgn,
     /// ([`Type::Number`]) => [`Type::Number`]
     Round,
@@ -1003,25 +1005,6 @@ impl TypeChecker {
                     ));
                 }
 
-                if *name == Nb::Abs {
-                    let num_args = args.len();
-                    if num_args != 1 {
-                        return Err(format!("abs requires 1 argument, got {num_args}"));
-                    }
-                    let arg = args.into_iter().next().unwrap();
-                    return if arg.ty == Type::Number {
-                        Ok(te(
-                            Type::Number,
-                            Expression::UnaryOperation {
-                                operation: UnaryOperator::Abs,
-                                arg: Box::new(arg),
-                            },
-                        ))
-                    } else {
-                        Err(format!("abs takes a number, not a {}", arg.ty))
-                    };
-                }
-
                 let overloads: &[(&[Type], Type, BuiltIn)] = match name {
                     Nb::Ln => &[(&[N], N, Bi::Ln)],
                     Nb::Exp => &[(&[N], N, Bi::Exp)],
@@ -1050,6 +1033,7 @@ impl TypeChecker {
                     Nb::Asech => &[(&[N], N, Bi::Asech)],
                     Nb::Acsch => &[(&[N], N, Bi::Acsch)],
                     Nb::Acoth => &[(&[N], N, Bi::Acoth)],
+                    Nb::Abs => &[(&[N], N, Bi::Abs)],
                     Nb::Sgn => &[(&[N], N, Bi::Sgn)],
                     Nb::Round => &[(&[N], N, Bi::Round), (&[N, N], N, Bi::RoundWithPrecision)],
                     Nb::Floor => &[(&[N], N, Bi::Floor)],
@@ -1079,7 +1063,7 @@ impl TypeChecker {
                         (&[PgL, NL], PgL, Bi::SortKeyPolygon),
                     ],
                     Nb::Polygon => &[(&[PL], Pg, Bi::Polygon)],
-                    Nb::Join | Nb::Abs => unreachable!(),
+                    Nb::Join => unreachable!(),
                 };
 
                 'overload: for (arg_tys, ret_ty, builtin) in overloads {

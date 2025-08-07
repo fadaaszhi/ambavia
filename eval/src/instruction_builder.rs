@@ -194,7 +194,7 @@ impl InstructionBuilder {
             }
             Add2 | Sub2 | Midpoint => (Type::Point, Type::Point, Type::Point),
             Mul1_2 => (Type::Number, Type::Point, Type::Point),
-            Mul2_1 | Div2_1 => (Type::Point, Type::Number, Type::Point),
+            Div2_1 => (Type::Point, Type::Number, Type::Point),
             Dot | Distance => (Type::Point, Type::Point, Type::Number),
             Point => (Type::Number, Type::Number, Type::Point),
             SortKey => (Type::NumberList, Type::NumberList, Type::NumberList),

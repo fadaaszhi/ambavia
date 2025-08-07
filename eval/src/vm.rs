@@ -38,7 +38,6 @@ pub enum Instruction {
     Sub2,
     Mul,
     Mul1_2,
-    Mul2_1,
     Div,
     Div2_1,
     Pow,
@@ -435,13 +434,6 @@ impl<'a> Vm<'a> {
                     let a = self.pop().number();
                     self.push(a * bx);
                     self.push(a * by);
-                }
-                Instruction::Mul2_1 => {
-                    let b = self.pop().number();
-                    let ay = self.pop().number();
-                    let ax = self.pop().number();
-                    self.push(ax * b);
-                    self.push(ay * b);
                 }
                 Instruction::Div => {
                     let b = self.pop().number();

@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, collections::HashMap, iter::zip};
+use std::{borrow::Borrow, collections::HashMap, iter::zip, mem};
 
 use derive_more::{From, Into};
 use typed_index_collections::{TiSlice, TiVec, ti_vec};
@@ -99,35 +99,59 @@ fn te(ty: Type, e: Expression) -> TypedExpression {
 
 #[derive(Debug, PartialEq)]
 pub enum UnaryOperator {
+    /// ([`Type::Number`]) => [`Type::Number`]
     NegNumber,
+    /// ([`Type::Point`]) => [`Type::Point`]
     NegPoint,
+    /// ([`Type::Number`]) => [`Type::Number`]
     Fac,
+    /// ([`Type::Number`]) => [`Type::Number`]
     Sqrt,
+    /// ([`Type::Number`]) => [`Type::Number`]
     Abs,
+    /// ([`Type::Point`]) => [`Type::Number`]
     Mag,
+    /// ([`Type::Point`]) => [`Type::Number`]
     PointX,
+    /// ([`Type::Point`]) => [`Type::Number`]
     PointY,
 }
 
 #[derive(Debug, PartialEq)]
 pub enum BinaryOperator {
+    /// ([`Type::Number`], [`Type::Number`]) => [`Type::Number`]
     AddNumber,
+    /// ([`Type::Point`], [`Type::Point`]) => [`Type::Point`]
     AddPoint,
+    /// ([`Type::Number`], [`Type::Number`]) => [`Type::Number`]
     SubNumber,
+    /// ([`Type::Point`], [`Type::Point`]) => [`Type::Point`]
     SubPoint,
+    /// ([`Type::Number`], [`Type::Number`]) => [`Type::Number`]
     MulNumber,
-    MulPointNumber,
+    /// ([`Type::Number`], [`Type::Point`]) => [`Type::Point`]
     MulNumberPoint,
+    /// ([`Type::Number`], [`Type::Number`]) => [`Type::Number`]
     DivNumber,
+    /// ([`Type::Point`], [`Type::Number`]) => [`Type::Point`]
     DivPointNumber,
+    /// ([`Type::Number`], [`Type::Number`]) => [`Type::Number`]
     Pow,
+    /// ([`Type::Point`], [`Type::Point`]) => [`Type::Number`]
     Dot,
+    /// ([`Type::Number`], [`Type::Number`]) => [`Type::Point`]
     Point,
+    /// ([`Type::NumberList`], [`Type::Number`]) => [`Type::Number`]
     IndexNumberList,
+    /// ([`Type::PointList`], [`Type::Number`]) => [`Type::Point`]
     IndexPointList,
+    /// ([`Type::PolygonList`], [`Type::Number`]) => [`Type::Polygon`]
     IndexPolygonList,
+    /// ([`Type::NumberList`], [`Type::BoolList`]) => [`Type::Number`]
     FilterNumberList,
+    /// ([`Type::PointList`], [`Type::BoolList`]) => [`Type::Point`]
     FilterPointList,
+    /// ([`Type::PolygonList`], [`Type::BoolList`]) => [`Type::Polygon`]
     FilterPolygonList,
 }
 
@@ -190,8 +214,6 @@ pub enum BuiltIn {
     Acsch,
     /// ([`Type::Number`]) => [`Type::Number`]
     Acoth,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Abs,
     /// ([`Type::Number`]) => [`Type::Number`]
     Sgn,
     /// ([`Type::Number`]) => [`Type::Number`]
@@ -492,8 +514,8 @@ impl TypeChecker {
                 left,
                 right,
             } => {
-                let left = self.check_expression(left)?;
-                let right = self.check_expression(right)?;
+                let mut left = self.check_expression(left)?;
+                let mut right = self.check_expression(right)?;
 
                 let broadcast_left = left.ty.is_list() && *operation != nr::BinaryOperator::Index;
                 let broadcast_right = right.ty.is_list();
@@ -520,8 +542,9 @@ impl TypeChecker {
                     },
                     nr::BinaryOperator::Mul => match (left.ty.base(), right.ty.base()) {
                         (B::Number, B::Number) => (B::Number, O::MulNumber),
-                        (B::Number, B::Point) => (B::Point, O::MulNumberPoint),
-                        (B::Point, B::Number) => (B::Point, O::MulPointNumber),
+                        (B::Number, B::Point) | (B::Point, B::Number) => {
+                            (B::Point, O::MulNumberPoint)
+                        }
                         (B::Number, B::Empty) | (B::Empty, B::Number) => {
                             return empty_list(B::Empty);
                         }
@@ -545,8 +568,9 @@ impl TypeChecker {
                     },
                     nr::BinaryOperator::Dot => match (left.ty.base(), right.ty.base()) {
                         (B::Number, B::Number) => (B::Number, O::MulNumber),
-                        (B::Number, B::Point) => (B::Point, O::MulNumberPoint),
-                        (B::Point, B::Number) => (B::Point, O::MulPointNumber),
+                        (B::Point, B::Number) | (B::Number, B::Point) => {
+                            (B::Point, O::MulNumberPoint)
+                        }
                         (B::Point, B::Point) => (B::Number, O::Dot),
                         (B::Number, B::Empty)
                         | (B::Empty, B::Number)
@@ -556,8 +580,9 @@ impl TypeChecker {
                     },
                     nr::BinaryOperator::Cross => match (left.ty.base(), right.ty.base()) {
                         (B::Number, B::Number) => (B::Number, O::MulNumber),
-                        (B::Number, B::Point) => (B::Point, O::MulNumberPoint),
-                        (B::Point, B::Number) => (B::Point, O::MulPointNumber),
+                        (B::Point, B::Number) | (B::Number, B::Point) => {
+                            (B::Point, O::MulNumberPoint)
+                        }
                         (B::Number, B::Empty) | (B::Empty, B::Number) => {
                             return empty_list(B::Empty);
                         }
@@ -624,6 +649,10 @@ impl TypeChecker {
                         _ => return Err(format!("cannot index {} with {}", left.ty, right.ty)),
                     },
                 };
+                // normalize MulPointNumber into MulNumberPoint
+                if operation == O::MulNumberPoint && left.ty.base() != B::Number {
+                    mem::swap(&mut left, &mut right);
+                }
 
                 if broadcast_left || broadcast_right {
                     let left_ty = if broadcast_left {
@@ -974,6 +1003,25 @@ impl TypeChecker {
                     ));
                 }
 
+                if *name == Nb::Abs {
+                    let num_args = args.len();
+                    if num_args != 1 {
+                        return Err(format!("abs requires 1 argument, got {num_args}"));
+                    }
+                    let arg = args.into_iter().next().unwrap();
+                    return if arg.ty == Type::Number {
+                        Ok(te(
+                            Type::Number,
+                            Expression::UnaryOperation {
+                                operation: UnaryOperator::Abs,
+                                arg: Box::new(arg),
+                            },
+                        ))
+                    } else {
+                        Err(format!("abs takes a number, not a {}", arg.ty))
+                    };
+                }
+
                 let overloads: &[(&[Type], Type, BuiltIn)] = match name {
                     Nb::Ln => &[(&[N], N, Bi::Ln)],
                     Nb::Exp => &[(&[N], N, Bi::Exp)],
@@ -1002,7 +1050,6 @@ impl TypeChecker {
                     Nb::Asech => &[(&[N], N, Bi::Asech)],
                     Nb::Acsch => &[(&[N], N, Bi::Acsch)],
                     Nb::Acoth => &[(&[N], N, Bi::Acoth)],
-                    Nb::Abs => &[(&[N], N, Bi::Abs)],
                     Nb::Sgn => &[(&[N], N, Bi::Sgn)],
                     Nb::Round => &[(&[N], N, Bi::Round), (&[N, N], N, Bi::RoundWithPrecision)],
                     Nb::Floor => &[(&[N], N, Bi::Floor)],
@@ -1032,7 +1079,7 @@ impl TypeChecker {
                         (&[PgL, NL], PgL, Bi::SortKeyPolygon),
                     ],
                     Nb::Polygon => &[(&[PL], Pg, Bi::Polygon)],
-                    Nb::Join => unreachable!(),
+                    Nb::Join | Nb::Abs => unreachable!(),
                 };
 
                 'overload: for (arg_tys, ret_ty, builtin) in overloads {
@@ -1316,9 +1363,9 @@ mod tests {
                     As {
                         id: 2,
                         value: pt(Bop {
-                            operation: Bo::MulPointNumber,
-                            left: bx(pt(Id(1))),
-                            right: bx(num(Id(0)))
+                            operation: Bo::MulNumberPoint,
+                            left: bx(num(Id(0))),
+                            right: bx(pt(Id(1)))
                         })
                     },
                     As {

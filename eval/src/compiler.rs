@@ -183,7 +183,6 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
                     BinaryOperator::SubNumber => Sub,
                     BinaryOperator::SubPoint => Sub2,
                     BinaryOperator::MulNumber => Mul,
-                    BinaryOperator::MulPointNumber => Mul2_1,
                     BinaryOperator::MulNumberPoint => Mul1_2,
                     BinaryOperator::DivNumber => Div,
                     BinaryOperator::DivPointNumber => Div2_1,
@@ -565,17 +564,6 @@ mod tests {
             &mut b,
         );
         assert_eq!(b.finish()[5..], [Load2(2), Load2(2), Add2]);
-
-        let mut b = make_vars_and_builder();
-        compile_expression(
-            &pt(TBop {
-                operation: TBo::MulPointNumber,
-                left: point(),
-                right: number(),
-            }),
-            &mut b,
-        );
-        assert_eq!(b.finish()[5..], [Load2(2), Load(0), Mul2_1]);
 
         let mut b = make_vars_and_builder();
         compile_expression(

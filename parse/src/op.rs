@@ -1,12 +1,11 @@
-use std::ops::Add;
-
 use crate::{ast, name_resolver, type_checker::Type};
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Signature {
     param_types: &'static [Type],
     return_type: Type,
 }
-pub(crate) const USE_OP: bool = true;
+pub(crate) const USE_OP: bool = false;
 
 macro_rules! declare_ops {
     (
@@ -125,7 +124,7 @@ impl From<name_resolver::BuiltIn> for OpName {
         }
     }
 }
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum OpName {
     //
     Neg,

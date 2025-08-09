@@ -774,6 +774,10 @@ impl<'a> Resolver<'a> {
                     list_deps.merged(body_deps),
                 )
             }
+            ast::Expression::Op {
+                operation,
+                arguments,
+            } => todo!(),
         }
     }
 }

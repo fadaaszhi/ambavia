@@ -1,3 +1,5 @@
+use crate::op::OpName;
+
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum UnaryOperator {
     Neg,
@@ -59,6 +61,10 @@ pub enum Expression {
         operation: BinaryOperator,
         left: Box<Expression>,
         right: Box<Expression>,
+    },
+    Op {
+        operation: OpName,
+        arguments: Vec<Expression>,
     },
     CallOrMultiply {
         callee: String,

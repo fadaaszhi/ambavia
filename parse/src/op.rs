@@ -1,4 +1,7 @@
-use crate::{ast, name_resolver, type_checker::Type};
+use crate::{
+    ast, name_resolver,
+    type_checker::{self, Type},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Signature {
@@ -121,6 +124,110 @@ impl From<name_resolver::BuiltIn> for OpName {
             name_resolver::BuiltIn::Sort => Sort,
             name_resolver::BuiltIn::Polygon => Polygon,
             name_resolver::BuiltIn::Join => Join,
+        }
+    }
+}
+impl From<type_checker::BinaryOperator> for Op {
+    fn from(value: type_checker::BinaryOperator) -> Self {
+        use Op::*;
+        match value {
+            type_checker::BinaryOperator::AddNumber => AddNumber,
+            type_checker::BinaryOperator::AddPoint => AddPoint,
+            type_checker::BinaryOperator::SubNumber => SubNumber,
+            type_checker::BinaryOperator::SubPoint => SubPoint,
+            type_checker::BinaryOperator::MulNumber => MulNumber,
+            type_checker::BinaryOperator::MulNumberPoint => MulNumberPoint,
+            type_checker::BinaryOperator::DivNumber => DivNumber,
+            type_checker::BinaryOperator::DivPointNumber => DivPointNumber,
+            type_checker::BinaryOperator::Pow => Pow,
+            type_checker::BinaryOperator::Dot => Dot,
+            type_checker::BinaryOperator::Point => Point,
+            type_checker::BinaryOperator::IndexNumberList => IndexNumberList,
+            type_checker::BinaryOperator::IndexPointList => IndexPointList,
+            type_checker::BinaryOperator::IndexPolygonList => IndexPolygonList,
+            type_checker::BinaryOperator::FilterNumberList => FilterNumberList,
+            type_checker::BinaryOperator::FilterPointList => FilterPointList,
+            type_checker::BinaryOperator::FilterPolygonList => FilterPolygonList,
+        }
+    }
+}
+impl From<type_checker::UnaryOperator> for Op {
+    fn from(value: type_checker::UnaryOperator) -> Self {
+        use Op::*;
+        match value {
+            type_checker::UnaryOperator::NegNumber => NegNumber,
+            type_checker::UnaryOperator::NegPoint => NegPoint,
+            type_checker::UnaryOperator::Fac => Fac,
+            type_checker::UnaryOperator::Sqrt => Sqrt,
+            type_checker::UnaryOperator::Abs => Abs,
+            type_checker::UnaryOperator::Mag => Mag,
+            type_checker::UnaryOperator::PointX => PointX,
+            type_checker::UnaryOperator::PointY => PointY,
+        }
+    }
+}
+impl From<type_checker::BuiltIn> for Op {
+    fn from(value: type_checker::BuiltIn) -> Self {
+        use Op::*;
+        match value {
+            type_checker::BuiltIn::Ln => Ln,
+            type_checker::BuiltIn::Exp => Exp,
+            type_checker::BuiltIn::Erf => Erf,
+            type_checker::BuiltIn::Sin => Sin,
+            type_checker::BuiltIn::Cos => Cos,
+            type_checker::BuiltIn::Tan => Tan,
+            type_checker::BuiltIn::Sec => Sec,
+            type_checker::BuiltIn::Csc => Csc,
+            type_checker::BuiltIn::Cot => Cot,
+            type_checker::BuiltIn::Sinh => Sinh,
+            type_checker::BuiltIn::Cosh => Cosh,
+            type_checker::BuiltIn::Tanh => Tanh,
+            type_checker::BuiltIn::Sech => Sech,
+            type_checker::BuiltIn::Csch => Csch,
+            type_checker::BuiltIn::Coth => Coth,
+            type_checker::BuiltIn::Asin => Asin,
+            type_checker::BuiltIn::Acos => Acos,
+            type_checker::BuiltIn::Atan => Atan,
+            type_checker::BuiltIn::Atan2 => Atan2,
+            type_checker::BuiltIn::Asec => Asec,
+            type_checker::BuiltIn::Acsc => Acsc,
+            type_checker::BuiltIn::Acot => Acot,
+            type_checker::BuiltIn::Asinh => Asinh,
+            type_checker::BuiltIn::Acosh => Acosh,
+            type_checker::BuiltIn::Atanh => Atanh,
+            type_checker::BuiltIn::Asech => Asech,
+            type_checker::BuiltIn::Acsch => Acsch,
+            type_checker::BuiltIn::Acoth => Acoth,
+            type_checker::BuiltIn::Abs => Abs,
+            type_checker::BuiltIn::Sgn => Sgn,
+            type_checker::BuiltIn::Round => Round,
+            type_checker::BuiltIn::RoundWithPrecision => RoundWithPrecision,
+            type_checker::BuiltIn::Floor => Floor,
+            type_checker::BuiltIn::Ceil => Ceil,
+            type_checker::BuiltIn::Mod => Mod,
+            type_checker::BuiltIn::Midpoint => Midpoint,
+            type_checker::BuiltIn::Distance => Distance,
+            type_checker::BuiltIn::Min => Min,
+            type_checker::BuiltIn::Max => Max,
+            type_checker::BuiltIn::Median => Median,
+            type_checker::BuiltIn::TotalNumber => TotalNumber,
+            type_checker::BuiltIn::TotalPoint => TotalPoint,
+            type_checker::BuiltIn::MeanNumber => MeanNumber,
+            type_checker::BuiltIn::MeanPoint => MeanPoint,
+            type_checker::BuiltIn::CountNumber => CountNumber,
+            type_checker::BuiltIn::CountPoint => CountPoint,
+            type_checker::BuiltIn::CountPolygon => CountPolygon,
+            type_checker::BuiltIn::UniqueNumber => UniqueNumber,
+            type_checker::BuiltIn::UniquePoint => UniquePoint,
+            type_checker::BuiltIn::UniquePolygon => UniquePolygon,
+            type_checker::BuiltIn::Sort => Sort,
+            type_checker::BuiltIn::SortKeyNumber => SortKeyNumber,
+            type_checker::BuiltIn::SortKeyPoint => SortKeyPoint,
+            type_checker::BuiltIn::SortKeyPolygon => SortKeyPolygon,
+            type_checker::BuiltIn::Polygon => Polygon,
+            type_checker::BuiltIn::JoinNumber => JoinNumber,
+            type_checker::BuiltIn::JoinPoint => JoinPoint,
+            type_checker::BuiltIn::JoinPolygon => JoinPolygon,
         }
     }
 }
@@ -281,7 +388,12 @@ declare_ops! {
         SortKeyNumber(NL, NL) -> NL,
         SortKeyPoint(PL, NL) -> PL,
         SortKeyPolygon(PgL, NL) -> PgL,
-        Polygon(PL) -> Pg
+        Polygon(PL) -> Pg,
+        // These have more complicated type signatures than what we can represent (due to potential list of list)
+        // and are thus left taking "no" input and handled as a special case
+        JoinNumber() -> NL,
+        JoinPoint() -> PL,
+        JoinPolygon() -> PgL,
     }
 }
 impl OpName {

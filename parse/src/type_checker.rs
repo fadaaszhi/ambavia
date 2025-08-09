@@ -3,8 +3,11 @@ use std::{borrow::Borrow, collections::HashMap, iter::zip, mem};
 use derive_more::{From, Into};
 use typed_index_collections::{TiSlice, TiVec, ti_vec};
 
-use crate::name_resolver::{self as nr};
 pub use crate::name_resolver::{ComparisonOperator, SumProdKind};
+use crate::{
+    name_resolver::{self as nr},
+    op::{Op, USE_OP},
+};
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum BaseType {
@@ -299,6 +302,10 @@ pub enum Expression {
         left: Box<TypedExpression>,
         right: Box<TypedExpression>,
     },
+    Op {
+        operation: Op,
+        args: Vec<TypedExpression>,
+    },
     ChainedComparison {
         operands: Vec<TypedExpression>,
         operators: Vec<ComparisonOperator>,
@@ -342,7 +349,43 @@ struct TypeChecker {
     names: HashMap<usize, Result<(Type, usize), String>>,
     id_counter: usize,
 }
-
+fn binary(operation: BinaryOperator, left: TypedExpression, right: TypedExpression) -> Expression {
+    if USE_OP {
+        Expression::Op {
+            operation: operation.into(),
+            args: vec![left, right],
+        }
+    } else {
+        Expression::BinaryOperation {
+            operation,
+            left: Box::new(left),
+            right: Box::new(right),
+        }
+    }
+}
+fn unary(operation: UnaryOperator, arg: TypedExpression) -> Expression {
+    if USE_OP {
+        Expression::Op {
+            operation: operation.into(),
+            args: vec![arg],
+        }
+    } else {
+        Expression::UnaryOperation {
+            operation,
+            arg: Box::new(arg),
+        }
+    }
+}
+fn builtin(name: BuiltIn, args: Vec<TypedExpression>) -> Expression {
+    if USE_OP {
+        Expression::Op {
+            operation: name.into(),
+            args,
+        }
+    } else {
+        Expression::BuiltIn { name, args }
+    }
+}
 impl TypeChecker {
     fn next_id(&mut self) -> usize {
         let id = self.id_counter;
@@ -494,21 +537,12 @@ impl TypeChecker {
                             vectors: vec![arg],
                             body: Box::new(te(
                                 Type::single(ty),
-                                Expression::UnaryOperation {
-                                    operation,
-                                    arg: Box::new(te(arg_ty, Expression::Identifier(id))),
-                                },
+                                unary(operation, te(arg_ty, Expression::Identifier(id))),
                             )),
                         },
                     ))
                 } else {
-                    Ok(te(
-                        Type::single(ty),
-                        Expression::UnaryOperation {
-                            operation,
-                            arg: Box::new(arg),
-                        },
-                    ))
+                    Ok(te(Type::single(ty), unary(operation, arg)))
                 }
             }
             nr::Expression::BinaryOperation {
@@ -635,16 +669,16 @@ impl TypeChecker {
                             } else {
                                 te(
                                     ty,
-                                    Expression::BinaryOperation {
-                                        operation: match ty {
+                                    binary(
+                                        match ty {
                                             Type::NumberList => O::FilterNumberList,
                                             Type::PointList => O::FilterPointList,
                                             Type::PolygonList => O::FilterPolygonList,
                                             _ => unreachable!(),
                                         },
-                                        left: Box::new(left),
-                                        right: Box::new(right),
-                                    },
+                                        left,
+                                        right,
+                                    ),
                                 )
                             });
                         }
@@ -671,11 +705,11 @@ impl TypeChecker {
                     let right = self.create_assignment(right);
                     let body = Box::new(te(
                         Type::single(ty),
-                        Expression::BinaryOperation {
+                        binary(
                             operation,
-                            left: Box::new(te(left_ty, Expression::Identifier(left.id))),
-                            right: Box::new(te(right_ty, Expression::Identifier(right.id))),
-                        },
+                            te(left_ty, Expression::Identifier(left.id)),
+                            te(right_ty, Expression::Identifier(right.id)),
+                        ),
                     ));
                     let (scalars, vectors) = match (broadcast_left, broadcast_right) {
                         (true, true) => (vec![], vec![left, right]),
@@ -692,14 +726,7 @@ impl TypeChecker {
                         },
                     ))
                 } else {
-                    Ok(te(
-                        Type::single(ty),
-                        Expression::BinaryOperation {
-                            operation,
-                            left: Box::new(left),
-                            right: Box::new(right),
-                        },
-                    ))
+                    Ok(te(Type::single(ty), binary(operation, left, right)))
                 }
             }
             nr::Expression::ChainedComparison {
@@ -771,18 +798,18 @@ impl TypeChecker {
                         B::Number => te(Type::Number, Expression::Number(f64::NAN)),
                         B::Point => te(
                             Type::Point,
-                            Expression::BinaryOperation {
-                                operation: BinaryOperator::Point,
-                                left: Box::new(te(Type::Number, Expression::Number(f64::NAN))),
-                                right: Box::new(te(Type::Number, Expression::Number(f64::NAN))),
-                            },
+                            binary(
+                                BinaryOperator::Point,
+                                te(Type::Number, Expression::Number(f64::NAN)),
+                                te(Type::Number, Expression::Number(f64::NAN)),
+                            ),
                         ),
                         B::Polygon => te(
                             Type::Polygon,
-                            Expression::BuiltIn {
-                                name: BuiltIn::Polygon,
-                                args: vec![te(Type::PointList, Expression::List(vec![]))],
-                            },
+                            builtin(
+                                BuiltIn::Polygon,
+                                vec![te(Type::PointList, Expression::List(vec![]))],
+                            ),
                         ),
                         B::Bool => te(
                             Type::Bool,
@@ -898,10 +925,7 @@ impl TypeChecker {
                         Nb::Polygon => {
                             return Ok(te(
                                 Pg,
-                                Expression::BuiltIn {
-                                    name: Bi::Polygon,
-                                    args: vec![te(PL, Expression::List(vec![]))],
-                                },
+                                builtin(Bi::Polygon, vec![te(PL, Expression::List(vec![]))]),
                             ));
                         }
                         _ => {}
@@ -923,10 +947,10 @@ impl TypeChecker {
                     if x.ty == Type::EmptyList || y.ty == Type::EmptyList {
                         return Ok(te(
                             Type::Polygon,
-                            Expression::BuiltIn {
-                                name: Bi::Polygon,
-                                args: vec![te(Type::PointList, Expression::List(vec![]))],
-                            },
+                            builtin(
+                                Bi::Polygon,
+                                vec![te(Type::PointList, Expression::List(vec![]))],
+                            ),
                         ));
                     } else {
                         let broadcast_x = x.ty.is_list();
@@ -935,11 +959,11 @@ impl TypeChecker {
                         let y = self.create_assignment(y);
                         let body = Box::new(te(
                             Type::Point,
-                            Expression::BinaryOperation {
-                                operation: BinaryOperator::Point,
-                                left: Box::new(te(Type::Number, Expression::Identifier(x.id))),
-                                right: Box::new(te(Type::Number, Expression::Identifier(y.id))),
-                            },
+                            binary(
+                                BinaryOperator::Point,
+                                te(Type::Number, Expression::Identifier(x.id)),
+                                te(Type::Number, Expression::Identifier(y.id)),
+                            ),
                         ));
                         let (scalars, vectors) = match (broadcast_x, broadcast_y) {
                             (true, true) => (vec![], vec![x, y]),
@@ -949,9 +973,9 @@ impl TypeChecker {
                         };
                         return Ok(te(
                             Type::Polygon,
-                            Expression::BuiltIn {
-                                name: BuiltIn::Polygon,
-                                args: vec![te(
+                            builtin(
+                                BuiltIn::Polygon,
+                                vec![te(
                                     Type::PointList,
                                     Expression::Broadcast {
                                         scalars,
@@ -959,7 +983,7 @@ impl TypeChecker {
                                         body,
                                     },
                                 )],
-                            },
+                            ),
                         ));
                     }
                 }
@@ -993,15 +1017,15 @@ impl TypeChecker {
                     };
                     return Ok(te(
                         Type::list_of(ty.base()),
-                        Expression::BuiltIn {
-                            name: match ty.base() {
+                        builtin(
+                            match ty.base() {
                                 B::Number => Bi::JoinNumber,
                                 B::Point => Bi::JoinPoint,
                                 B::Polygon => Bi::JoinPolygon,
                                 _ => unreachable!(),
                             },
-                            args: new_args,
-                        },
+                            new_args,
+                        ),
                     ));
                 }
 
@@ -1103,13 +1127,13 @@ impl TypeChecker {
                                 .collect::<Vec<_>>();
                             let body = Box::new(te(
                                 *ret_ty,
-                                Expression::BuiltIn {
-                                    name: *builtin,
-                                    args: assignments
+                                self::builtin(
+                                    *builtin,
+                                    assignments
                                         .iter()
                                         .map(|a| te(Type::Point, Expression::Identifier(a.id)))
                                         .collect(),
-                                },
+                                ),
                             ));
                             let mut vectors = vec![];
                             let mut scalars = vec![];
@@ -1129,13 +1153,7 @@ impl TypeChecker {
                                 },
                             ));
                         } else {
-                            return Ok(te(
-                                *ret_ty,
-                                Expression::BuiltIn {
-                                    name: *builtin,
-                                    args,
-                                },
-                            ));
+                            return Ok(te(*ret_ty, self::builtin(*builtin, args)));
                         }
                     }
 
@@ -1174,9 +1192,9 @@ impl TypeChecker {
                                 .collect::<Vec<_>>();
                             let body = Box::new(te(
                                 *ret_ty,
-                                Expression::BuiltIn {
-                                    name: *builtin,
-                                    args: vec![te(
+                                self::builtin(
+                                    *builtin,
+                                    vec![te(
                                         t,
                                         Expression::List(
                                             assignments
@@ -1185,7 +1203,7 @@ impl TypeChecker {
                                                 .collect(),
                                         ),
                                     )],
-                                },
+                                ),
                             ));
                             let (vectors, scalars) =
                                 assignments.into_iter().partition(|a| a.value.ty.is_list());
@@ -1200,10 +1218,7 @@ impl TypeChecker {
                         } else {
                             return Ok(te(
                                 *ret_ty,
-                                Expression::BuiltIn {
-                                    name: *builtin,
-                                    args: vec![te(t, Expression::List(args))],
-                                },
+                                self::builtin(*builtin, vec![te(t, Expression::List(args))]),
                             ));
                         }
                     }
@@ -1213,7 +1228,11 @@ impl TypeChecker {
                     "function '{name:?}' cannot be applied to these arguments"
                 ))
             }
-            nr::Expression::Op { operation, args } => todo!(),
+            nr::Expression::Op { operation, args } => {
+                let checked_args = self.check_expressions(args)?;
+
+                todo!()
+            }
         }
     }
 }

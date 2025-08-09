@@ -405,6 +405,7 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
                 }
             }
         }
+        Expression::Op { operation, args } => todo!(),
     }
 }
 

@@ -1,4 +1,4 @@
-use std::iter::{from_fn, once, repeat};
+use std::iter::{from_fn, once, repeat, zip};
 
 use crate::{
     ast, name_resolver,
@@ -18,7 +18,7 @@ pub(crate) const TYCK_USE_OP: bool = true;
 macro_rules! declare_ops {
     (
         $( #[$meta:meta] )*
-        // include the literal names of the enums to make searching for the definition easier
+        // include the literal name of the enum to make searching for the definition easier
         $vis:vis enum Op => {
             $(
                 $op:ident( $( $arg_ty:ident ),* ) -> $ret_ty:ident
@@ -303,8 +303,8 @@ pub enum OpName {
     Join,
 }
 use Type::{
-    Bool as B, BoolList as BL, Number as N, NumberList as NL, Point as P, PointList as PL,
-    Polygon as Pg, PolygonList as PgL,
+    BoolList as BL, Number as N, NumberList as NL, Point as P, PointList as PL, Polygon as Pg,
+    PolygonList as PgL,
 };
 declare_ops! {
     #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -491,32 +491,52 @@ impl Signature {
         self,
         ptypes: impl Iterator<Item = Type> + Clone,
     ) -> Option<SignatureSatisfies<impl Iterator<Item = Option<ParameterTransform>>>> {
-        let mut it = ptypes.clone();
-
         // whether the supplied parameter list contains at least one list type.
         let mut contains_list = false;
         // accumulate length of the supplied parameter list
         let mut len = 0;
-        // first param type in the list, if any
-        let first_ty = it.next();
-
         // Either Some(BaseType) if all supplied params have the same base type or None
-        #[expect(
-            clippy::manual_try_fold,
-            reason = "we rely on this fold visiting every item"
-        )]
-        let all_params_base_ty = first_ty.map(Type::base).and_then(|first_param_ty| {
-            it.fold(Some(first_param_ty), |accum, inspect| {
-                // do some tallying while we scan the supplied params
-                if inspect.is_list() {
-                    contains_list = true;
-                }
-                len += 1;
-                accum.and_then(|accum| (accum == inspect.base()).then_some(accum))
-            })
-        });
+        let mut all_supplied_base_ty = None;
+        // first supplied type, if any
+        let mut first_supplied = None;
+        // whether to broadcast if this is a non splatted signature
+        let mut normal_needs_broadcast = false;
+        // whether we failed to match a candidate's coercions the desired type
+        let mut normal_failed_satisfy = false;
 
-        // functions that map (List) -> Scalar get special calling semantics when called with certain patterns of arguments
+        // scan the supplied parameter list
+        for (candidate, desired) in zip(
+            ptypes.clone(),
+            self.param_types
+                .iter()
+                .copied()
+                .map(Some)
+                .chain(repeat(None)),
+        ) {
+            len += 1;
+            if len == 1 {
+                all_supplied_base_ty = Some(candidate.base());
+                first_supplied = Some(candidate);
+            } else if Some(candidate.base()) != all_supplied_base_ty {
+                all_supplied_base_ty = None;
+            }
+            contains_list |= candidate.is_list();
+
+            if Some(candidate) != desired {
+                // need a broadcast
+                normal_needs_broadcast = true;
+            }
+            if Some(Type::single(candidate.base())) != desired {
+                // failed to satisfy
+                normal_failed_satisfy = true;
+            }
+        }
+
+        // functions that map (List) -> Scalar get special calling semantics when called with patterns of arguments
+        // eg min(1,2,3) should produce Op::Min { args: [ List [N1, N2, N3] ] } instead of Op::Min { args: [ N1, N2, N3 ] }
+        // further, this effect can be broadcast e.g min(1, [2,3]) produces
+        // Broadcast { scalars: Assign A1 N1, vectors: Assign A2 [N2. N3], body: Op::Min {args: [ List [ A1, A2 ] ] } }
+        // instead of Op::Min { args: [ N1, List [ N2, N3 ] ] }
         let needs_splat =
             // self returns a scalar
             !self.return_type.is_list()
@@ -525,39 +545,23 @@ impl Signature {
             && self.param_types.first().is_some_and(|&first_param_ty| {
                 // it is a list
                 first_param_ty.is_list()
-                // with the same base type as all passed parameters
-                && all_params_base_ty
-                    .is_some_and(|all_param_base_ty| all_param_base_ty == first_param_ty.base())
+                // with the same base type as all supplied parameters
+                && all_supplied_base_ty
+                    .is_some_and(|all_supplied_base_ty| all_supplied_base_ty == first_param_ty.base())
             })
             // first supplied type exists
-            && first_ty.is_some_and(|t|
+            && first_supplied.is_some_and(|t|
                 // it is scalar (desired is list)
                 !t.is_list()
                 // ...or there is more than one supplied argument (desired is 1)
                 || len > 1
             );
 
-        // broadcast if
         let needs_broadcast = if needs_splat {
             // we are splatting and the splatted params contain a list
             contains_list
         } else {
-            (len == self.param_types.len())
-                .then(|| {
-                    ptypes
-                        .clone()
-                        .zip(self.param_types.iter().copied())
-                        .try_fold(false, |should_broadcast, (supplied, desired)| {
-                            if Type::single(desired.base()) != supplied {
-                                // broadcast can't save us if base types don't match
-                                None
-                            } else {
-                                // need broadcast
-                                Some(should_broadcast || supplied != desired)
-                            }
-                        })
-                })
-                .flatten()?
+            (!normal_failed_satisfy).then_some(normal_needs_broadcast)?
         };
 
         // no list of list
@@ -571,26 +575,26 @@ impl Signature {
                 self.return_type
             },
             transform: needs_broadcast.then(move || {
-                ptypes
-                    .zip(
-                        self.param_types
-                            .iter()
-                            .copied()
-                            .map(Some)
-                            .chain(repeat(None)),
-                    )
-                    .map(move |(param_ty, desired_ty)| {
-                        // request a coercion over this parameter if:
-                        (
-                            // we are not splatting and the types do not match, but both exist
-                            // (their base types have already been proven to match by having reached this point in the function)
-                            // desired_ty is known to be Some because non splatted calls require ptypes.len() == self.parameter_types.len() to match
-                            !needs_splat && (param_ty != desired_ty.unwrap())
+                zip(
+                    ptypes,
+                    self.param_types
+                        .iter()
+                        .copied()
+                        .map(Some)
+                        .chain(repeat(None)),
+                )
+                .map(move |(param_ty, desired_ty)| {
+                    // request a coercion over this parameter if:
+                    (
+                        // we are not splatting and the types do not match, but both exist
+                        // (their base types have already been proven to match by having reached this point in the function)
+                        // desired_ty is known to be Some because non splatted calls require ptypes.len() == self.parameter_types.len() to match
+                        !needs_splat && (param_ty != desired_ty.unwrap())
                             // we are splatting and the param type is a list
                             || (needs_splat && param_ty.is_list())
-                        )
-                        .then_some(ParameterTransform::BroadcastOver)
-                    })
+                    )
+                    .then_some(ParameterTransform::BroadcastOver)
+                })
             }),
             splat: needs_splat,
         })

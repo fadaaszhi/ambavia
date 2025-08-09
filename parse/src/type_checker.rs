@@ -1358,19 +1358,11 @@ mod tests {
                     },
                     As {
                         id: 1,
-                        value: pt(Bop {
-                            operation: Bo::Point,
-                            left: bx(num(Num(3.0))),
-                            right: bx(num(Num(2.0)))
-                        })
+                        value: pt(binary(Bo::Point, num(Num(3.0)), num(Num(2.0))))
                     },
                     As {
                         id: 2,
-                        value: pt(Bop {
-                            operation: Bo::MulNumberPoint,
-                            left: bx(num(Id(0))),
-                            right: bx(pt(Id(1)))
-                        })
+                        value: pt(binary(Bo::MulNumberPoint, num(Id(0)), pt(Id(1))))
                     },
                     As {
                         id: 3,

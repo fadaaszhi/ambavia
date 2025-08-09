@@ -8,10 +8,10 @@ pub struct Signature {
     param_types: &'static [Type],
     return_type: Type,
 }
-pub(crate) const USE_OP: bool = false;
+
 pub(crate) const AST_USE_OP: bool = false;
-pub(crate) const TYCK_USE_OP: bool = false;
 pub(crate) const NAMERESOLVE_USE_OP: bool = false;
+pub(crate) const TYCK_USE_OP: bool = true;
 
 macro_rules! declare_ops {
     (

@@ -1,3 +1,5 @@
+use std::iter::{from_fn, once, repeat};
+
 use crate::{
     ast, name_resolver,
     type_checker::{self, Type},
@@ -474,46 +476,123 @@ impl OpName {
 }
 
 pub(crate) enum ParameterTransform {
-    BroadcastOver, // coercions etc
+    BroadcastOver,
+    // coercions etc
 }
 
 pub(crate) struct SignatureSatisfies<T: Iterator<Item = Option<ParameterTransform>>> {
-    ret_ty: Type,
-    transform: Option<T>,
+    pub(crate) ret_ty: Type,
+    pub(crate) transform: Option<T>,
+    pub(crate) splat: bool,
 }
 
 impl Signature {
     fn satisfies(
         self,
-        ptypes: &[Type],
+        ptypes: impl Iterator<Item = Type> + Clone,
     ) -> Option<SignatureSatisfies<impl Iterator<Item = Option<ParameterTransform>>>> {
-        // satisfy directly
-        if self.param_types == ptypes {
-            return Some(SignatureSatisfies {
-                ret_ty: self.return_type,
-                transform: None,
-            });
-        }
-        // check for brodcast
-        for (param, this_param) in ptypes.iter().zip(self.param_types) {
-            if param.base() != this_param.base() {
-                return None;
-            }
-        }
+        let mut it = ptypes.clone();
+
+        // whether the supplied parameter list contains at least one list type.
+        let mut contains_list = false;
+        // accumulate length of the supplied parameter list
+        let mut len = 0;
+        // first param type in the list, if any
+        let first_ty = it.next();
+
+        // Either Some(BaseType) if all supplied params have the same base type or None
+        #[expect(
+            clippy::manual_try_fold,
+            reason = "we rely on this fold visiting every item"
+        )]
+        let all_params_base_ty = first_ty.map(Type::base).and_then(|first_param_ty| {
+            it.fold(Some(first_param_ty), |accum, inspect| {
+                // do some tallying while we scan the supplied params
+                if inspect.is_list() {
+                    contains_list = true;
+                }
+                len += 1;
+                accum.and_then(|accum| (accum == inspect.base()).then_some(accum))
+            })
+        });
+
+        // functions that map (List) -> Scalar get special calling semantics when called with certain patterns of arguments
+        let needs_splat =
+            // self returns a scalar
+            !self.return_type.is_list()
+            // first (and only) parameter exists
+            && self.param_types.len() == 1
+            && self.param_types.first().is_some_and(|&first_param_ty| {
+                // it is a list
+                first_param_ty.is_list()
+                // with the same base type as all passed parameters
+                && all_params_base_ty
+                    .is_some_and(|all_param_base_ty| all_param_base_ty == first_param_ty.base())
+            })
+            // first supplied type exists
+            && first_ty.is_some_and(|t|
+                // it is scalar (desired is list)
+                !t.is_list()
+                // ...or there is more than one supplied argument (desired is 1)
+                || len > 1
+            );
+
+        // broadcast if
+        let needs_broadcast = if needs_splat {
+            // we are splatting and the splatted params contain a list
+            contains_list
+        } else {
+            (len == self.param_types.len())
+                .then(|| {
+                    ptypes
+                        .clone()
+                        .zip(self.param_types.iter().copied())
+                        .try_fold(false, |should_broadcast, (supplied, desired)| {
+                            if Type::single(desired.base()) != supplied {
+                                // broadcast can't save us if base types don't match
+                                None
+                            } else {
+                                // need broadcast
+                                Some(should_broadcast || supplied != desired)
+                            }
+                        })
+                })
+                .flatten()?
+        };
+
         // no list of list
-        if self.return_type.is_list() {
+        if self.return_type.is_list() && needs_broadcast {
             return None;
         }
-        // satisfy by broadcasting the required args
         Some(SignatureSatisfies {
-            ret_ty: Type::list_of(self.return_type.base()),
-            transform: Some(ptypes.iter().zip(self.param_types).map(|(param, this)| {
-                if param != this {
-                    Some(ParameterTransform::BroadcastOver)
-                } else {
-                    None
-                }
-            })),
+            ret_ty: if needs_broadcast {
+                Type::list_of(self.return_type.base())
+            } else {
+                self.return_type
+            },
+            transform: needs_broadcast.then(move || {
+                ptypes
+                    .zip(
+                        self.param_types
+                            .iter()
+                            .copied()
+                            .map(Some)
+                            .chain(repeat(None)),
+                    )
+                    .map(move |(param_ty, desired_ty)| {
+                        // request a coercion over this parameter if:
+                        (
+                            // we are not splatting and the types do not match, but both exist
+                            // (their base types have already been proven to match by having reached this point in the function)
+                            // desired_ty is known to be Some because non splatted calls require ptypes.len() == self.parameter_types.len() to match
+                            !needs_splat && (param_ty != desired_ty.unwrap())
+                            // we are splatting and the param type is a list
+                            || (needs_splat && param_ty.is_list())
+                        )
+                        .then_some(ParameterTransform::BroadcastOver)
+                    })
+            }),
+            splat: needs_splat,
         })
     }
 }
@@ -521,7 +600,7 @@ impl Signature {
 impl OpName {
     pub(crate) fn overload_for(
         self,
-        ptypes: &[Type],
+        mut ptypes: impl DoubleEndedIterator<Item = Type> + Clone,
     ) -> Result<
         (
             Op,
@@ -532,24 +611,21 @@ impl OpName {
         self.overloads()
             .iter()
             .copied()
-            .filter_map(|op| op.sig().satisfies(ptypes).map(|v| (op, v)))
+            .filter_map(|op| op.sig().satisfies(ptypes.clone()).map(|v| (op, v)))
             .next()
             .ok_or_else(|| {
-                let s = if ptypes.len() > 1 {
-                    &ptypes[0..(ptypes.len() - 1)]
-                } else {
-                    ptypes
-                };
+                let s = format!("cannot {self:#?} nothing");
+                let Some(first) = ptypes.next() else { return s };
+                let last = ptypes.next_back();
+
+                let i = once(first).chain(ptypes);
                 format!(
                     "cannot {self:#?} {}{}",
-                    s.iter()
-                        .map(|a| format!("{a}"))
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                    if ptypes.len() > 1 {
-                        format!("and {}", ptypes.last().unwrap())
+                    i.map(|a| format!("{a}")).collect::<Vec<_>>().join(", "),
+                    if let Some(last) = last {
+                        format!("and {last}")
                     } else {
-                        String::new()
+                        s
                     }
                 )
             })

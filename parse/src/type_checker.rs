@@ -6,7 +6,7 @@ use typed_index_collections::{TiSlice, TiVec, ti_vec};
 pub use crate::name_resolver::{ComparisonOperator, SumProdKind};
 use crate::{
     name_resolver::{self as nr},
-    op::{Op, TYCK_USE_OP},
+    op::{Op, SignatureSatisfies, TYCK_USE_OP},
 };
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -32,7 +32,7 @@ pub enum Type {
 }
 
 impl Type {
-    pub const fn base(&self) -> BaseType {
+    pub const fn base(self) -> BaseType {
         match self {
             Type::Number | Type::NumberList => BaseType::Number,
             Type::Point | Type::PointList => BaseType::Point,
@@ -62,7 +62,7 @@ impl Type {
         }
     }
 
-    pub const fn is_list(&self) -> bool {
+    pub const fn is_list(self) -> bool {
         matches!(
             self,
             Type::NumberList
@@ -1229,7 +1229,12 @@ impl TypeChecker {
                 ))
             }
             nr::Expression::Op { operation, args } => {
+                use crate::op::OpName;
+
                 let checked_args = self.check_expressions(args)?;
+
+                // let (op, SignatureSatisfies { ret_ty, transform }) =
+                //     operation.overload_for(checked_args.iter().map(|v| v.ty))?;
 
                 todo!()
             }

@@ -29,7 +29,7 @@ pub enum Type {
 }
 
 impl Type {
-    pub fn base(&self) -> BaseType {
+    pub const fn base(&self) -> BaseType {
         match self {
             Type::Number | Type::NumberList => BaseType::Number,
             Type::Point | Type::PointList => BaseType::Point,
@@ -39,7 +39,7 @@ impl Type {
         }
     }
 
-    pub fn list_of(base: BaseType) -> Type {
+    pub const fn list_of(base: BaseType) -> Type {
         match base {
             BaseType::Number => Type::NumberList,
             BaseType::Point => Type::PointList,
@@ -49,7 +49,7 @@ impl Type {
         }
     }
 
-    pub fn single(base: BaseType) -> Type {
+    pub const fn single(base: BaseType) -> Type {
         match base {
             BaseType::Number => Type::Number,
             BaseType::Point => Type::Point,
@@ -59,7 +59,7 @@ impl Type {
         }
     }
 
-    pub fn is_list(&self) -> bool {
+    pub const fn is_list(&self) -> bool {
         matches!(
             self,
             Type::NumberList

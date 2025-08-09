@@ -6,7 +6,7 @@ use typed_index_collections::{TiSlice, TiVec, ti_vec};
 pub use crate::name_resolver::{ComparisonOperator, SumProdKind};
 use crate::{
     name_resolver::{self as nr},
-    op::{Op, USE_OP},
+    op::{Op, TYCK_USE_OP},
 };
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -350,7 +350,7 @@ struct TypeChecker {
     id_counter: usize,
 }
 fn binary(operation: BinaryOperator, left: TypedExpression, right: TypedExpression) -> Expression {
-    if USE_OP {
+    if TYCK_USE_OP {
         Expression::Op {
             operation: operation.into(),
             args: vec![left, right],
@@ -364,7 +364,7 @@ fn binary(operation: BinaryOperator, left: TypedExpression, right: TypedExpressi
     }
 }
 fn unary(operation: UnaryOperator, arg: TypedExpression) -> Expression {
-    if USE_OP {
+    if TYCK_USE_OP {
         Expression::Op {
             operation: operation.into(),
             args: vec![arg],
@@ -377,7 +377,7 @@ fn unary(operation: UnaryOperator, arg: TypedExpression) -> Expression {
     }
 }
 fn builtin(name: BuiltIn, args: Vec<TypedExpression>) -> Expression {
-    if USE_OP {
+    if TYCK_USE_OP {
         Expression::Op {
             operation: name.into(),
             args,

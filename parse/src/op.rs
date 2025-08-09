@@ -9,6 +9,9 @@ pub struct Signature {
     return_type: Type,
 }
 pub(crate) const USE_OP: bool = false;
+pub(crate) const AST_USE_OP: bool = false;
+pub(crate) const TYCK_USE_OP: bool = false;
+pub(crate) const NAMERESOLVE_USE_OP: bool = false;
 
 macro_rules! declare_ops {
     (
@@ -320,7 +323,6 @@ declare_ops! {
         SubPoint(P, P) -> P,
         MulNumber(N, N) -> N,
         MulNumberPoint(N, P) -> P,
-        MulPointNumber(N, P) -> P,
         DivNumber(N, N) -> N,
         DivPointNumber(P, N) -> P,
         Pow(N, N) -> N,

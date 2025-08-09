@@ -2,7 +2,7 @@ use crate::{
     ast::*,
     latex_tree::Node,
     latex_tree_flattener::{Token, flatten},
-    op::USE_OP,
+    op::AST_USE_OP,
 };
 
 struct Tokens<'a> {
@@ -405,7 +405,7 @@ fn parse_piecewise_case(tokens: &mut Tokens, first: Expression) -> Result<Expres
     })
 }
 fn unary(operation: UnaryOperator, arg: Expression) -> Expression {
-    if USE_OP {
+    if AST_USE_OP {
         Expression::Op {
             operation: operation.into(),
             arguments: vec![arg],
@@ -418,7 +418,7 @@ fn unary(operation: UnaryOperator, arg: Expression) -> Expression {
     }
 }
 fn binary(operation: BinaryOperator, left: Expression, right: Expression) -> Expression {
-    if USE_OP {
+    if AST_USE_OP {
         Expression::Op {
             operation: operation.into(),
             arguments: vec![left, right],

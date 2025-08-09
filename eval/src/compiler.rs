@@ -399,13 +399,178 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
                     BuiltIn::SortKeyPoint => builder.instr2(SortKey2, arg(), arg()),
                     BuiltIn::SortKeyPolygon => builder.instr2(SortKeyPolygon, arg(), arg()),
                     BuiltIn::Polygon => builder.instr1(Polygon, arg()),
+
                     BuiltIn::JoinNumber | BuiltIn::JoinPoint | BuiltIn::JoinPolygon => {
                         unreachable!()
                     }
                 }
             }
         }
-        Expression::Op { operation, args } => todo!(),
+        Expression::Op { operation, args } => {
+            use parse::op::Op;
+            match operation {
+                Op::JoinNumber | Op::JoinPoint | Op::JoinPolygon => {
+                    let (base, push, concat) = match operation {
+                        Op::JoinNumber => (IbBaseType::Number, Push, Concat),
+                        Op::JoinPoint => (IbBaseType::Point, Push2, Concat2),
+                        Op::JoinPolygon => (IbBaseType::Polygon, PushPolygon, ConcatPolygon),
+                        _ => unreachable!(),
+                    };
+                    let first = compile_expression(&args[0], builder);
+                    let mut list = if args[0].ty.is_list() {
+                        first
+                    } else {
+                        builder.build_list(base, vec![first])
+                    };
+                    for a in &args[1..] {
+                        let instr = if a.ty.is_list() { concat } else { push };
+                        let a = compile_expression(a, builder);
+                        list = builder.instr2(instr, list, a);
+                    }
+                    list
+                }
+                _ => {
+                    let args = args
+                        .iter()
+                        .map(|e| compile_expression(e, builder))
+                        .collect::<Vec<_>>();
+                    let mut args = args.into_iter();
+                    let mut arg = || args.next().unwrap();
+                    match operation {
+                        Op::Ln => builder.instr1(Ln, arg()),
+                        Op::Exp => builder.instr1(Exp, arg()),
+                        Op::Erf => builder.instr1(Erf, arg()),
+                        Op::Sin => builder.instr1(Sin, arg()),
+                        Op::Cos => builder.instr1(Cos, arg()),
+                        Op::Tan => builder.instr1(Tan, arg()),
+                        Op::Sec => builder.instr1(Sec, arg()),
+                        Op::Csc => builder.instr1(Csc, arg()),
+                        Op::Cot => builder.instr1(Cot, arg()),
+                        Op::Sinh => builder.instr1(Sinh, arg()),
+                        Op::Cosh => builder.instr1(Cosh, arg()),
+                        Op::Tanh => builder.instr1(Tanh, arg()),
+                        Op::Sech => builder.instr1(Sech, arg()),
+                        Op::Csch => builder.instr1(Csch, arg()),
+                        Op::Coth => builder.instr1(Coth, arg()),
+                        Op::Asin => builder.instr1(Asin, arg()),
+                        Op::Acos => builder.instr1(Acos, arg()),
+                        Op::Atan => builder.instr1(Atan, arg()),
+                        Op::Atan2 => builder.instr2(Atan2, arg(), arg()),
+                        Op::Asec => builder.instr1(Asec, arg()),
+                        Op::Acsc => builder.instr1(Acsc, arg()),
+                        Op::Acot => builder.instr1(Acot, arg()),
+                        Op::Asinh => builder.instr1(Asinh, arg()),
+                        Op::Acosh => builder.instr1(Acosh, arg()),
+                        Op::Atanh => builder.instr1(Atanh, arg()),
+                        Op::Asech => builder.instr1(Asech, arg()),
+                        Op::Acsch => builder.instr1(Acsch, arg()),
+                        Op::Acoth => builder.instr1(Acoth, arg()),
+                        Op::Abs => builder.instr1(Abs, arg()),
+                        Op::Sgn => builder.instr1(Sgn, arg()),
+                        Op::Round => builder.instr1(Round, arg()),
+                        Op::RoundWithPrecision => builder.instr2(RoundWithPrecision, arg(), arg()),
+                        Op::Floor => builder.instr1(Floor, arg()),
+                        Op::Ceil => builder.instr1(Ceil, arg()),
+                        Op::Mod => builder.instr2(Mod, arg(), arg()),
+                        Op::Midpoint => builder.instr2(Midpoint, arg(), arg()),
+                        Op::Distance => builder.instr2(Distance, arg(), arg()),
+                        Op::Min => builder.instr1(Min, arg()),
+                        Op::Max => builder.instr1(Max, arg()),
+                        Op::Median => builder.instr1(Median, arg()),
+                        Op::TotalNumber => builder.instr1(Total, arg()),
+                        Op::TotalPoint => builder.instr1(Total2, arg()),
+                        Op::MeanNumber => builder.instr1(Mean, arg()),
+                        Op::MeanPoint => builder.instr1(Mean2, arg()),
+                        Op::CountNumber => builder.instr1(Count, arg()),
+                        Op::CountPoint => builder.instr1(Count2, arg()),
+                        Op::CountPolygon => builder.instr1(CountPolygonList, arg()),
+                        Op::UniqueNumber => builder.instr1(Unique, arg()),
+                        Op::UniquePoint => builder.instr1(Unique2, arg()),
+                        Op::UniquePolygon => builder.instr1(UniquePolygon, arg()),
+                        Op::Sort => builder.instr1(Sort, arg()),
+                        Op::SortKeyNumber => builder.instr2(SortKey, arg(), arg()),
+                        Op::SortKeyPoint => builder.instr2(SortKey2, arg(), arg()),
+                        Op::SortKeyPolygon => builder.instr2(SortKeyPolygon, arg(), arg()),
+                        Op::Polygon => builder.instr1(Polygon, arg()),
+                        Op::AddNumber => builder.instr2(Add, arg(), arg()),
+                        Op::AddPoint => builder.instr2(Add2, arg(), arg()),
+                        Op::SubNumber => builder.instr2(Sub, arg(), arg()),
+                        Op::SubPoint => builder.instr2(Sub2, arg(), arg()),
+                        Op::MulNumber => builder.instr2(Mul, arg(), arg()),
+                        Op::MulNumberPoint => builder.instr2(Mul1_2, arg(), arg()),
+                        Op::DivNumber => builder.instr2(Div, arg(), arg()),
+                        Op::DivPointNumber => builder.instr2(Div2_1, arg(), arg()),
+                        Op::Pow => builder.instr2(Pow, arg(), arg()),
+                        Op::Dot => builder.instr2(Dot, arg(), arg()),
+                        Op::Point => builder.instr2(Point, arg(), arg()),
+                        Op::IndexNumberList => builder.instr2(Index, arg(), arg()),
+                        Op::IndexPointList => builder.instr2(Index2, arg(), arg()),
+                        Op::IndexPolygonList => builder.instr2(IndexPolygonList, arg(), arg()),
+                        Op::NegNumber => builder.instr1(Neg, arg()),
+                        Op::NegPoint => builder.instr1(Neg2, arg()),
+                        Op::Fac => builder.instr1(todo!(" factorial"), arg()),
+                        Op::Sqrt => builder.instr1(Sqrt, arg()),
+                        Op::Mag => builder.instr1(Hypot, arg()),
+                        Op::PointX => builder.instr1(PointX, arg()),
+                        Op::PointY => builder.instr1(PointY, arg()),
+                        Op::FilterNumberList | Op::FilterPointList | Op::FilterPolygonList => {
+                            let mut result = builder.build_list(
+                                match ty {
+                                    TcType::NumberList => IbBaseType::Number,
+                                    TcType::PointList => IbBaseType::Point,
+                                    TcType::PolygonList => IbBaseType::Polygon,
+                                    TcType::BoolList => IbBaseType::Bool,
+                                    TcType::EmptyList => IbBaseType::Number,
+                                    TcType::Number
+                                    | TcType::Point
+                                    | TcType::Polygon
+                                    | TcType::Bool => {
+                                        unreachable!()
+                                    }
+                                },
+                                vec![],
+                            );
+                            let (left, right) = (arg(), arg());
+                            let left_count = builder.count_specific(&left);
+                            let right_count = builder.count_specific(&right);
+                            let count = builder.instr2(MinInternal, left_count, right_count);
+
+                            let i = builder.load_const(0.0);
+                            let loop_start = builder.label();
+                            let i_copy = builder.copy(&i);
+                            let count_copy = builder.copy(&count);
+                            let i_lt_count = builder.instr2(LessThan, i_copy, count_copy);
+                            let loop_jump_if_false = builder.jump_if_false(i_lt_count);
+
+                            let i_copy = builder.copy(&i);
+                            let right_i = builder.unchecked_index(&right, i_copy);
+
+                            let filter_jump_if_false = builder.jump_if_false(right_i);
+                            let i_copy = builder.copy(&i);
+                            let left_i = builder.unchecked_index(&left, i_copy);
+                            builder.append(&result, left_i);
+                            let label = builder.label();
+                            builder.set_jump_label(filter_jump_if_false, &label);
+
+                            let one = builder.load_const(1.0);
+                            builder.instr2_in_place(Add, &i, one);
+                            let loop_jump = builder.jump(vec![]);
+                            builder.set_jump_label(loop_jump, &loop_start);
+                            let loop_end = builder.label();
+                            builder.set_jump_label(loop_jump_if_false, &loop_end);
+                            builder.pop(i);
+                            builder.pop(count);
+                            builder.swap_pop(&mut result, vec![left, right]);
+
+                            result
+                        }
+                        Op::JoinNumber | Op::JoinPoint | Op::JoinPolygon => {
+                            unreachable!()
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

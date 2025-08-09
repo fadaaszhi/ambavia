@@ -6,7 +6,7 @@ use typed_index_collections::{TiSlice, TiVec};
 pub use crate::ast::{BinaryOperator, ComparisonOperator, SumProdKind, UnaryOperator};
 use crate::{
     ast::{self, ExpressionListEntry},
-    op::{OpName, USE_OP},
+    op::{NAMERESOLVE_USE_OP, OpName},
 };
 
 #[derive(Debug, PartialEq)]
@@ -264,7 +264,7 @@ struct Resolver<'a> {
     global_scope: ScopeMap<'a, ((usize, Option<String>), Dependencies<'a>)>,
 }
 fn builtin(name: BuiltIn, args: Vec<Expression>) -> Expression {
-    if USE_OP {
+    if NAMERESOLVE_USE_OP {
         Expression::Op {
             operation: name.into(),
             args,

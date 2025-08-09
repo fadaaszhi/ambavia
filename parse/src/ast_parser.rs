@@ -90,13 +90,40 @@ fn trig_inverse(name: &str) -> Option<&'static str> {
 }
 
 fn allows_no_parentheses(name: &str) -> bool {
-    match name {
-        "sin" | "cos" | "tan" | "sec" | "csc" | "cot" | "sinh" | "cosh" | "tanh" | "sech"
-        | "csch" | "coth" | "arcsin" | "arccos" | "arctan" | "arcsec" | "arccsc" | "arccot"
-        | "arcsinh" | "arsinh" | "arccosh" | "arcosh" | "arctanh" | "artanh" | "arcsech"
-        | "arsech" | "arccsch" | "arcsch" | "arccoth" | "arcoth" | "ln" => true,
-        _ => false,
-    }
+    matches!(
+        name,
+        "sin"
+            | "cos"
+            | "tan"
+            | "sec"
+            | "csc"
+            | "cot"
+            | "sinh"
+            | "cosh"
+            | "tanh"
+            | "sech"
+            | "csch"
+            | "coth"
+            | "arcsin"
+            | "arccos"
+            | "arctan"
+            | "arcsec"
+            | "arccsc"
+            | "arccot"
+            | "arcsinh"
+            | "arsinh"
+            | "arccosh"
+            | "arcosh"
+            | "arctanh"
+            | "artanh"
+            | "arcsech"
+            | "arsech"
+            | "arccsch"
+            | "arcsch"
+            | "arccoth"
+            | "arcoth"
+            | "ln"
+    )
 }
 
 fn parse_ident_frag(tokens: &mut Tokens) -> Result<String, String> {
@@ -116,9 +143,9 @@ fn parse_ident_frag(tokens: &mut Tokens) -> Result<String, String> {
         } = tokens.peek()
     {
         let sup = flatten(sup)?;
-        if sup.as_slice() == &[Token::Minus, Token::Number("1".into())] {
+        if sup.as_slice() == [Token::Minus, Token::Number("1".into())] {
             name = inverse.into();
-        } else if sup.as_slice() == &[Token::Number("2".into())] {
+        } else if sup.as_slice() == [Token::Number("2".into())] {
             name += "^2";
         } else {
             return Err(format!("only {name}^2 and {name}^-1 are supported"));

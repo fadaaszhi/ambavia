@@ -324,15 +324,15 @@ impl<'a> Resolver<'a> {
     }
 
     fn resolve_variable(&mut self, name: &'a str) -> (Result<usize, String>, Dependencies<'a>) {
-        if let Some(((id, err), deps)) = self.get_maybe_outdated_variable(name) {
-            if deps.map.iter().all(|(n, d)| match d {
+        if let Some(((id, err), deps)) = self.get_maybe_outdated_variable(name)
+            && deps.map.iter().all(|(n, d)| match d {
                 Dependency::Assignment(i) => self.get_maybe_outdated_variable(n).unwrap().0.0 == i,
                 Dependency::NotDynamic => !self.dynamic_scope.contains_key(n),
-            }) {
-                let mut deps = deps.clone();
-                deps.map.insert(name, Dependency::Assignment(*id));
-                return (err.cloned().map_or(Ok(*id), Err), deps);
-            }
+            })
+        {
+            let mut deps = deps.clone();
+            deps.map.insert(name, Dependency::Assignment(*id));
+            return (err.cloned().map_or(Ok(*id), Err), deps);
         }
 
         let entry = match self

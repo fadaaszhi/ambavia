@@ -327,7 +327,7 @@ fn parse_nodes<'a>(
     Ok(())
 }
 
-pub fn parse_latex(source: &str) -> Result<Nodes, ParseError> {
+pub fn parse_latex(source: &'_ str) -> Result<Nodes<'_>, ParseError<'_>> {
     let mut lexer = Lexer::new(source);
     let mut nodes = vec![];
     parse_nodes(&mut lexer, &mut nodes, NodesKind::Content)?;

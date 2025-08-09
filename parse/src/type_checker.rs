@@ -847,25 +847,25 @@ impl TypeChecker {
             nr::Expression::SumProd { .. } => todo!(),
             nr::Expression::For { body, lists } => {
                 let lists = lists
-                    .iter()
-                    .map(|l| {
-                        let list = self.check_expression(&l.value)?;
+                            .iter()
+                            .map(|l| {
+                                let list = self.check_expression(&l.value)?;
 
-                        if !list.ty.is_list() {
-                            return Err(format!(
-                                "a definition on the right-hand side of 'for' must be a list, but '{}' is {}",
-                                l.name, list.ty
-                            ));
-                        }
+                                if !list.ty.is_list() {
+                                    return Err(format!(
+                                        "a definition on the right-hand side of 'for' must be a list, but '{}' is {}",
+                                        l.name, list.ty
+                                    ));
+                                }
 
-                        let assignment = self.create_assignment(list);
-                        self.names.insert(
-                            l.id,
-                            Ok((Type::single(assignment.value.ty.base()), assignment.id)),
-                        );
-                        Ok(assignment)
-                    })
-                    .collect::<Result<_, String>>()?;
+                                let assignment = self.create_assignment(list);
+                                self.names.insert(
+                                    l.id,
+                                    Ok((Type::single(assignment.value.ty.base()), assignment.id)),
+                                );
+                                Ok(assignment)
+                            })
+                            .collect::<Result<_, String>>()?;
 
                 let body = self.check_body(body)?;
 
@@ -1213,6 +1213,7 @@ impl TypeChecker {
                     "function '{name:?}' cannot be applied to these arguments"
                 ))
             }
+            nr::Expression::Op { operation, args } => todo!(),
         }
     }
 }

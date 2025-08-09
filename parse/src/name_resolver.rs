@@ -3,8 +3,11 @@ use std::{borrow::Borrow, collections::HashMap, iter::zip};
 use derive_more::{From, Into};
 use typed_index_collections::{TiSlice, TiVec};
 
-use crate::ast::{self, ExpressionListEntry};
 pub use crate::ast::{BinaryOperator, ComparisonOperator, SumProdKind, UnaryOperator};
+use crate::{
+    ast::{self, ExpressionListEntry},
+    op::{OpName, USE_OP},
+};
 
 #[derive(Debug, PartialEq)]
 pub enum Expression {
@@ -23,6 +26,10 @@ pub enum Expression {
         operation: BinaryOperator,
         left: Box<Expression>,
         right: Box<Expression>,
+    },
+    Op {
+        operation: OpName,
+        args: Vec<Expression>,
     },
     ChainedComparison {
         operands: Vec<Expression>,
@@ -256,7 +263,16 @@ struct Resolver<'a> {
     dynamic_scope: ScopeMap<'a, (usize, Dependencies<'a>)>,
     global_scope: ScopeMap<'a, ((usize, Option<String>), Dependencies<'a>)>,
 }
-
+fn builtin(name: BuiltIn, args: Vec<Expression>) -> Expression {
+    if USE_OP {
+        Expression::Op {
+            operation: name.into(),
+            args,
+        }
+    } else {
+        Expression::BuiltIn { name, args }
+    }
+}
 #[derive(Debug, Copy, Clone, From, Into)]
 pub struct ExpressionIndex(usize);
 type ExpressionList<E> = TiSlice<ExpressionIndex, E>;
@@ -473,7 +489,7 @@ impl<'a> Resolver<'a> {
                 (Err(e), d) => return (Err(e), d),
             };
 
-            return (Ok(Expression::BuiltIn { name, args }), deps);
+            return (Ok(builtin(name, args)), deps);
         }
 
         let (parameters, body) = match self.globals.get(callee).cloned() {
@@ -777,7 +793,19 @@ impl<'a> Resolver<'a> {
             ast::Expression::Op {
                 operation,
                 arguments,
-            } => todo!(),
+            } => {
+                let (args, deps) = match self.resolve_expressions(arguments) {
+                    (Ok(v), d) => (v, d),
+                    (Err(e), d) => return (Err(e), d),
+                };
+                (
+                    Ok(Expression::Op {
+                        operation: *operation,
+                        args,
+                    }),
+                    deps,
+                )
+            }
         }
     }
 }

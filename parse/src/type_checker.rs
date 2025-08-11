@@ -41,7 +41,16 @@ impl Type {
             Type::EmptyList => BaseType::Empty,
         }
     }
-
+    pub const fn map_base(self, base: BaseType) -> Self {
+        if self.is_list() {
+            Self::list_of(base)
+        } else {
+            Self::single(base)
+        }
+    }
+    pub const fn as_single(self) -> Self {
+        Self::single(self.base())
+    }
     pub const fn list_of(base: BaseType) -> Type {
         match base {
             BaseType::Number => Type::NumberList,

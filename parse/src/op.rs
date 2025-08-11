@@ -1,8 +1,8 @@
-use std::iter::{from_fn, once, repeat, zip};
+use std::iter::{once, repeat, zip};
 
 use crate::{
     ast, name_resolver,
-    type_checker::{self, Type},
+    type_checker::{self, BaseType, Type},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -475,12 +475,53 @@ impl OpName {
     }
 }
 
-pub(crate) enum ParameterTransform {
-    BroadcastOver,
-    // coercions etc
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct CoerceParameter {
+    // whether to broadcast over this parameter
+    broadcast: bool,
+    // whether to coerce this parameter from Empty -> desired
+    coerce_empty: bool,
+}
+impl CoerceParameter {
+    fn new() -> Self {
+        Self {
+            broadcast: false,
+            coerce_empty: false,
+        }
+    }
+    fn try_coerce_to(mut supplied: Type, desired: Type, is_splat: bool) -> Option<Option<Self>> {
+        let mut c = CoerceParameter {
+            broadcast: false,
+            coerce_empty: false,
+        };
+        if supplied.base() == BaseType::Empty {
+            c.coerce_empty = true;
+            // coerce the supplied type for the rest of the logic
+            supplied = supplied.map_base(desired.base())
+        }
+
+        match (supplied, desired) {
+            (s, d) if s == d => return Some(None),
+            (s, d) if Type::single(s.base()) == d => c.broadcast = true,
+            _ => {
+                return if is_splat {
+                    Self::try_coerce_to(supplied, Type::single(desired.base()), false)
+                } else {
+                    None
+                };
+            }
+        };
+        Some(Some(c))
+    }
+    fn union(self, other: Self) -> Self {
+        Self {
+            broadcast: self.broadcast || other.broadcast,
+            coerce_empty: self.coerce_empty || other.coerce_empty,
+        }
+    }
 }
 
-pub(crate) struct SignatureSatisfies<T: Iterator<Item = Option<ParameterTransform>>> {
+pub(crate) struct SignatureSatisfies<T: Iterator<Item = Option<CoerceParameter>>> {
     pub(crate) ret_ty: Type,
     pub(crate) transform: Option<T>,
     pub(crate) splat: bool,
@@ -490,19 +531,19 @@ impl Signature {
     fn satisfies(
         self,
         ptypes: impl Iterator<Item = Type> + Clone,
-    ) -> Option<SignatureSatisfies<impl Iterator<Item = Option<ParameterTransform>>>> {
-        // whether the supplied parameter list contains at least one list type.
-        let mut contains_list = false;
+    ) -> Option<SignatureSatisfies<impl Iterator<Item = Option<CoerceParameter>>>> {
         // accumulate length of the supplied parameter list
         let mut len = 0;
         // Either Some(BaseType) if all supplied params have the same base type or None
         let mut all_supplied_base_ty = None;
         // first supplied type, if any
         let mut first_supplied = None;
-        // whether to broadcast if this is a non splatted signature
-        let mut normal_needs_broadcast = false;
-        // whether we failed to match a candidate's coercions the desired type
-        let mut normal_failed_satisfy = false;
+
+        let mut coerce = None::<CoerceParameter>;
+
+        let is_splat_candidate = self.param_types.len() == 1
+            && self.param_types.first().unwrap().is_list()
+            && !self.return_type.is_list();
 
         // scan the supplied parameter list
         for (candidate, desired) in zip(
@@ -513,35 +554,35 @@ impl Signature {
                 .map(Some)
                 .chain(repeat(None)),
         ) {
+            let candidate_base = candidate.base();
             len += 1;
             if len == 1 {
-                all_supplied_base_ty = Some(candidate.base());
+                all_supplied_base_ty = Some(candidate_base);
                 first_supplied = Some(candidate);
-            } else if Some(candidate.base()) != all_supplied_base_ty {
+            } else if Some(candidate_base) != all_supplied_base_ty {
                 all_supplied_base_ty = None;
             }
-            contains_list |= candidate.is_list();
+            // early return if we can't determine the (likely) desired type
+            let actual_desired =
+                desired.or(is_splat_candidate.then_some(self.param_types[0].as_single()))?;
 
-            if Some(candidate) != desired {
-                // need a broadcast
-                normal_needs_broadcast = true;
-            }
-            if Some(Type::single(candidate.base())) != desired {
-                // failed to satisfy
-                normal_failed_satisfy = true;
+            // early return if we can't satisfy this parameter
+            let this_param =
+                CoerceParameter::try_coerce_to(candidate, actual_desired, is_splat_candidate)?;
+
+            if let Some(c) = this_param {
+                let r = coerce.get_or_insert(c);
+                *r = r.union(c);
             }
         }
 
         // functions that map (List) -> Scalar get special calling semantics when called with patterns of arguments
         // eg min(1,2,3) should produce Op::Min { args: [ List [N1, N2, N3] ] } instead of Op::Min { args: [ N1, N2, N3 ] }
         // further, this effect can be broadcast e.g min(1, [2,3]) produces
-        // Broadcast { scalars: Assign A1 N1, vectors: Assign A2 [N2. N3], body: Op::Min {args: [ List [ A1, A2 ] ] } }
+        // Broadcast { scalars: Assign A1 N1, vectors: Assign A2 [N2, N3], body: Op::Min {args: [ List [ A1, A2 ] ] } }
         // instead of Op::Min { args: [ N1, List [ N2, N3 ] ] }
         let needs_splat =
-            // self returns a scalar
-            !self.return_type.is_list()
-            // first (and only) parameter exists
-            && self.param_types.len() == 1
+            is_splat_candidate
             && self.param_types.first().is_some_and(|&first_param_ty| {
                 // it is a list
                 first_param_ty.is_list()
@@ -557,24 +598,18 @@ impl Signature {
                 || len > 1
             );
 
-        let needs_broadcast = if needs_splat {
-            // we are splatting and the splatted params contain a list
-            contains_list
-        } else {
-            (!normal_failed_satisfy).then_some(normal_needs_broadcast)?
-        };
-
         // no list of list
-        if self.return_type.is_list() && needs_broadcast {
+        if self.return_type.is_list() && coerce.is_some_and(|a| a.broadcast) {
             return None;
         }
+
         Some(SignatureSatisfies {
-            ret_ty: if needs_broadcast {
+            ret_ty: if coerce.is_some_and(|a| a.broadcast) {
                 Type::list_of(self.return_type.base())
             } else {
                 self.return_type
             },
-            transform: needs_broadcast.then(move || {
+            transform: coerce.map(|c| {
                 zip(
                     ptypes,
                     self.param_types
@@ -583,17 +618,18 @@ impl Signature {
                         .map(Some)
                         .chain(repeat(None)),
                 )
-                .map(move |(param_ty, desired_ty)| {
-                    // request a coercion over this parameter if:
-                    (
-                        // we are not splatting and the types do not match, but both exist
-                        // (their base types have already been proven to match by having reached this point in the function)
-                        // desired_ty is known to be Some because non splatted calls require ptypes.len() == self.parameter_types.len() to match
-                        !needs_splat && (param_ty != desired_ty.unwrap())
-                            // we are splatting and the param type is a list
-                            || (needs_splat && param_ty.is_list())
+                .map(move |(param_ty, mut desired_ty)| {
+                    if let None = desired_ty
+                        && needs_splat
+                    {
+                        desired_ty = Some(self.param_types[0].as_single());
+                    }
+                    CoerceParameter::try_coerce_to(
+                        param_ty,
+                        desired_ty.expect("desired type should be present"),
+                        needs_splat,
                     )
-                    .then_some(ParameterTransform::BroadcastOver)
+                    .expect("tried to check coercion for parameter but failed after precheck")
                 })
             }),
             splat: needs_splat,
@@ -608,7 +644,7 @@ impl OpName {
     ) -> Result<
         (
             Op,
-            SignatureSatisfies<impl Iterator<Item = Option<ParameterTransform>>>,
+            SignatureSatisfies<impl Iterator<Item = Option<CoerceParameter>>>,
         ),
         String,
     > {

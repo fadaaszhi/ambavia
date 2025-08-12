@@ -1377,9 +1377,11 @@ impl TypeChecker {
                     operation.overload_for(checked_args.iter().map(|v| v.ty))?;
                 Ok(match meta {
                     crate::op::SatisfyMeta::EmptyList => match operation {
-                        OpName::Min | OpName::Max | OpName::Median | OpName::Mean => {
-                            te(Type::Number, Expression::Number(f64::NAN))
-                        }
+                        OpName::Min
+                        | OpName::Max
+                        | OpName::Median
+                        | OpName::Mean
+                        | OpName::Index => te(Type::Number, Expression::Number(f64::NAN)),
                         OpName::Count | OpName::Total => te(Type::Number, Expression::Number(0.0)),
                         _ => return empty_list(return_ty.base()),
                     },

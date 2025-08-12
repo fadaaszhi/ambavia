@@ -1376,9 +1376,14 @@ impl TypeChecker {
                 let (op, SigSatisfies { return_ty, meta }) =
                     operation.overload_for(checked_args.iter().map(|v| v.ty))?;
                 Ok(match meta {
-                    crate::op::SatisfyMeta::EmptyList => {
-                        return empty_list(return_ty.base());
-                    }
+                    crate::op::SatisfyMeta::EmptyList => match operation {
+                        OpName::Min | OpName::Max | OpName::Median | OpName::Mean => {
+                            te(Type::Number, Expression::Number(f64::NAN))
+                        }
+                        OpName::Count | OpName::Total => te(Type::Number, Expression::Number(0.0)),
+                        _ => return empty_list(return_ty.base()),
+                    },
+
                     crate::op::SatisfyMeta::PartialMatch(..) => {
                         // we need a "function" because only drop glue can drop partially moved values
                         // (the compiler is not smart enough to see that we move the only Drop type out of meta)

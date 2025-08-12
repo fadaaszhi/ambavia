@@ -472,7 +472,7 @@ impl OpName {
             OpName::Count => &[CountNumber, CountPoint, CountPolygon],
             OpName::Unique => &[CountNumber, CountPoint, CountPolygon],
             OpName::Sort => &[Sort, SortKeyNumber, SortKeyPoint, SortKeyPolygon],
-            OpName::Polygon => &[],
+            OpName::Polygon => &[Polygon],
             OpName::Join => &[],
         }
     }

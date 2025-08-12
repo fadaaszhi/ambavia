@@ -685,9 +685,13 @@ impl Signature {
                 // ...or there is more than one supplied argument (desired is 1)
                 || len > 1
             );
-        if is_splat_candidate && !needs_splat && len == 1 && !first_supplied.unwrap().is_list() {
+
+        if len < self.param_types.len()
+            || is_splat_candidate && !needs_splat && len == 1 && !first_supplied.unwrap().is_list()
+        {
             return None;
         }
+
         Some(if num_empty_coercions > 0 {
             SigSatisfies {
                 return_ty: if num_empty_coercions == len {
@@ -762,8 +766,9 @@ impl OpName {
             })
             .and_then(|v| {
                 v.ok_or_else(|| {
-                    let s = format!("cannot {self:#?} nothing");
-                    let Some(first) = ptypes.next() else { return s };
+                    let Some(first) = ptypes.next() else {
+                        return format!("cannot {self:#?} nothing");
+                    };
                     let last = ptypes.next_back();
 
                     let i = once(first).chain(ptypes);

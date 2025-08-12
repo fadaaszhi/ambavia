@@ -833,14 +833,14 @@ mod tests {
         )
     }
     #[track_caller]
-    fn exact_match(v: &MatchedOverload, resolved: Op) {
+    fn exact_match(v: &MatchedOverload, resolved: Op, splat: bool) {
         assert_eq!(
             v,
             &(
                 Some(resolved),
                 SigSatisfies {
                     return_ty: resolved.sig().return_type,
-                    meta: crate::op::SatisfyMeta::ExactMatch(false)
+                    meta: crate::op::SatisfyMeta::ExactMatch(splat)
                 }
             )
         );
@@ -868,8 +868,8 @@ mod tests {
     use Type::{EmptyList, Number, NumberList};
     #[test]
     fn shrimple_ops() {
-        exact_match(&get(Add, &[Number, Number]), Op::AddNumber);
-        exact_match(&get(Mul, &[Number, Ty::Point]), Op::MulNumberPoint);
+        exact_match(&get(Add, &[Number, Number]), Op::AddNumber, false);
+        exact_match(&get(Mul, &[Number, Ty::Point]), Op::MulNumberPoint, false);
 
         empty_list_of(&get(Add, &[Number, EmptyList]), NumberList);
         empty_list_of(&get(Add, &[EmptyList, Number]), NumberList);
@@ -896,6 +896,11 @@ mod tests {
         empty_list_of(&s, EmptyList);
 
         let s = get(Min, &[NumberList]);
-        exact_match(&s, Op::Min);
+        exact_match(&s, Op::Min, false);
+        let s = get(Min, &[Number]);
+        splat(&s);
+        exact_match(&s, Op::Min, true);
+        let s = get(Index, &[EmptyList, EmptyList]);
+        empty_list_of(&s, EmptyList);
     }
 }

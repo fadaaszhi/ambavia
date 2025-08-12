@@ -584,36 +584,29 @@ impl<T: Iterator<Item = Option<CoerceParameter>> + Clone> SigSatisfies<T> {
         dbg!(this.return_ty, other.return_ty);
         match this.meta.compare(&other.meta) {
             Ordering::Less => Ok((other_op, other)),
-            Ordering::Equal => {
-                match this.meta {
-                    SatisfyMeta::EmptyList => {
-                        Ok(
-                            match (this.return_ty.as_list(), other.return_ty.as_list()) {
-                                (a, b) if a == b => (
-                                    None,
-                                    SigSatisfies {
-                                        return_ty: a.as_list(),
-                                        meta: SatisfyMeta::EmptyList,
-                                    },
-                                ),
-                                // preserve return type information where possible
-                                // (_, Type::EmptyList) => (None, this),
-                                // (Type::EmptyList, _) => (None, other),
-                                (_, _) => (
-                                    None,
-                                    SigSatisfies {
-                                        return_ty: Type::EmptyList,
-                                        meta: SatisfyMeta::EmptyList,
-                                    },
-                                ),
+            Ordering::Equal => match this.meta {
+                SatisfyMeta::EmptyList => Ok(
+                    match (this.return_ty.as_list(), other.return_ty.as_list()) {
+                        (a, b) if a == b => (
+                            None,
+                            SigSatisfies {
+                                return_ty: a.as_list(),
+                                meta: SatisfyMeta::EmptyList,
                             },
-                        )
-                    }
-                    SatisfyMeta::ExactMatch(_) | SatisfyMeta::PartialMatch(..) => Err(format!(
-                        "[internal] failed to unify ambiguous overloads {this_op:#?} and {other_op:#?}"
-                    )),
-                }
-            }
+                        ),
+                        (_, _) => (
+                            None,
+                            SigSatisfies {
+                                return_ty: Type::EmptyList,
+                                meta: SatisfyMeta::EmptyList,
+                            },
+                        ),
+                    },
+                ),
+                SatisfyMeta::ExactMatch(_) | SatisfyMeta::PartialMatch(..) => Err(format!(
+                    "[internal] failed to unify ambiguous overloads {this_op:#?} and {other_op:#?}"
+                )),
+            },
             Ordering::Greater => Ok((this_op, this)),
         }
     }
@@ -778,7 +771,7 @@ impl OpName {
                         "cannot {self:#?} {}{}",
                         i.map(|a| format!("{a}")).collect::<Vec<_>>().join(", "),
                         if let Some(last) = last {
-                            &format!("and {last}")
+                            &format!(" and {last}")
                         } else {
                             ""
                         }

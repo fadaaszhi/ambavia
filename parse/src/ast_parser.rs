@@ -859,7 +859,7 @@ mod tests {
     use BinaryOperator::*;
     use ComparisonOperator::*;
     use Expression::{
-        BinaryOperation as Bop, Call, CallOrMultiply as CallMull, For, Identifier as Id, List,
+        BinaryOperation as binary, Call, CallOrMultiply as CallMull, For, Identifier as Id, List,
         ListRange, Number as Num, Piecewise, SumProd, UnaryOperation as Uop, With,
     };
     use ExpressionListEntry as Ele;
@@ -913,15 +913,7 @@ mod tests {
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
         assert_eq!(
             parse_expression(&mut tokens, 0),
-            Ok(Bop {
-                operation: Add,
-                left: bx(Num(1.0)),
-                right: bx(Bop {
-                    operation: Mul,
-                    left: bx(Num(2.0)),
-                    right: bx(Num(3.0))
-                })
-            })
+            Ok(binary(Add, Num(1.0), binary(Mul, Num(2.0), Num(3.0))))
         );
         assert_eq!(tokens.next(), &T::EndOfInput);
 
@@ -935,15 +927,7 @@ mod tests {
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
         assert_eq!(
             parse_expression(&mut tokens, 0),
-            Ok(Bop {
-                operation: Sub,
-                left: bx(Bop {
-                    operation: Cross,
-                    left: bx(Num(1.0)),
-                    right: bx(Num(2.0))
-                }),
-                right: bx(Num(3.0))
-            })
+            Ok(binary(Sub, binary(Cross, Num(1.0), Num(2.0)), Num(3.0)))
         );
         assert_eq!(tokens.next(), &T::EndOfInput);
 
@@ -972,23 +956,13 @@ mod tests {
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
         assert_eq!(
             parse_expression(&mut tokens, 0),
-            Ok(Uop {
-                operation: Neg,
-                arg: bx(Uop {
-                    operation: Neg,
-                    arg: bx(Bop {
-                        operation: Mul,
-                        left: bx(Id("j".into())),
-                        right: bx(Uop {
-                            operation: Fac,
-                            arg: bx(Uop {
-                                operation: Fac,
-                                arg: bx(Num(3.0))
-                            })
-                        })
-                    })
-                })
-            })
+            Ok(unary(
+                Neg,
+                unary(
+                    Neg,
+                    binary(Mul, Id("j".into()), unary(Fac, unary(Fac, Num(3.0))))
+                )
+            ))
         );
         assert_eq!(tokens.next(), &T::EndOfInput);
     }
@@ -1008,18 +982,11 @@ mod tests {
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
         assert_eq!(
             parse_expression(&mut tokens, 0),
-            Ok(Bop {
-                operation: Dot,
-                left: bx(Num(1.0)),
-                right: bx(Uop {
-                    operation: Fac,
-                    arg: bx(Bop {
-                        operation: Sub,
-                        left: bx(Num(2.0)),
-                        right: bx(Num(3.0))
-                    })
-                })
-            })
+            Ok(binary(
+                Dot,
+                Num(1.0),
+                unary(Fac, binary(Sub, Num(2.0), Num(3.0)))
+            ))
         );
         assert_eq!(tokens.next(), &T::EndOfInput);
     }
@@ -1055,15 +1022,7 @@ mod tests {
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
         assert_eq!(
             parse_expression(&mut tokens, 0),
-            Ok(Bop {
-                operation: Dot,
-                left: bx(Num(1.0)),
-                right: bx(Bop {
-                    operation: Div,
-                    left: bx(Num(2.3)),
-                    right: bx(Num(4.0))
-                })
-            })
+            Ok(binary(Dot, Num(1.0), binary(Div, Num(2.3), Num(4.0))))
         );
         assert_eq!(tokens.next(), &T::EndOfInput);
     }
@@ -1075,13 +1034,7 @@ mod tests {
             arg: &[Node::Char('4')],
         }];
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
-        assert_eq!(
-            parse_expression(&mut tokens, 0),
-            Ok(Uop {
-                operation: Sqrt,
-                arg: bx(Num(4.0))
-            })
-        );
+        assert_eq!(parse_expression(&mut tokens, 0), Ok(unary(Sqrt, Num(4.0))));
         assert_eq!(tokens.next(), &T::EndOfInput);
 
         let tokens = [T::Sqrt {
@@ -1091,15 +1044,7 @@ mod tests {
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
         assert_eq!(
             parse_expression(&mut tokens, 0),
-            Ok(Bop {
-                operation: Pow,
-                left: bx(Num(4.0)),
-                right: bx(Bop {
-                    operation: Div,
-                    left: bx(Num(1.0)),
-                    right: bx(Num(3.0))
-                })
-            })
+            Ok(binary(Pow, Num(4.0), binary(Div, Num(1.0), Num(3.0))))
         );
         assert_eq!(tokens.next(), &T::EndOfInput);
     }
@@ -1127,19 +1072,11 @@ mod tests {
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
         assert_eq!(
             parse_expression(&mut tokens, 0),
-            Ok(Bop {
-                operation: Pow,
-                left: bx(Bop {
-                    operation: Pow,
-                    left: bx(Num(1.0)),
-                    right: bx(Bop {
-                        operation: Pow,
-                        left: bx(Num(2.0)),
-                        right: bx(Num(3.0))
-                    })
-                }),
-                right: bx(Id("asdf".into()))
-            })
+            Ok(binary(
+                Pow,
+                binary(Pow, Num(1.0), binary(Pow, Num(2.0), Num(3.0))),
+                Id("asdf".into())
+            ))
         );
         assert_eq!(tokens.next(), &T::EndOfInput);
     }
@@ -1162,15 +1099,11 @@ mod tests {
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
         assert_eq!(
             parse_expression(&mut tokens, 0),
-            Ok(Bop {
-                operation: Mul,
-                left: bx(Id("a_{bc}".into())),
-                right: bx(Bop {
-                    operation: Pow,
-                    left: bx(Id("n_{d6}".into())),
-                    right: bx(Id("e".into()))
-                })
-            })
+            Ok(binary(
+                Mul,
+                Id("a_{bc}".into()),
+                binary(Pow, Id("n_{d6}".into()), Id("e".into()))
+            ))
         );
         assert_eq!(tokens.next(), &T::EndOfInput);
     }
@@ -1226,23 +1159,15 @@ mod tests {
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
         assert_eq!(
             parse_expression(&mut tokens, 0),
-            Ok(Bop {
-                operation: Add,
-                left: bx(Bop {
-                    operation: Mul,
-                    left: bx(Id("a".into())),
-                    right: bx(Id("b".into()))
-                }),
-                right: bx(Bop {
-                    operation: Mul,
-                    left: bx(Num(3.0)),
-                    right: bx(Bop {
-                        operation: Point,
-                        left: bx(Id("c".into())),
-                        right: bx(Id("pi".into()))
-                    })
-                })
-            })
+            Ok(binary(
+                Add,
+                binary(Mul, Id("a".into()), Id("b".into())),
+                binary(
+                    Mul,
+                    Num(3.0),
+                    binary(Point, Id("c".into()), Id("pi".into()))
+                )
+            ))
         );
         assert_eq!(tokens.next(), &T::EndOfInput);
     }
@@ -1262,18 +1187,18 @@ mod tests {
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
         assert_eq!(
             parse_expression(&mut tokens, 0),
-            Ok(Bop {
-                operation: Mul,
-                left: bx(Bop {
-                    operation: Mul,
-                    left: bx(CallMull {
+            Ok(binary(
+                Mul,
+                binary(
+                    Mul,
+                    CallMull {
                         callee: "a".into(),
                         args: vec![Num(6.0), Id("b".into())]
-                    }),
-                    right: bx(Num(3.0))
-                }),
-                right: bx(Id("k".into()))
-            })
+                    },
+                    Num(3.0)
+                ),
+                Id("k".into())
+            ))
         );
         assert_eq!(tokens.next(), &T::EndOfInput);
     }
@@ -1301,32 +1226,25 @@ mod tests {
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
         assert_eq!(
             parse_expression(&mut tokens, 0),
-            Ok(Bop {
-                operation: Add,
-                left: bx(Bop {
-                    operation: Mul,
-                    left: bx(Id("a".into())),
-                    right: bx(Call {
+            Ok(binary(
+                Add,
+                binary(
+                    Mul,
+                    Id("a".into()),
+                    Call {
                         callee: "arcsin".into(),
-                        args: vec![Bop {
-                            operation: Mul,
-                            left: bx(Num(5.0)),
-                            right: bx(Id("x".into()))
-                        }]
-                    })
-                }),
-                right: bx(Bop {
-                    operation: Pow,
-                    left: bx(Call {
+                        args: vec![binary(Mul, Num(5.0), Id("x".into()))]
+                    }
+                ),
+                binary(
+                    Pow,
+                    Call {
                         callee: "arctan".into(),
-                        args: vec![Uop {
-                            operation: Neg,
-                            arg: bx(Num(3.0))
-                        }]
-                    }),
-                    right: bx(Num(2.0))
-                })
-            })
+                        args: vec![unary(Neg, Num(3.0))]
+                    },
+                    Num(2.0)
+                )
+            ))
         );
         assert_eq!(tokens.next(), &T::EndOfInput);
     }
@@ -1343,11 +1261,7 @@ mod tests {
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
         assert_eq!(
             parse_expression(&mut tokens, 0),
-            Ok(Bop {
-                operation: Point,
-                left: bx(Num(6.0)),
-                right: bx(Id("b".into()))
-            })
+            Ok(binary(Point, Num(6.0), Id("b".into())))
         );
         assert_eq!(tokens.next(), &T::EndOfInput);
     }
@@ -1410,11 +1324,7 @@ mod tests {
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
         assert_eq!(
             parse_expression(&mut tokens, 0),
-            Ok(Bop {
-                operation: Mul,
-                left: bx(List(vec![])),
-                right: bx(Num(5.0))
-            })
+            Ok(binary(Mul, List(vec![]), Num(5.0)))
         );
     }
 
@@ -1437,18 +1347,18 @@ mod tests {
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
         assert_eq!(
             parse_expression(&mut tokens, 0),
-            Ok(Bop {
-                operation: Index,
-                left: bx(List(vec![
+            Ok(binary(
+                Index,
+                List(vec![
                     Num(6.0),
                     CallMull {
                         callee: "b".into(),
                         args: vec![]
                     },
                     Id("b".into())
-                ])),
-                right: bx(Num(5.0))
-            })
+                ]),
+                Num(5.0)
+            ))
         );
 
         let tokens = [
@@ -1462,11 +1372,11 @@ mod tests {
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
         assert_eq!(
             parse_expression(&mut tokens, 0),
-            Ok(Bop {
-                operation: Index,
-                left: bx(Id("L".into())),
-                right: bx(List(vec![Num(5.0), Num(4.0)]))
-            })
+            Ok(binary(
+                Index,
+                Id("L".into()),
+                List(vec![Num(5.0), Num(4.0)])
+            ))
         );
 
         let tokens = [T::IdentFrag("L".into()), T::LBracket, T::RBracket];
@@ -1500,14 +1410,7 @@ mod tests {
         assert_eq!(
             parse_expression(&mut tokens, 0),
             Ok(ListRange {
-                before_ellipsis: vec![
-                    Num(1.0),
-                    Bop {
-                        operation: Add,
-                        left: bx(Id("a_{2}".into())),
-                        right: bx(Num(3.0))
-                    }
-                ],
+                before_ellipsis: vec![Num(1.0), binary(Add, Id("a_{2}".into()), Num(3.0))],
                 after_ellipsis: vec![Num(4.0), Num(5.0)]
             })
         );
@@ -1535,14 +1438,7 @@ mod tests {
         assert_eq!(
             parse_expression(&mut tokens, 0),
             Ok(ListRange {
-                before_ellipsis: vec![
-                    Num(1.0),
-                    Bop {
-                        operation: Add,
-                        left: bx(Id("a_{2}".into())),
-                        right: bx(Num(3.0))
-                    }
-                ],
+                before_ellipsis: vec![Num(1.0), binary(Add, Id("a_{2}".into()), Num(3.0))],
                 after_ellipsis: vec![Num(4.0), Num(5.0)]
             })
         );
@@ -1568,21 +1464,14 @@ mod tests {
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
         assert_eq!(
             parse_expression(&mut tokens, 0),
-            Ok(Bop {
-                operation: Index,
-                left: bx(Id("L".into())),
-                right: bx(ListRange {
-                    before_ellipsis: vec![
-                        Num(1.0),
-                        Bop {
-                            operation: Add,
-                            left: bx(Id("a_{2}".into())),
-                            right: bx(Num(3.0))
-                        }
-                    ],
+            Ok(binary(
+                Index,
+                Id("L".into()),
+                ListRange {
+                    before_ellipsis: vec![Num(1.0), binary(Add, Id("a_{2}".into()), Num(3.0))],
                     after_ellipsis: vec![]
-                })
-            })
+                }
+            ))
         );
         assert_eq!(tokens.next(), &T::EndOfInput);
 
@@ -1674,14 +1563,7 @@ mod tests {
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
         assert_eq!(
             parse_expression(&mut tokens, 0),
-            Ok(Bop {
-                operation: Mul,
-                left: bx(Num(6.0)),
-                right: bx(Uop {
-                    operation: Norm,
-                    arg: bx(Id("b".into()))
-                })
-            })
+            Ok(binary(Mul, Num(6.0), unary(Norm, Id("b".into()))))
         );
     }
 
@@ -1738,14 +1620,14 @@ mod tests {
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
         assert_eq!(
             parse_expression(&mut tokens, 0),
-            Ok(Bop {
-                operation: Index,
-                left: bx(Id("L".into())),
-                right: bx(Expression::ChainedComparison(ChainedComparison {
+            Ok(binary(
+                Index,
+                Id("L".into()),
+                Expression::ChainedComparison(ChainedComparison {
                     operands: vec![Num(1.0), Num(2.0)],
                     operators: vec![LessEqual]
-                }))
-            })
+                })
+            ))
         );
         assert_eq!(tokens.next(), &T::EndOfInput);
 
@@ -1788,11 +1670,12 @@ mod tests {
         assert_eq!(
             parse_expression(&mut tokens, 0),
             Ok(Piecewise {
-                test: bx(Expression::ChainedComparison(ChainedComparison {
+                test: Expression::ChainedComparison(ChainedComparison {
                     operands: vec![Num(1.0), Num(2.0)],
                     operators: vec![Less]
-                })),
-                consequent: bx(Num(1.0)),
+                })
+                .into(),
+                consequent: Num(1.0).into(),
                 alternate: None
             })
         );
@@ -1825,11 +1708,12 @@ mod tests {
         assert_eq!(
             parse_expression(&mut tokens, 0),
             Ok(Piecewise {
-                test: bx(Expression::ChainedComparison(ChainedComparison {
+                test: Expression::ChainedComparison(ChainedComparison {
                     operands: vec![Num(1.0), Num(2.0)],
                     operators: vec![Less]
-                })),
-                consequent: bx(Num(3.0)),
+                })
+                .into(),
+                consequent: Num(3.0).into(),
                 alternate: None
             })
         );
@@ -1856,19 +1740,24 @@ mod tests {
         assert_eq!(
             parse_expression(&mut tokens, 0),
             Ok(Piecewise {
-                test: bx(Expression::ChainedComparison(ChainedComparison {
+                test: Expression::ChainedComparison(ChainedComparison {
                     operands: vec![Num(1.0), Num(2.0)],
                     operators: vec![Less]
-                })),
-                consequent: bx(Num(1.0)),
-                alternate: Some(bx(Piecewise {
-                    test: bx(Expression::ChainedComparison(ChainedComparison {
-                        operands: vec![Num(3.0), Num(4.0), Num(5.0)],
-                        operators: vec![Equal, Equal]
-                    })),
-                    consequent: bx(Num(6.0)),
-                    alternate: Some(bx(Num(7.0)))
-                }))
+                })
+                .into(),
+                consequent: Num(1.0).into(),
+                alternate: Some(
+                    Piecewise {
+                        test: Expression::ChainedComparison(ChainedComparison {
+                            operands: vec![Num(3.0), Num(4.0), Num(5.0)],
+                            operators: vec![Equal, Equal]
+                        })
+                        .into(),
+                        consequent: Num(6.0).into(),
+                        alternate: Some(Num(7.0).into())
+                    }
+                    .into()
+                )
             })
         );
         assert_eq!(tokens.next(), &T::EndOfInput);
@@ -1888,17 +1777,11 @@ mod tests {
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
         assert_eq!(
             parse_expression(&mut tokens, 0),
-            Ok(Bop {
-                operation: Add,
-                left: bx(Uop {
-                    operation: PointX,
-                    arg: bx(Id("p".into()))
-                }),
-                right: bx(Uop {
-                    operation: PointY,
-                    arg: bx(Id("p".into()))
-                }),
-            })
+            Ok(binary(
+                Add,
+                unary(PointX, Id("p".into())),
+                unary(PointY, Id("p".into())),
+            ))
         );
         assert_eq!(tokens.next(), &T::EndOfInput);
     }
@@ -1928,24 +1811,24 @@ mod tests {
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
         assert_eq!(
             parse_expression(&mut tokens, 0),
-            Ok(Bop {
-                operation: Add,
-                left: bx(Bop {
-                    operation: Add,
-                    left: bx(Call {
+            Ok(binary(
+                Add,
+                binary(
+                    Add,
+                    Call {
                         callee: "max".into(),
                         args: vec![Id("a".into())]
-                    }),
-                    right: bx(Call {
+                    },
+                    Call {
                         callee: "max".into(),
                         args: vec![Id("b".into())]
-                    })
-                }),
-                right: bx(Call {
+                    }
+                ),
+                Call {
                     callee: "join".into(),
                     args: vec![Id("c".into()), Num(1.0), Num(2.0)]
-                })
-            })
+                }
+            ))
         );
         assert_eq!(tokens.next(), &T::EndOfInput);
     }
@@ -2082,21 +1965,17 @@ mod tests {
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
         assert_eq!(
             parse_expression(&mut tokens, 0),
-            Ok(Bop {
-                operation: Add,
-                left: bx(SumProd {
+            Ok(binary(
+                Add,
+                SumProd {
                     kind: Prod,
                     variable: "n".into(),
-                    lower_bound: bx(Num(1.0)),
-                    upper_bound: bx(Num(9.0)),
-                    body: bx(Bop {
-                        operation: Mul,
-                        left: bx(Num(5.0)),
-                        right: bx(Id("n".into()))
-                    })
-                }),
-                right: bx(Num(6.0))
-            })
+                    lower_bound: Num(1.0).into(),
+                    upper_bound: Num(9.0).into(),
+                    body: binary(Mul, Num(5.0), Id("n".into())).into()
+                },
+                Num(6.0)
+            ))
         );
     }
 
@@ -2113,7 +1992,7 @@ mod tests {
         assert_eq!(
             parse_expression(&mut tokens, 0),
             Ok(With {
-                body: bx(Id("a".into())),
+                body: Id("a".into()).into(),
                 substitutions: vec![("a".into(), Num(4.0))],
             })
         );
@@ -2152,22 +2031,18 @@ mod tests {
         assert_eq!(
             parse_expression(&mut tokens, 0),
             Ok(With {
-                body: bx(Bop {
-                    operation: Add,
-                    left: bx(Id("a".into())),
-                    right: bx(Num(7.0))
-                }),
+                body: binary(Add, Id("a".into()), Num(7.0)).into(),
                 substitutions: vec![
                     (
                         "a".into(),
-                        Bop {
-                            operation: Add,
-                            left: bx(Num(4.0)),
-                            right: bx(For {
-                                body: bx(Id("c".into())),
+                        binary(
+                            Add,
+                            Num(4.0),
+                            For {
+                                body: Id("c".into()).into(),
                                 lists: vec![("c_{4}".into(), Num(2.0)), ("d".into(), Num(6.0))],
-                            })
-                        }
+                            }
+                        )
                     ),
                     ("b".into(), Num(5.0))
                 ],
@@ -2192,10 +2067,11 @@ mod tests {
         assert_eq!(
             parse_expression(&mut tokens, 0),
             Ok(For {
-                body: bx(With {
-                    body: bx(Id("a".into())),
+                body: With {
+                    body: Id("a".into()).into(),
                     substitutions: vec![("a".into(), Num(3.0))],
-                }),
+                }
+                .into(),
                 lists: vec![("b".into(), List(vec![Num(5.0)]))],
             })
         );
@@ -2216,11 +2092,7 @@ mod tests {
         assert_eq!(
             parse_expression(&mut tokens, 0),
             Ok(For {
-                body: bx(Bop {
-                    operation: Add,
-                    left: bx(Id("a".into())),
-                    right: bx(Id("b".into()))
-                }),
+                body: binary(Add, Id("a".into()), Id("b".into())).into(),
                 lists: vec![("b".into(), List(vec![Num(5.0)]))],
             })
         );
@@ -2243,11 +2115,7 @@ mod tests {
             parse_expression_list_entry_from_tokens(&mut tokens),
             Ok(Ele::Assignment {
                 name: "c".into(),
-                value: Bop {
-                    operation: Point,
-                    left: bx(Num(1.18)),
-                    right: bx(Num(3.78))
-                }
+                value: binary(Point, Num(1.18), Num(3.78))
             })
         );
         assert_eq!(tokens.next(), &T::EndOfInput);
@@ -2280,15 +2148,7 @@ mod tests {
             Ok(Ele::FunctionDeclaration {
                 name: "f_{4}".into(),
                 parameters: vec!["x".into(), "y".into()],
-                body: Bop {
-                    operation: Mul,
-                    left: bx(Bop {
-                        operation: Pow,
-                        left: bx(Id("x".into())),
-                        right: bx(Num(2.0))
-                    }),
-                    right: bx(Id("y".into()))
-                }
+                body: binary(Mul, binary(Pow, Id("x".into()), Num(2.0)), Id("y".into()))
             })
         );
         assert_eq!(tokens.next(), &T::EndOfInput);
@@ -2324,15 +2184,7 @@ mod tests {
                         callee: "f_{4}".into(),
                         args: vec![Id("x".into()), Id("y".into())],
                     },
-                    Bop {
-                        operation: Mul,
-                        left: bx(Bop {
-                            operation: Pow,
-                            left: bx(Id("x".into())),
-                            right: bx(Num(2.0)),
-                        }),
-                        right: bx(Id("y".into())),
-                    },
+                    binary(Mul, binary(Pow, Id("x".into()), Num(2.0),), Id("y".into()),),
                 ],
                 operators: vec![Less],
             })),
@@ -2364,22 +2216,14 @@ mod tests {
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
         assert_eq!(
             parse_expression_list_entry_from_tokens(&mut tokens),
-            Ok(Ele::Expression(Bop {
-                operation: Add,
-                left: bx(CallMull {
+            Ok(Ele::Expression(binary(
+                Add,
+                CallMull {
                     callee: "f_{4}".into(),
                     args: vec![Id("x".into()), Id("y".into())],
-                }),
-                right: bx(Bop {
-                    operation: Mul,
-                    left: bx(Bop {
-                        operation: Pow,
-                        left: bx(Id("x".into())),
-                        right: bx(Num(2.0)),
-                    }),
-                    right: bx(Id("y".into())),
-                }),
-            })),
+                },
+                binary(Mul, binary(Pow, Id("x".into()), Num(2.0),), Id("y".into()),),
+            ))),
         );
         assert_eq!(tokens.next(), &T::EndOfInput);
     }

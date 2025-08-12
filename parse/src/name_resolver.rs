@@ -1978,14 +1978,14 @@ mod tests {
                                 // C.total + D.total
                                 value: bx(Expression::BinaryOperation {
                                     operation: ABo::Add,
-                                    left: bx(Expression::BuiltIn {
-                                        name: BuiltIn::Total,
-                                        args: vec![Expression::Identifier(3)]
-                                    }),
-                                    right: bx(Expression::BuiltIn {
-                                        name: BuiltIn::Total,
-                                        args: vec![Expression::Identifier(8)]
-                                    }),
+                                    left: bx(builtin(
+                                        BuiltIn::Total,
+                                        vec![Expression::Identifier(3)]
+                                    )),
+                                    right: bx(builtin(
+                                        BuiltIn::Total,
+                                        vec![Expression::Identifier(8)]
+                                    )),
                                 }),
                             },
                             lists: vec![

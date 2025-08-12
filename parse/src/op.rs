@@ -404,7 +404,7 @@ declare_ops! {
     }
 }
 impl OpName {
-    const fn overloads(self) -> &'static [Op] {
+    pub(crate) const fn overloads(self) -> &'static [Op] {
         use Op::*;
         match self {
             OpName::Neg => &[NegNumber, NegPoint],
@@ -419,7 +419,7 @@ impl OpName {
             OpName::Div => &[DivNumber, DivPointNumber],
             OpName::Pow => &[Pow],
             OpName::Dot => &[MulNumber, MulNumberPoint, Dot],
-            OpName::Cross => &[MulNumber, MulNumberPoint, MulNumberPoint],
+            OpName::Cross => &[MulNumber, MulNumberPoint],
             OpName::Point => &[Point],
             OpName::Index => &[
                 IndexNumberList,

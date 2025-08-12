@@ -1341,7 +1341,7 @@ impl TypeChecker {
                         }
                     }
                     // canonicalize (Point, Number) order for MulNumberPoint
-                    OpName::Mul => {
+                    name if name.overloads().contains(&Op::MulNumberPoint) => {
                         if checked_args.len() == 2
                             && let Some([a, b]) = checked_args.first_chunk_mut()
                             && [a.ty.base(), b.ty.base()] == [B::Point, B::Number]

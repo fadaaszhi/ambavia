@@ -581,24 +581,25 @@ impl<T: Iterator<Item = Option<CoerceParameter>> + Clone> SigSatisfies<T> {
         match this.meta.compare(&other.meta) {
             Ordering::Less => Ok((other_op, other)),
             Ordering::Equal => match this.meta {
-                SatisfyMeta::EmptyList => Ok(
-                    match (this.return_ty.as_list(), other.return_ty.as_list()) {
-                        (a, b) if a == b => (
+                SatisfyMeta::EmptyList => {
+                    Ok(if this.return_ty.as_list() == other.return_ty.as_list() {
+                        (
                             None,
                             SigSatisfies {
-                                return_ty: a.as_list(),
+                                return_ty: this.return_ty.as_list(),
                                 meta: SatisfyMeta::EmptyList,
                             },
-                        ),
-                        (_, _) => (
+                        )
+                    } else {
+                        (
                             None,
                             SigSatisfies {
                                 return_ty: Type::EmptyList,
                                 meta: SatisfyMeta::EmptyList,
                             },
-                        ),
-                    },
-                ),
+                        )
+                    })
+                }
                 SatisfyMeta::ExactMatch(_) | SatisfyMeta::PartialMatch(..) => Err(format!(
                     "[internal] failed to unify ambiguous overloads {this_op:#?} and {other_op:#?}"
                 )),
@@ -669,26 +670,20 @@ impl Signature {
         // further, this effect can be broadcast e.g min(1, [2,3]) produces
         // Broadcast { scalars: Assign A1 N1, vectors: Assign A2 [N2, N3], body: Op::Min {args: [ List [ A1, A2 ] ] } }
         // instead of Op::Min { args: [ N1, List [ N2, N3 ] ] }
-        let needs_splat =
-            is_splat_candidate
-            && self.param_types.first().is_some_and(|&first_param_ty| {
-                // it is a list
-                first_param_ty.is_list()
-                // with the same base type as all supplied parameters
-                && all_supplied_base_ty
-                    .is_some_and(|all_supplied_base_ty| all_supplied_base_ty == first_param_ty.base())
-            })
+        let needs_splat = is_splat_candidate
+            && all_supplied_base_ty
+                .is_some_and(|all_supplied_base_ty| all_supplied_base_ty == self.param_types[0].base())
             // first supplied type exists
             && first_supplied.is_some_and(|t|
-                // it is scalar (desired is list)
+                // it is scalar (non splat is list)
                 !t.is_list()
-                // ...or there is more than one supplied argument (desired is 1)
+                // ...or there is more than one supplied argument (non splat is 1)
                 || len > 1
             );
         if len < self.param_types.len() {
             return None;
         }
-        if self.param_types.len() > 0 && len > 0 {
+        if self.param_types.len() > 0 {
             let first = first_supplied.expect("first not present but the len is > 0");
             // now that we know for sure whether this is a splat or not we can choose the correct desired type to test against
             handle_satisfaction(ParameterSatisfaction::try_satisfy(

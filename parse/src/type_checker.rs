@@ -6,7 +6,7 @@ use typed_index_collections::{TiSlice, TiVec, ti_vec};
 pub use crate::name_resolver::{ComparisonOperator, SumProdKind};
 use crate::{
     name_resolver::{self as nr},
-    op::{Op, TYCK_USE_OP},
+    op::{CoerceParameter, Op, SigSatisfies, TYCK_USE_OP},
 };
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -448,7 +448,9 @@ impl TypeChecker {
 
     fn check_expression(&mut self, e: &nr::Expression) -> Result<TypedExpression, String> {
         use BaseType as B;
-        let empty_list = |b: B| Ok(te(Type::list_of(b), Expression::List(vec![])));
+        fn empty_list<U>(b: B) -> Result<TypedExpression, U> {
+            Ok(te(Type::list_of(b), Expression::List(vec![])))
+        }
 
         match e {
             nr::Expression::Number(x) => Ok(te(Type::Number, Expression::Number(*x))),
@@ -1247,12 +1249,202 @@ impl TypeChecker {
             nr::Expression::Op { operation, args } => {
                 use crate::op::OpName;
 
-                let checked_args = self.check_expressions(args)?;
+                let mut checked_args = self.check_expressions(args)?;
+                match operation {
+                    OpName::Join => {
+                        let mut first_non_empty: Option<Type> = None;
+                        let mut new_args = vec![];
 
-                // let (op, SignatureSatisfies { ret_ty, transform }) =
-                //     operation.overload_for(checked_args.iter().map(|v| v.ty))?;
+                        for a in checked_args {
+                            if a.ty == Type::EmptyList {
+                                continue;
+                            }
+                            let ty = first_non_empty.get_or_insert(a.ty);
+                            if ty.base() != a.ty.base() {
+                                return Err(format!("cannot join {ty} and {}", a.ty));
+                            }
+                            new_args.push(a);
+                        }
 
-                todo!()
+                        let Some(ty) = first_non_empty else {
+                            assert_eq!(new_args, vec![]);
+                            return empty_list(B::Empty);
+                        };
+                        return Ok(te(
+                            Type::list_of(ty.base()),
+                            Expression::Op {
+                                operation: match ty.base() {
+                                    B::Number => Op::JoinNumber,
+                                    B::Point => Op::JoinPoint,
+                                    B::Polygon => Op::JoinPolygon,
+                                    _ => unreachable!(),
+                                },
+                                args: new_args,
+                            },
+                        ));
+                    }
+                    OpName::Polygon => {
+                        if checked_args.len() == 2
+                            && let (Type::NumberList, Type::NumberList)
+                            | (Type::NumberList, Type::Number)
+                            | (Type::NumberList, Type::EmptyList)
+                            | (Type::Number, Type::NumberList)
+                            | (Type::Number, Type::EmptyList)
+                            | (Type::EmptyList, Type::NumberList)
+                            | (Type::EmptyList, Type::Number)
+                            | (Type::EmptyList, Type::EmptyList) =
+                                (checked_args[0].ty, checked_args[1].ty)
+                        {
+                            let [x, y] = checked_args.try_into().unwrap();
+                            if x.ty == Type::EmptyList || y.ty == Type::EmptyList {
+                                return Ok(te(
+                                    Type::Polygon,
+                                    Expression::Op {
+                                        operation: Op::Polygon,
+                                        args: vec![te(Type::PointList, Expression::List(vec![]))],
+                                    },
+                                ));
+                            } else {
+                                let broadcast_x = x.ty.is_list();
+                                let broadcast_y = y.ty.is_list();
+                                let x = self.create_assignment(x);
+                                let y = self.create_assignment(y);
+                                let body = Box::new(te(
+                                    Type::Point,
+                                    binary(
+                                        BinaryOperator::Point,
+                                        te(Type::Number, Expression::Identifier(x.id)),
+                                        te(Type::Number, Expression::Identifier(y.id)),
+                                    ),
+                                ));
+                                let (scalars, vectors) = match (broadcast_x, broadcast_y) {
+                                    (true, true) => (vec![], vec![x, y]),
+                                    (true, false) => (vec![y], vec![x]),
+                                    (false, true) => (vec![x], vec![y]),
+                                    (false, false) => unreachable!(),
+                                };
+                                return Ok(te(
+                                    Type::Polygon,
+                                    Expression::Op {
+                                        operation: Op::Polygon,
+                                        args: vec![te(
+                                            Type::PointList,
+                                            Expression::Broadcast {
+                                                scalars,
+                                                vectors,
+                                                body,
+                                            },
+                                        )],
+                                    },
+                                ));
+                            }
+                        }
+                    }
+                    // canonicalize (Point, Number) order for MulNumberPoint
+                    OpName::Mul => {
+                        if checked_args.len() == 2
+                            && let Some([a, b]) = checked_args.first_chunk_mut()
+                            && [a.ty.base(), b.ty.base()] == [B::Point, B::Number]
+                        {
+                            mem::swap(a, b);
+                        }
+                    }
+                    OpName::Index => {
+                        // handle List[Bool] => Bool ? List : Empty
+                        if let Some([a, b]) = checked_args.first_chunk()
+                            && a.ty.is_list()
+                            && b.ty == Type::Bool
+                        {
+                            let mut it = checked_args.into_iter();
+                            let (Some(list), Some(test)) = (it.next(), it.next()) else {
+                                unreachable!()
+                            };
+                            let ty = list.ty;
+                            return Ok(te(
+                                ty,
+                                Expression::Piecewise {
+                                    test: Box::new(test),
+                                    consequent: Box::new(list),
+                                    alternate: Box::new(te(ty, Expression::List(vec![]))),
+                                },
+                            ));
+                        }
+                    }
+                    _ => {}
+                }
+                dbg!(&checked_args);
+                let (op, SigSatisfies { return_ty, meta }) =
+                    operation.overload_for(checked_args.iter().map(|v| v.ty))?;
+                Ok(match meta {
+                    crate::op::SatisfyMeta::EmptyList => {
+                        return empty_list(return_ty.base());
+                    }
+                    crate::op::SatisfyMeta::PartialMatch(..) => {
+                        // we need a "function" because only drop glue can drop partially moved values
+                        // (the compiler is not smart enough to see that we move the only Drop type out of meta)
+                        let destructure_and_drop = {
+                            #[inline]
+                            move || {
+                                let crate::op::SatisfyMeta::PartialMatch(transform, splat) = meta
+                                else {
+                                    unreachable!()
+                                };
+                                (transform, splat)
+                                // drop_glue(meta)
+                            }
+                        };
+                        let (transform, splat) = destructure_and_drop();
+                        let mut transform = transform.collect::<Vec<_>>().into_iter();
+
+                        let mut inner_args = Vec::new();
+                        let (vectors, scalars): (Vec<Assignment>, _) = checked_args
+                            .into_iter()
+                            .map(|expr| {
+                                let a = self.create_assignment(expr);
+                                inner_args
+                                    .push(te(a.value.ty.as_single(), Expression::Identifier(a.id)));
+                                a
+                            })
+                            .partition(|_| {
+                                transform.next().expect("invalid transform iter")
+                                    == Some(CoerceParameter::Broadcast)
+                            });
+                        if splat {
+                            inner_args =
+                                vec![te(inner_args[0].ty.as_list(), Expression::List(inner_args))];
+                        }
+                        te(
+                            return_ty,
+                            Expression::Broadcast {
+                                scalars,
+                                vectors,
+                                body: Box::new(te(
+                                    return_ty.as_single(),
+                                    Expression::Op {
+                                        operation: op.expect("matched op should exist"),
+                                        args: inner_args,
+                                    },
+                                )),
+                            },
+                        )
+                    }
+                    crate::op::SatisfyMeta::ExactMatch(splat) => {
+                        drop(meta);
+                        if splat {
+                            checked_args = vec![te(
+                                checked_args[0].ty.as_list(),
+                                Expression::List(checked_args),
+                            )];
+                        }
+                        te(
+                            return_ty,
+                            Expression::Op {
+                                operation: op.expect("matched op should exist"),
+                                args: checked_args,
+                            },
+                        )
+                    }
+                })
             }
         }
     }
@@ -1295,7 +1487,7 @@ pub fn type_check(
 mod tests {
     use super::{
         Assignment as As, BinaryOperator as Bo,
-        Expression::{BinaryOperation as Bop, Identifier as Id, Number as Num},
+        Expression::{Identifier as Id, Number as Num},
         nr::{
             Assignment as NAs, BinaryOperator as NBo,
             Expression::{BinaryOperation as NBop, Identifier as NId, Number as NNum},

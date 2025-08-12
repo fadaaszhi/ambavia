@@ -14,8 +14,8 @@ pub struct Signature {
     return_type: Type,
 }
 
-pub(crate) const AST_USE_OP: bool = false;
-pub(crate) const NAMERESOLVE_USE_OP: bool = false;
+pub(crate) const AST_USE_OP: bool = true;
+pub(crate) const NAMERESOLVE_USE_OP: bool = true;
 pub(crate) const TYCK_USE_OP: bool = true;
 
 macro_rules! declare_ops {
@@ -331,14 +331,14 @@ declare_ops! {
         DivNumber(N, N) -> N,
         DivPointNumber(P, N) -> P,
         Pow(N, N) -> N,
-        Dot(P, P) -> P,
+        Dot(P, P) -> N,
         Point(N, N) -> P,
         IndexNumberList(NL, N) -> N,
         IndexPointList(PL, N) -> P,
         IndexPolygonList(Pg, N) -> Pg,
-        FilterNumberList(BL, NL) -> N,
-        FilterPointList(BL, PL) -> P,
-        FilterPolygonList(BL, PgL) -> Pg,
+        FilterNumberList(NL, BL) -> NL,
+        FilterPointList(PL, BL) -> PL,
+        FilterPolygonList(PgL, BL) -> PgL,
 
         // builtins
         Ln(N) -> N,
@@ -472,7 +472,7 @@ impl OpName {
             OpName::Count => &[CountNumber, CountPoint, CountPolygon],
             OpName::Unique => &[CountNumber, CountPoint, CountPolygon],
             OpName::Sort => &[Sort, SortKeyNumber, SortKeyPoint, SortKeyPolygon],
-            OpName::Polygon => &[Polygon],
+            OpName::Polygon => &[],
             OpName::Join => &[],
         }
     }
@@ -517,8 +517,8 @@ impl From<ParameterSatisfaction> for Option<CoerceParameter> {
 }
 #[derive(Debug, PartialEq)]
 pub(crate) struct SigSatisfies<T> {
-    return_ty: Type,
-    meta: SatisfyMeta<T>,
+    pub(crate) return_ty: Type,
+    pub(crate) meta: SatisfyMeta<T>,
 }
 #[derive(Debug, PartialEq)]
 pub(crate) enum SatisfyMeta<T> {
@@ -581,7 +581,7 @@ impl<T: Iterator<Item = Option<CoerceParameter>> + Clone> SigSatisfies<T> {
         let this_op = Some(this.0);
         let other_op = other.0;
         let (this, other) = (this.1, other.1);
-
+        dbg!(this.return_ty, other.return_ty);
         match this.meta.compare(&other.meta) {
             Ordering::Less => Ok((other_op, other)),
             Ordering::Equal => {
@@ -597,8 +597,8 @@ impl<T: Iterator<Item = Option<CoerceParameter>> + Clone> SigSatisfies<T> {
                                     },
                                 ),
                                 // preserve return type information where possible
-                                (_, Type::EmptyList) => (None, this),
-                                (Type::EmptyList, _) => (None, other),
+                                // (_, Type::EmptyList) => (None, this),
+                                // (Type::EmptyList, _) => (None, other),
                                 (_, _) => (
                                     None,
                                     SigSatisfies {
@@ -885,6 +885,8 @@ mod tests {
         let s = get(Min, &[EmptyList, EmptyList, EmptyList, EmptyList, Number]);
         empty_list_of(&s, NumberList);
         let s = get(Min, &[EmptyList, EmptyList, EmptyList, EmptyList]);
+        empty_list_of(&s, EmptyList);
+        let s = get(Index, &[EmptyList, Type::BoolList]);
         empty_list_of(&s, EmptyList);
     }
 }

@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
     ast, name_resolver,
-    type_checker::{self, Type},
+    type_checker::{self, BaseType, Type},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -484,13 +484,10 @@ pub(crate) enum ParameterSatisfaction {
     FromEmpty,
 }
 impl ParameterSatisfaction {
-    fn try_satisfy(supplied: Type, mut desired: Type, is_splat: bool) -> Option<Self> {
+    fn try_satisfy(supplied: Type, desired: Type) -> Option<Self> {
         // EmptyList "coerces" to any parameter type
         if supplied == Type::EmptyList {
             return Some(Self::FromEmpty);
-        }
-        if is_splat {
-            desired = desired.as_single();
         }
         match (supplied, desired) {
             (s, d) if s == d => Some(Self::Exact),
@@ -581,7 +578,6 @@ impl<T: Iterator<Item = Option<CoerceParameter>> + Clone> SigSatisfies<T> {
         let this_op = Some(this.0);
         let other_op = other.0;
         let (this, other) = (this.1, other.1);
-        dbg!(this.return_ty, other.return_ty);
         match this.meta.compare(&other.meta) {
             Ordering::Less => Ok((other_op, other)),
             Ordering::Equal => match this.meta {
@@ -630,7 +626,13 @@ impl Signature {
 
         let mut needs_param_coercion = false;
         let mut num_empty_coercions = 0;
-
+        let mut handle_satisfaction = |param| match param {
+            ParameterSatisfaction::Exact => {}
+            ParameterSatisfaction::NeedsCoerce(_) => needs_param_coercion = true,
+            ParameterSatisfaction::FromEmpty => {
+                num_empty_coercions += 1;
+            }
+        };
         // scan the supplied parameter list
         for (candidate, desired) in zip(
             ptypes.clone(),
@@ -645,25 +647,23 @@ impl Signature {
             if len == 1 {
                 all_supplied_base_ty = Some(candidate_base);
                 first_supplied = Some(candidate);
-            } else if Some(candidate_base) != all_supplied_base_ty {
-                all_supplied_base_ty = None;
+                // skip the first parameter for now
+                continue;
+            } else if candidate_base != BaseType::Empty {
+                if Some(BaseType::Empty) == all_supplied_base_ty {
+                    all_supplied_base_ty = Some(candidate_base);
+                } else if Some(candidate_base) != all_supplied_base_ty {
+                    all_supplied_base_ty = None;
+                }
             }
             // early return if we can't determine the (likely) desired type
             let actual_desired =
                 desired.or(is_splat_candidate.then_some(self.param_types[0].as_single()))?;
 
             // early return if we can't satisfy this parameter
-            let this_param =
-                ParameterSatisfaction::try_satisfy(candidate, actual_desired, is_splat_candidate)?;
-            match this_param {
-                ParameterSatisfaction::Exact => {}
-                ParameterSatisfaction::NeedsCoerce(_) => needs_param_coercion = true,
-                ParameterSatisfaction::FromEmpty => {
-                    num_empty_coercions += 1;
-                }
-            }
+            let this_param = ParameterSatisfaction::try_satisfy(candidate, actual_desired)?;
+            handle_satisfaction(this_param);
         }
-
         // functions that map (List) -> Scalar get special calling semantics when called with patterns of arguments
         // eg min(1,2,3) should produce Op::Min { args: [ List [N1, N2, N3] ] } instead of Op::Min { args: [ N1, N2, N3 ] }
         // further, this effect can be broadcast e.g min(1, [2,3]) produces
@@ -685,13 +685,19 @@ impl Signature {
                 // ...or there is more than one supplied argument (desired is 1)
                 || len > 1
             );
-
-        if len < self.param_types.len()
-            || is_splat_candidate && !needs_splat && len == 1 && !first_supplied.unwrap().is_list()
-        {
+        if len < self.param_types.len() {
             return None;
         }
-
+        if self.param_types.len() > 0 && len > 0 {
+            let first = first_supplied.expect("first not present but the len is > 0");
+            // now that we know for sure whether this is a splat or not we can choose the correct desired type to test against
+            handle_satisfaction(ParameterSatisfaction::try_satisfy(
+                first,
+                needs_splat
+                    .then_some(self.param_types[0].as_single())
+                    .unwrap_or(self.param_types[0]),
+            )?);
+        }
         Some(if num_empty_coercions > 0 {
             SigSatisfies {
                 return_ty: if num_empty_coercions == len {
@@ -720,8 +726,10 @@ impl Signature {
                         .map(move |(param_ty, desired_ty)| {
                             ParameterSatisfaction::try_satisfy(
                                 param_ty,
-                                desired_ty.unwrap_or(self.param_types[0].as_single()),
-                                needs_splat,
+                                needs_splat
+                                    .then_some(self.param_types[0].as_single())
+                                    .or(desired_ty)
+                                    .expect("desired type should be present"),
                             )
                             .expect(
                                 "tried to check coercion for parameter but failed after precheck",
@@ -886,5 +894,8 @@ mod tests {
         empty_list_of(&s, EmptyList);
         let s = get(Index, &[EmptyList, Type::BoolList]);
         empty_list_of(&s, EmptyList);
+
+        let s = get(Min, &[NumberList]);
+        exact_match(&s, Op::Min);
     }
 }

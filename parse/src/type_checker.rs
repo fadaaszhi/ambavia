@@ -6,7 +6,7 @@ use typed_index_collections::{TiSlice, TiVec, ti_vec};
 pub use crate::name_resolver::{ComparisonOperator, SumProdKind};
 use crate::{
     name_resolver::{self as nr},
-    op::{Op, SignatureSatisfies, TYCK_USE_OP},
+    op::{Op, TYCK_USE_OP},
 };
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -50,6 +50,13 @@ impl Type {
     }
     pub const fn as_single(self) -> Self {
         Self::single(self.base())
+    }
+    pub const fn as_list(self) -> Self {
+        if self.is_list() {
+            self
+        } else {
+            Self::list_of(self.base())
+        }
     }
     pub const fn list_of(base: BaseType) -> Type {
         match base {

@@ -1,8 +1,11 @@
-use std::iter::{once, repeat, zip};
+use std::{
+    cmp::Ordering,
+    iter::{once, repeat, zip},
+};
 
 use crate::{
     ast, name_resolver,
-    type_checker::{self, BaseType, Type},
+    type_checker::{self, Type},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -475,75 +478,165 @@ impl OpName {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct CoerceParameter {
-    // whether to broadcast over this parameter
-    broadcast: bool,
-    // whether to coerce this parameter from Empty -> desired
-    coerce_empty: bool,
+pub(crate) enum ParameterSatisfaction {
+    Exact,
+    NeedsCoerce(CoerceParameter),
+    FromEmpty,
 }
-impl CoerceParameter {
-    fn new() -> Self {
-        Self {
-            broadcast: false,
-            coerce_empty: false,
+impl ParameterSatisfaction {
+    fn try_satisfy(supplied: Type, mut desired: Type, is_splat: bool) -> Option<Self> {
+        // EmptyList "coerces" to any parameter type
+        if supplied == Type::EmptyList {
+            return Some(Self::FromEmpty);
         }
-    }
-    fn try_coerce_to(mut supplied: Type, desired: Type, is_splat: bool) -> Option<Option<Self>> {
-        let mut c = CoerceParameter {
-            broadcast: false,
-            coerce_empty: false,
-        };
-        if supplied.base() == BaseType::Empty {
-            c.coerce_empty = true;
-            // coerce the supplied type for the rest of the logic
-            supplied = supplied.map_base(desired.base())
+        if is_splat {
+            desired = desired.as_single();
         }
-
         match (supplied, desired) {
-            (s, d) if s == d => return Some(None),
-            (s, d) if Type::single(s.base()) == d => c.broadcast = true,
-            _ => {
-                return if is_splat {
-                    Self::try_coerce_to(supplied, Type::single(desired.base()), false)
-                } else {
-                    None
-                };
+            (s, d) if s == d => Some(Self::Exact),
+            (s, d) if Type::single(s.base()) == d => {
+                Some(Self::NeedsCoerce(CoerceParameter::Broadcast))
             }
-        };
-        Some(Some(c))
-    }
-    fn union(self, other: Self) -> Self {
-        Self {
-            broadcast: self.broadcast || other.broadcast,
-            coerce_empty: self.coerce_empty || other.coerce_empty,
+            _ => None,
         }
     }
 }
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum CoerceParameter {
+    Broadcast,
+    // real2complex etc
+}
+impl From<ParameterSatisfaction> for Option<CoerceParameter> {
+    fn from(value: ParameterSatisfaction) -> Self {
+        match value {
+            ParameterSatisfaction::Exact => None,
+            ParameterSatisfaction::NeedsCoerce(coerce_parameter) => Some(coerce_parameter),
+            ParameterSatisfaction::FromEmpty => None,
+        }
+    }
+}
+#[derive(Debug, PartialEq)]
+pub(crate) struct SigSatisfies<T> {
+    return_ty: Type,
+    meta: SatisfyMeta<T>,
+}
+#[derive(Debug, PartialEq)]
+pub(crate) enum SatisfyMeta<T> {
+    EmptyList,
+    PartialMatch(T, bool),
+    ExactMatch(bool),
+}
+impl<T> SatisfyMeta<T> {
+    fn is_splat(&self) -> bool {
+        match self {
+            SatisfyMeta::EmptyList => false,
+            SatisfyMeta::PartialMatch(_, s) => *s,
+            SatisfyMeta::ExactMatch(s) => *s,
+        }
+    }
+}
+impl<T: Iterator<Item = Option<CoerceParameter>> + Clone> SatisfyMeta<T> {
+    fn compare(&self, other: &Self) -> Ordering {
+        // used to break ties by picking the overload that requires fewer broadcasts
+        fn compare_transforms<T: Iterator<Item = Option<CoerceParameter>> + Clone>(
+            lhs: &T,
+            rhs: &T,
+        ) -> Ordering {
+            fn get_counts(it: impl Iterator<Item = Option<CoerceParameter>>) -> usize {
+                it.fold(0, |mut v, test| {
+                    if let Some(p) = test {
+                        match p {
+                            CoerceParameter::Broadcast => v += 1,
+                        }
+                    }
+                    v
+                })
+            }
+            let l = get_counts(lhs.clone());
+            let r = get_counts(rhs.clone());
+            r.cmp(&l)
+        }
+        match (self, other) {
+            (SatisfyMeta::EmptyList, SatisfyMeta::EmptyList) => Ordering::Equal,
+            (
+                SatisfyMeta::PartialMatch(ltransform, _),
+                SatisfyMeta::PartialMatch(rtransform, _),
+            ) => compare_transforms(ltransform, rtransform),
+            (SatisfyMeta::ExactMatch(_), SatisfyMeta::ExactMatch(_)) => Ordering::Equal,
+            (
+                SatisfyMeta::PartialMatch(..) | SatisfyMeta::ExactMatch(_),
+                SatisfyMeta::EmptyList,
+            ) => Ordering::Greater,
+            (SatisfyMeta::ExactMatch(_), SatisfyMeta::PartialMatch(..)) => Ordering::Greater,
+            (
+                SatisfyMeta::EmptyList,
+                SatisfyMeta::PartialMatch(..) | SatisfyMeta::ExactMatch(_),
+            ) => Ordering::Less,
+            (SatisfyMeta::PartialMatch(..), SatisfyMeta::ExactMatch(_)) => Ordering::Less,
+        }
+    }
+}
+impl<T: Iterator<Item = Option<CoerceParameter>> + Clone> SigSatisfies<T> {
+    fn unify(this: (Op, Self), other: (Option<Op>, Self)) -> Result<(Option<Op>, Self), String> {
+        let this_op = Some(this.0);
+        let other_op = other.0;
+        let (this, other) = (this.1, other.1);
 
-pub(crate) struct SignatureSatisfies<T: Iterator<Item = Option<CoerceParameter>>> {
-    pub(crate) ret_ty: Type,
-    pub(crate) transform: Option<T>,
-    pub(crate) splat: bool,
+        match this.meta.compare(&other.meta) {
+            Ordering::Less => Ok((other_op, other)),
+            Ordering::Equal => {
+                match this.meta {
+                    SatisfyMeta::EmptyList => {
+                        Ok(
+                            match (this.return_ty.as_list(), other.return_ty.as_list()) {
+                                (a, b) if a == b => (
+                                    None,
+                                    SigSatisfies {
+                                        return_ty: a.as_list(),
+                                        meta: SatisfyMeta::EmptyList,
+                                    },
+                                ),
+                                // preserve return type information where possible
+                                (_, Type::EmptyList) => (None, this),
+                                (Type::EmptyList, _) => (None, other),
+                                (_, _) => (
+                                    None,
+                                    SigSatisfies {
+                                        return_ty: Type::EmptyList,
+                                        meta: SatisfyMeta::EmptyList,
+                                    },
+                                ),
+                            },
+                        )
+                    }
+                    SatisfyMeta::ExactMatch(_) | SatisfyMeta::PartialMatch(..) => Err(format!(
+                        "[internal] failed to unify ambiguous overloads {this_op:#?} and {other_op:#?}"
+                    )),
+                }
+            }
+            Ordering::Greater => Ok((this_op, this)),
+        }
+    }
 }
 
 impl Signature {
     fn satisfies(
         self,
         ptypes: impl Iterator<Item = Type> + Clone,
-    ) -> Option<SignatureSatisfies<impl Iterator<Item = Option<CoerceParameter>>>> {
+    ) -> Option<SigSatisfies<impl Iterator<Item = Option<CoerceParameter>> + Clone>> {
         // accumulate length of the supplied parameter list
-        let mut len = 0;
+        let mut len = 0usize;
         // Either Some(BaseType) if all supplied params have the same base type or None
         let mut all_supplied_base_ty = None;
         // first supplied type, if any
         let mut first_supplied = None;
 
-        let mut coerce = None::<CoerceParameter>;
-
         let is_splat_candidate = self.param_types.len() == 1
             && self.param_types.first().unwrap().is_list()
             && !self.return_type.is_list();
+
+        let mut needs_param_coercion = false;
+        let mut num_empty_coercions = 0;
 
         // scan the supplied parameter list
         for (candidate, desired) in zip(
@@ -568,11 +661,13 @@ impl Signature {
 
             // early return if we can't satisfy this parameter
             let this_param =
-                CoerceParameter::try_coerce_to(candidate, actual_desired, is_splat_candidate)?;
-
-            if let Some(c) = this_param {
-                let r = coerce.get_or_insert(c);
-                *r = r.union(c);
+                ParameterSatisfaction::try_satisfy(candidate, actual_desired, is_splat_candidate)?;
+            match this_param {
+                ParameterSatisfaction::Exact => {}
+                ParameterSatisfaction::NeedsCoerce(_) => needs_param_coercion = true,
+                ParameterSatisfaction::FromEmpty => {
+                    num_empty_coercions += 1;
+                }
             }
         }
 
@@ -597,42 +692,54 @@ impl Signature {
                 // ...or there is more than one supplied argument (desired is 1)
                 || len > 1
             );
-
-        // no list of list
-        if self.return_type.is_list() && coerce.is_some_and(|a| a.broadcast) {
+        if is_splat_candidate && !needs_splat && len == 1 && !first_supplied.unwrap().is_list() {
             return None;
         }
-
-        Some(SignatureSatisfies {
-            ret_ty: if coerce.is_some_and(|a| a.broadcast) {
-                Type::list_of(self.return_type.base())
+        Some(if num_empty_coercions > 0 {
+            SigSatisfies {
+                return_ty: if num_empty_coercions == len {
+                    Type::EmptyList
+                } else {
+                    self.return_type.as_list()
+                },
+                meta: SatisfyMeta::EmptyList,
+            }
+        } else if needs_param_coercion {
+            if self.return_type.is_list() {
+                // no list of list
+                return None;
             } else {
-                self.return_type
-            },
-            transform: coerce.map(|c| {
-                zip(
-                    ptypes,
-                    self.param_types
-                        .iter()
-                        .copied()
-                        .map(Some)
-                        .chain(repeat(None)),
-                )
-                .map(move |(param_ty, mut desired_ty)| {
-                    if let None = desired_ty
-                        && needs_splat
-                    {
-                        desired_ty = Some(self.param_types[0].as_single());
-                    }
-                    CoerceParameter::try_coerce_to(
-                        param_ty,
-                        desired_ty.expect("desired type should be present"),
+                SigSatisfies {
+                    return_ty: Type::list_of(self.return_type.base()),
+                    meta: SatisfyMeta::PartialMatch(
+                        zip(
+                            ptypes,
+                            self.param_types
+                                .iter()
+                                .copied()
+                                .map(Some)
+                                .chain(repeat(None)),
+                        )
+                        .map(move |(param_ty, desired_ty)| {
+                            ParameterSatisfaction::try_satisfy(
+                                param_ty,
+                                desired_ty.unwrap_or(self.param_types[0].as_single()),
+                                needs_splat,
+                            )
+                            .expect(
+                                "tried to check coercion for parameter but failed after precheck",
+                            )
+                            .into()
+                        }),
                         needs_splat,
-                    )
-                    .expect("tried to check coercion for parameter but failed after precheck")
-                })
-            }),
-            splat: needs_splat,
+                    ),
+                }
+            }
+        } else {
+            SigSatisfies {
+                return_ty: self.return_type,
+                meta: SatisfyMeta::ExactMatch(needs_splat),
+            }
         })
     }
 }
@@ -643,31 +750,141 @@ impl OpName {
         mut ptypes: impl DoubleEndedIterator<Item = Type> + Clone,
     ) -> Result<
         (
-            Op,
-            SignatureSatisfies<impl Iterator<Item = Option<CoerceParameter>>>,
+            Option<Op>,
+            SigSatisfies<impl Iterator<Item = Option<CoerceParameter>> + Clone>,
         ),
         String,
     > {
         self.overloads()
             .iter()
             .copied()
-            .filter_map(|op| op.sig().satisfies(ptypes.clone()).map(|v| (op, v)))
-            .next()
-            .ok_or_else(|| {
-                let s = format!("cannot {self:#?} nothing");
-                let Some(first) = ptypes.next() else { return s };
-                let last = ptypes.next_back();
-
-                let i = once(first).chain(ptypes);
-                format!(
-                    "cannot {self:#?} {}{}",
-                    i.map(|a| format!("{a}")).collect::<Vec<_>>().join(", "),
-                    if let Some(last) = last {
-                        format!("and {last}")
-                    } else {
-                        s
-                    }
-                )
+            .try_fold(None, |prev, op| {
+                let this = op.sig().satisfies(ptypes.clone()).map(|v| (op, v));
+                Ok(match (this, prev) {
+                    (None, None) => None,
+                    (None, Some(a)) => Some(a),
+                    (Some((op, s)), None) => Some((Some(op), s)),
+                    (Some(this), Some(prev)) => Some(SigSatisfies::unify(this, prev)?),
+                })
             })
+            .and_then(|v| {
+                v.ok_or_else(|| {
+                    let s = format!("cannot {self:#?} nothing");
+                    let Some(first) = ptypes.next() else { return s };
+                    let last = ptypes.next_back();
+
+                    let i = once(first).chain(ptypes);
+                    format!(
+                        "cannot {self:#?} {}{}",
+                        i.map(|a| format!("{a}")).collect::<Vec<_>>().join(", "),
+                        if let Some(last) = last {
+                            &format!("and {last}")
+                        } else {
+                            ""
+                        }
+                    )
+                })
+            })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    impl<T> SigSatisfies<T> {
+        fn map_iter<U>(self, f: impl FnOnce(T) -> U) -> SigSatisfies<U> {
+            let SigSatisfies { return_ty, meta } = self;
+            let meta = match meta {
+                SatisfyMeta::PartialMatch(iter, s) => SatisfyMeta::PartialMatch(f(iter), s),
+                SatisfyMeta::EmptyList => SatisfyMeta::EmptyList,
+                SatisfyMeta::ExactMatch(s) => SatisfyMeta::ExactMatch(s),
+            };
+            SigSatisfies { return_ty, meta }
+        }
+    }
+    use crate::{
+        op::{CoerceParameter, Op, OpName, SatisfyMeta, SigSatisfies},
+        type_checker::Type,
+    };
+
+    type MatchedOverload = (Option<Op>, SigSatisfies<Vec<Option<CoerceParameter>>>);
+
+    fn try_get_overload(op: OpName, req: &[Type]) -> Result<MatchedOverload, String> {
+        op.overload_for(req.iter().copied())
+            .map(|v| (v.0, v.1.map_iter(|a| a.collect())))
+    }
+    #[track_caller]
+    fn get(op: OpName, req: &[Type]) -> MatchedOverload {
+        try_get_overload(op, req).expect("expected a match")
+    }
+    #[track_caller]
+    fn empty_list_of(v: &MatchedOverload, of: Type) {
+        assert_eq!(
+            &v.1,
+            &SigSatisfies {
+                return_ty: of,
+                meta: crate::op::SatisfyMeta::EmptyList
+            }
+        )
+    }
+    #[track_caller]
+    fn exact_match(v: &MatchedOverload, resolved: Op) {
+        assert_eq!(
+            v,
+            &(
+                Some(resolved),
+                SigSatisfies {
+                    return_ty: resolved.sig().return_type,
+                    meta: crate::op::SatisfyMeta::ExactMatch(false)
+                }
+            )
+        );
+    }
+    #[track_caller]
+    fn has_op(v: &MatchedOverload, op: Op) {
+        assert_eq!(v.0, Some(op))
+    }
+    #[track_caller]
+    fn splat(v: &MatchedOverload) {
+        assert!(v.1.meta.is_splat())
+    }
+    #[track_caller]
+    fn has_coercions(v: &MatchedOverload, coercions: &[Option<CoerceParameter>]) {
+        match &v.1.meta {
+            super::SatisfyMeta::PartialMatch(c, _) => assert_eq!(c, coercions),
+            super::SatisfyMeta::EmptyList | super::SatisfyMeta::ExactMatch(_) => {
+                panic!("expected a list of coercions")
+            }
+        }
+    }
+    use CoerceParameter::Broadcast;
+    use OpName::*;
+    use Type as Ty;
+    use Type::{EmptyList, Number, NumberList};
+    #[test]
+    fn shrimple_ops() {
+        exact_match(&get(Add, &[Number, Number]), Op::AddNumber);
+        exact_match(&get(Mul, &[Number, Ty::Point]), Op::MulNumberPoint);
+
+        empty_list_of(&get(Add, &[Number, EmptyList]), NumberList);
+        empty_list_of(&get(Add, &[EmptyList, Number]), NumberList);
+        empty_list_of(&get(Add, &[EmptyList, EmptyList]), EmptyList);
+        empty_list_of(&get(Min, &[Number, EmptyList]), NumberList);
+        empty_list_of(&get(Min, &[EmptyList, EmptyList]), EmptyList);
+        empty_list_of(&get(Min, &[EmptyList, Type::NumberList]), NumberList);
+
+        let s = get(Min, &[NumberList, Number]);
+        splat(&s);
+        has_coercions(&s, &[Some(Broadcast), None]);
+        has_op(&s, Op::Min);
+
+        let s = get(Min, &[Number, NumberList]);
+        splat(&s);
+        has_coercions(&s, &[None, Some(Broadcast)]);
+        has_op(&s, Op::Min);
+
+        let s = get(Min, &[EmptyList, EmptyList, EmptyList, EmptyList, Number]);
+        empty_list_of(&s, NumberList);
+        let s = get(Min, &[EmptyList, EmptyList, EmptyList, EmptyList]);
+        empty_list_of(&s, EmptyList);
     }
 }

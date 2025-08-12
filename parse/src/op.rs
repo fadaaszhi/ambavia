@@ -480,7 +480,7 @@ impl OpName {
 
 pub(crate) enum ParameterSatisfaction {
     Exact,
-    NeedsCoerce(CoerceParameter),
+    NeedsBroadcast,
     FromEmpty,
 }
 impl ParameterSatisfaction {
@@ -491,25 +491,14 @@ impl ParameterSatisfaction {
         }
         match (supplied, desired) {
             (s, d) if s == d => Some(Self::Exact),
-            (s, d) if Type::single(s.base()) == d => {
-                Some(Self::NeedsCoerce(CoerceParameter::Broadcast))
-            }
+            (s, d) if Type::single(s.base()) == d => Some(Self::NeedsBroadcast),
             _ => None,
         }
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) enum CoerceParameter {
-    Broadcast,
-    // real2complex etc
-}
-impl From<ParameterSatisfaction> for Option<CoerceParameter> {
-    fn from(value: ParameterSatisfaction) -> Self {
-        match value {
-            ParameterSatisfaction::Exact => None,
-            ParameterSatisfaction::NeedsCoerce(coerce_parameter) => Some(coerce_parameter),
-            ParameterSatisfaction::FromEmpty => None,
-        }
+impl ParameterSatisfaction {
+    fn needs_broadcast(self) -> bool {
+        matches!(self, Self::NeedsBroadcast)
     }
 }
 #[derive(Debug, PartialEq)]
@@ -523,6 +512,8 @@ pub(crate) enum SatisfyMeta<T> {
     PartialMatch(T, bool),
     ExactMatch(bool),
 }
+pub(crate) type CoercionMeta = bool;
+
 impl<T> SatisfyMeta<T> {
     fn is_splat(&self) -> bool {
         match self {
@@ -532,19 +523,17 @@ impl<T> SatisfyMeta<T> {
         }
     }
 }
-impl<T: Iterator<Item = Option<CoerceParameter>> + Clone> SatisfyMeta<T> {
+impl<T: Iterator<Item = CoercionMeta> + Clone> SatisfyMeta<T> {
     fn compare(&self, other: &Self) -> Ordering {
         // used to break ties by picking the overload that requires fewer broadcasts
-        fn compare_transforms<T: Iterator<Item = Option<CoerceParameter>> + Clone>(
+        fn compare_transforms<T: Iterator<Item = CoercionMeta> + Clone>(
             lhs: &T,
             rhs: &T,
         ) -> Ordering {
-            fn get_counts(it: impl Iterator<Item = Option<CoerceParameter>>) -> usize {
+            fn get_counts(it: impl Iterator<Item = CoercionMeta>) -> usize {
                 it.fold(0, |mut v, test| {
-                    if let Some(p) = test {
-                        match p {
-                            CoerceParameter::Broadcast => v += 1,
-                        }
+                    if test {
+                        v += 1
                     }
                     v
                 })
@@ -573,7 +562,7 @@ impl<T: Iterator<Item = Option<CoerceParameter>> + Clone> SatisfyMeta<T> {
         }
     }
 }
-impl<T: Iterator<Item = Option<CoerceParameter>> + Clone> SigSatisfies<T> {
+impl<T: Iterator<Item = CoercionMeta> + Clone> SigSatisfies<T> {
     fn unify(this: (Op, Self), other: (Option<Op>, Self)) -> Result<(Option<Op>, Self), String> {
         let this_op = Some(this.0);
         let other_op = other.0;
@@ -613,7 +602,7 @@ impl Signature {
     fn satisfies(
         self,
         ptypes: impl Iterator<Item = Type> + Clone,
-    ) -> Option<SigSatisfies<impl Iterator<Item = Option<CoerceParameter>> + Clone>> {
+    ) -> Option<SigSatisfies<impl Iterator<Item = CoercionMeta> + Clone>> {
         // accumulate length of the supplied parameter list
         let mut len = 0usize;
         // Either Some(BaseType) if all supplied params have the same base type or None
@@ -629,7 +618,7 @@ impl Signature {
         let mut num_empty_coercions = 0;
         let mut handle_satisfaction = |param| match param {
             ParameterSatisfaction::Exact => {}
-            ParameterSatisfaction::NeedsCoerce(_) => needs_param_coercion = true,
+            ParameterSatisfaction::NeedsBroadcast => needs_param_coercion = true,
             ParameterSatisfaction::FromEmpty => {
                 num_empty_coercions += 1;
             }
@@ -729,7 +718,7 @@ impl Signature {
                             .expect(
                                 "tried to check coercion for parameter but failed after precheck",
                             )
-                            .into()
+                            .needs_broadcast()
                         }),
                         needs_splat,
                     ),
@@ -751,7 +740,7 @@ impl OpName {
     ) -> Result<
         (
             Option<Op>,
-            SigSatisfies<impl Iterator<Item = Option<CoerceParameter>> + Clone>,
+            SigSatisfies<impl Iterator<Item = CoercionMeta> + Clone>,
         ),
         String,
     > {
@@ -803,11 +792,11 @@ mod tests {
         }
     }
     use crate::{
-        op::{CoerceParameter, Op, OpName, SatisfyMeta, SigSatisfies},
+        op::{CoercionMeta, Op, OpName, SatisfyMeta, SigSatisfies},
         type_checker::Type,
     };
 
-    type MatchedOverload = (Option<Op>, SigSatisfies<Vec<Option<CoerceParameter>>>);
+    type MatchedOverload = (Option<Op>, SigSatisfies<Vec<CoercionMeta>>);
 
     fn try_get_overload(op: OpName, req: &[Type]) -> Result<MatchedOverload, String> {
         op.overload_for(req.iter().copied())
@@ -849,15 +838,14 @@ mod tests {
         assert!(v.1.meta.is_splat())
     }
     #[track_caller]
-    fn has_coercions(v: &MatchedOverload, coercions: &[Option<CoerceParameter>]) {
+    fn has_coercions(v: &MatchedOverload, broadcast: &[CoercionMeta]) {
         match &v.1.meta {
-            super::SatisfyMeta::PartialMatch(c, _) => assert_eq!(c, coercions),
+            super::SatisfyMeta::PartialMatch(c, _) => assert_eq!(c, broadcast),
             super::SatisfyMeta::EmptyList | super::SatisfyMeta::ExactMatch(_) => {
                 panic!("expected a list of coercions")
             }
         }
     }
-    use CoerceParameter::Broadcast;
     use OpName::*;
     use Type as Ty;
     use Type::{EmptyList, Number, NumberList};
@@ -875,12 +863,12 @@ mod tests {
 
         let s = get(Min, &[NumberList, Number]);
         splat(&s);
-        has_coercions(&s, &[Some(Broadcast), None]);
+        has_coercions(&s, &[true, false]);
         has_op(&s, Op::Min);
 
         let s = get(Min, &[Number, NumberList]);
         splat(&s);
-        has_coercions(&s, &[None, Some(Broadcast)]);
+        has_coercions(&s, &[false, true]);
         has_op(&s, Op::Min);
 
         let s = get(Min, &[EmptyList, EmptyList, EmptyList, EmptyList, Number]);

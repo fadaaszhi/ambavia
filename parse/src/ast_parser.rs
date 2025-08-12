@@ -859,18 +859,14 @@ mod tests {
     use BinaryOperator::*;
     use ComparisonOperator::*;
     use Expression::{
-        BinaryOperation as binary, Call, CallOrMultiply as CallMull, For, Identifier as Id, List,
-        ListRange, Number as Num, Piecewise, SumProd, UnaryOperation as Uop, With,
+        Call, CallOrMultiply as CallMull, For, Identifier as Id, List, ListRange, Number as Num,
+        Piecewise, SumProd, With,
     };
     use ExpressionListEntry as Ele;
     use SumProdKind::*;
     use Token as T;
     use UnaryOperator::*;
     use pretty_assertions::assert_eq;
-
-    fn bx<T>(x: T) -> Box<T> {
-        Box::new(x)
-    }
 
     #[test]
     fn number() {

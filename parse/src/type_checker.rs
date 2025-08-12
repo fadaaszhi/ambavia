@@ -6,7 +6,7 @@ use typed_index_collections::{TiSlice, TiVec, ti_vec};
 pub use crate::name_resolver::{ComparisonOperator, SumProdKind};
 use crate::{
     name_resolver::{self as nr},
-    op::{CoerceParameter, Op, SigSatisfies, TYCK_USE_OP},
+    op::{Op, SigSatisfies, TYCK_USE_OP},
 };
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -1410,10 +1410,7 @@ impl TypeChecker {
                                     .push(te(a.value.ty.as_single(), Expression::Identifier(a.id)));
                                 a
                             })
-                            .partition(|_| {
-                                transform.next().expect("invalid transform iter")
-                                    == Some(CoerceParameter::Broadcast)
-                            });
+                            .partition(|_| transform.next().expect("invalid transform iter"));
                         if splat {
                             inner_args =
                                 vec![te(inner_args[0].ty.as_list(), Expression::List(inner_args))];

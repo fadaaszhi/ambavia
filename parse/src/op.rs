@@ -10,8 +10,8 @@ use crate::{
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Signature {
-    param_types: &'static [Type],
-    return_type: Type,
+    pub param_types: &'static [Type],
+    pub return_type: Type,
 }
 
 pub(crate) const AST_USE_OP: bool = true;

@@ -1,7 +1,4 @@
-use std::{
-    cmp::Ordering,
-    iter::{once, repeat, zip},
-};
+use std::iter::{once, repeat, zip};
 
 use crate::{
     ast, name_resolver,
@@ -496,65 +493,8 @@ impl ParameterSatisfaction {
             _ => None,
         }
     }
-}
-impl ParameterSatisfaction {
     fn needs_broadcast(self) -> bool {
         matches!(self, Self::NeedsBroadcast)
-    }
-}
-#[derive(Debug, PartialEq)]
-pub(crate) struct SigSatisfies<T> {
-    pub(crate) return_ty: Type,
-    pub(crate) meta: SatisfyMeta<T>,
-}
-#[derive(Debug, PartialEq)]
-pub(crate) enum SatisfyMeta<T> {
-    Empty,
-    PartialMatch(T, bool),
-    ExactMatch(bool),
-}
-pub(crate) type CoercionMeta = bool;
-
-impl<T> SatisfyMeta<T> {
-    fn is_splat(&self) -> bool {
-        match self {
-            SatisfyMeta::Empty => false,
-            SatisfyMeta::PartialMatch(_, s) => *s,
-            SatisfyMeta::ExactMatch(s) => *s,
-        }
-    }
-}
-impl<T: Iterator<Item = CoercionMeta> + Clone> SigSatisfies<T> {
-    fn unify(this: (Op, Self), other: (Option<Op>, Self)) -> Result<(Option<Op>, Self), String> {
-        let this_op = Some(this.0);
-        let other_op = other.0;
-        let (this, other) = (this.1, other.1);
-        match (this.meta, other.meta) {
-            (SatisfyMeta::Empty, SatisfyMeta::Empty) => {
-                Ok(if this.return_ty.as_list() == other.return_ty.as_list() {
-                    (
-                        None,
-                        SigSatisfies {
-                            return_ty: this.return_ty.as_list(),
-                            meta: SatisfyMeta::Empty,
-                        },
-                    )
-                } else {
-                    (
-                        None,
-                        SigSatisfies {
-                            return_ty: Type::EmptyList,
-                            meta: SatisfyMeta::Empty,
-                        },
-                    )
-                })
-            }
-            (SatisfyMeta::ExactMatch(_), SatisfyMeta::ExactMatch(_))
-            | (SatisfyMeta::PartialMatch(..), SatisfyMeta::PartialMatch(..)) => Err(format!(
-                "[internal] failed to unify ambiguous overloads {this_op:#?} and {other_op:#?}"
-            )),
-            _ => unreachable!(),
-        }
     }
 }
 
@@ -692,6 +632,50 @@ impl Signature {
         })
     }
 }
+#[derive(Debug, PartialEq)]
+pub(crate) struct SigSatisfies<T> {
+    pub(crate) return_ty: Type,
+    pub(crate) meta: SatisfyMeta<T>,
+}
+#[derive(Debug, PartialEq)]
+pub(crate) enum SatisfyMeta<T> {
+    Empty,
+    PartialMatch(T, bool),
+    ExactMatch(bool),
+}
+pub(crate) type CoercionMeta = bool;
+
+impl<T: Iterator<Item = CoercionMeta> + Clone> SigSatisfies<T> {
+    fn unify(this: (Op, Self), other: (Option<Op>, Self)) -> Result<(Option<Op>, Self), String> {
+        let this_op = Some(this.0);
+        let other_op = other.0;
+        let (this, other) = (this.1, other.1);
+        match (this.meta, other.meta) {
+            (SatisfyMeta::Empty, SatisfyMeta::Empty) => {
+                Ok(if this.return_ty.as_list() == other.return_ty.as_list() {
+                    (
+                        None,
+                        SigSatisfies {
+                            return_ty: this.return_ty.as_list(),
+                            meta: SatisfyMeta::Empty,
+                        },
+                    )
+                } else {
+                    (
+                        None,
+                        SigSatisfies {
+                            return_ty: Type::EmptyList,
+                            meta: SatisfyMeta::Empty,
+                        },
+                    )
+                })
+            }
+            _ => Err(format!(
+                "[internal] failed to unify ambiguous overloads {this_op:#?} and {other_op:#?}"
+            )),
+        }
+    }
+}
 
 impl OpName {
     pub(crate) fn overload_for(
@@ -740,6 +724,15 @@ impl OpName {
 
 #[cfg(test)]
 mod tests {
+    impl<T> SatisfyMeta<T> {
+        fn is_splat(&self) -> bool {
+            match self {
+                SatisfyMeta::Empty => false,
+                SatisfyMeta::PartialMatch(_, s) => *s,
+                SatisfyMeta::ExactMatch(s) => *s,
+            }
+        }
+    }
     impl<T> SigSatisfies<T> {
         fn map_iter<U>(self, f: impl FnOnce(T) -> U) -> SigSatisfies<U> {
             let SigSatisfies { return_ty, meta } = self;

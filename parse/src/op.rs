@@ -515,12 +515,12 @@ impl Signature {
             && !self.return_type.is_list();
 
         let mut needs_broadcast = false;
-        let mut num_empty_coercions = 0;
+        let mut is_empty = false;
         let mut handle_satisfaction = |param| match param {
             ParameterSatisfaction::Exact => {}
             ParameterSatisfaction::NeedsBroadcast => needs_broadcast = true,
             ParameterSatisfaction::FromEmpty => {
-                num_empty_coercions += 1;
+                is_empty = true;
             }
         };
         // scan the supplied parameter list
@@ -582,13 +582,9 @@ impl Signature {
                     .unwrap_or(self.param_types[0]),
             )?);
         }
-        Some(if num_empty_coercions > 0 {
+        Some(if is_empty {
             SigSatisfies {
-                return_ty: if num_empty_coercions == len {
-                    Type::EmptyList
-                } else {
-                    self.return_type
-                },
+                return_ty: self.return_type,
                 meta: SatisfyMeta::Empty,
             }
         } else if needs_broadcast {

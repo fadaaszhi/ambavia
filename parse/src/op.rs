@@ -31,6 +31,7 @@ macro_rules! declare_ops {
         $( #[$meta] )*
         $vis enum Op {
             $(
+                #[doc = concat!( "(", stringify!( $( [ $arg_ty ] ),*), ") => [", stringify!( $ret_ty ), "]") ]
                 $op
             ),+
         }

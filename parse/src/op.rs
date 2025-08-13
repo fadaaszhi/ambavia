@@ -468,7 +468,7 @@ impl OpName {
             OpName::Total => &[TotalNumber, TotalPoint],
             OpName::Mean => &[MeanNumber, MeanPoint],
             OpName::Count => &[CountNumber, CountPoint, CountPolygon],
-            OpName::Unique => &[CountNumber, CountPoint, CountPolygon],
+            OpName::Unique => &[UniqueNumber, UniquePoint, UniquePolygon],
             OpName::Sort => &[Sort, SortKeyNumber, SortKeyPoint, SortKeyPolygon],
             OpName::Polygon => &[Polygon],
             OpName::Join => &[],

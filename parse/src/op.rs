@@ -509,7 +509,7 @@ pub(crate) struct SigSatisfies<T> {
 }
 #[derive(Debug, PartialEq)]
 pub(crate) enum SatisfyMeta<T> {
-    EmptyList,
+    Empty,
     PartialMatch(T, bool),
     ExactMatch(bool),
 }
@@ -518,48 +518,9 @@ pub(crate) type CoercionMeta = bool;
 impl<T> SatisfyMeta<T> {
     fn is_splat(&self) -> bool {
         match self {
-            SatisfyMeta::EmptyList => false,
+            SatisfyMeta::Empty => false,
             SatisfyMeta::PartialMatch(_, s) => *s,
             SatisfyMeta::ExactMatch(s) => *s,
-        }
-    }
-}
-impl<T: Iterator<Item = CoercionMeta> + Clone> SatisfyMeta<T> {
-    fn compare(&self, other: &Self) -> Ordering {
-        // used to break ties by picking the overload that requires fewer broadcasts
-        fn compare_transforms<T: Iterator<Item = CoercionMeta> + Clone>(
-            lhs: &T,
-            rhs: &T,
-        ) -> Ordering {
-            fn get_counts(it: impl Iterator<Item = CoercionMeta>) -> usize {
-                it.fold(0, |mut v, test| {
-                    if test {
-                        v += 1
-                    }
-                    v
-                })
-            }
-            let l = get_counts(lhs.clone());
-            let r = get_counts(rhs.clone());
-            r.cmp(&l)
-        }
-        match (self, other) {
-            (SatisfyMeta::EmptyList, SatisfyMeta::EmptyList) => Ordering::Equal,
-            (
-                SatisfyMeta::PartialMatch(ltransform, _),
-                SatisfyMeta::PartialMatch(rtransform, _),
-            ) => compare_transforms(ltransform, rtransform),
-            (SatisfyMeta::ExactMatch(_), SatisfyMeta::ExactMatch(_)) => Ordering::Equal,
-            (
-                SatisfyMeta::PartialMatch(..) | SatisfyMeta::ExactMatch(_),
-                SatisfyMeta::EmptyList,
-            ) => Ordering::Greater,
-            (SatisfyMeta::ExactMatch(_), SatisfyMeta::PartialMatch(..)) => Ordering::Greater,
-            (
-                SatisfyMeta::EmptyList,
-                SatisfyMeta::PartialMatch(..) | SatisfyMeta::ExactMatch(_),
-            ) => Ordering::Less,
-            (SatisfyMeta::PartialMatch(..), SatisfyMeta::ExactMatch(_)) => Ordering::Less,
         }
     }
 }
@@ -568,33 +529,31 @@ impl<T: Iterator<Item = CoercionMeta> + Clone> SigSatisfies<T> {
         let this_op = Some(this.0);
         let other_op = other.0;
         let (this, other) = (this.1, other.1);
-        match this.meta.compare(&other.meta) {
-            Ordering::Less => Ok((other_op, other)),
-            Ordering::Equal => match this.meta {
-                SatisfyMeta::EmptyList => {
-                    Ok(if this.return_ty.as_list() == other.return_ty.as_list() {
-                        (
-                            None,
-                            SigSatisfies {
-                                return_ty: this.return_ty.as_list(),
-                                meta: SatisfyMeta::EmptyList,
-                            },
-                        )
-                    } else {
-                        (
-                            None,
-                            SigSatisfies {
-                                return_ty: Type::EmptyList,
-                                meta: SatisfyMeta::EmptyList,
-                            },
-                        )
-                    })
-                }
-                SatisfyMeta::ExactMatch(_) | SatisfyMeta::PartialMatch(..) => Err(format!(
-                    "[internal] failed to unify ambiguous overloads {this_op:#?} and {other_op:#?}"
-                )),
-            },
-            Ordering::Greater => Ok((this_op, this)),
+        match (this.meta, other.meta) {
+            (SatisfyMeta::Empty, SatisfyMeta::Empty) => {
+                Ok(if this.return_ty.as_list() == other.return_ty.as_list() {
+                    (
+                        None,
+                        SigSatisfies {
+                            return_ty: this.return_ty.as_list(),
+                            meta: SatisfyMeta::Empty,
+                        },
+                    )
+                } else {
+                    (
+                        None,
+                        SigSatisfies {
+                            return_ty: Type::EmptyList,
+                            meta: SatisfyMeta::Empty,
+                        },
+                    )
+                })
+            }
+            (SatisfyMeta::ExactMatch(_), SatisfyMeta::ExactMatch(_))
+            | (SatisfyMeta::PartialMatch(..), SatisfyMeta::PartialMatch(..)) => Err(format!(
+                "[internal] failed to unify ambiguous overloads {this_op:#?} and {other_op:#?}"
+            )),
+            _ => unreachable!(),
         }
     }
 }
@@ -615,11 +574,11 @@ impl Signature {
             && self.param_types.first().unwrap().is_list()
             && !self.return_type.is_list();
 
-        let mut needs_param_coercion = false;
+        let mut needs_broadcast = false;
         let mut num_empty_coercions = 0;
         let mut handle_satisfaction = |param| match param {
             ParameterSatisfaction::Exact => {}
-            ParameterSatisfaction::NeedsBroadcast => needs_param_coercion = true,
+            ParameterSatisfaction::NeedsBroadcast => needs_broadcast = true,
             ParameterSatisfaction::FromEmpty => {
                 num_empty_coercions += 1;
             }
@@ -688,11 +647,11 @@ impl Signature {
                 return_ty: if num_empty_coercions == len {
                     Type::EmptyList
                 } else {
-                    self.return_type.as_list()
+                    self.return_type
                 },
-                meta: SatisfyMeta::EmptyList,
+                meta: SatisfyMeta::Empty,
             }
-        } else if needs_param_coercion {
+        } else if needs_broadcast {
             if self.return_type.is_list() {
                 // no list of list
                 return None;
@@ -786,7 +745,7 @@ mod tests {
             let SigSatisfies { return_ty, meta } = self;
             let meta = match meta {
                 SatisfyMeta::PartialMatch(iter, s) => SatisfyMeta::PartialMatch(f(iter), s),
-                SatisfyMeta::EmptyList => SatisfyMeta::EmptyList,
+                SatisfyMeta::Empty => SatisfyMeta::Empty,
                 SatisfyMeta::ExactMatch(s) => SatisfyMeta::ExactMatch(s),
             };
             SigSatisfies { return_ty, meta }
@@ -813,7 +772,7 @@ mod tests {
             &v.1,
             &SigSatisfies {
                 return_ty: of,
-                meta: crate::op::SatisfyMeta::EmptyList
+                meta: crate::op::SatisfyMeta::Empty
             }
         )
     }
@@ -842,7 +801,7 @@ mod tests {
     fn has_coercions(v: &MatchedOverload, broadcast: &[CoercionMeta]) {
         match &v.1.meta {
             super::SatisfyMeta::PartialMatch(c, _) => assert_eq!(c, broadcast),
-            super::SatisfyMeta::EmptyList | super::SatisfyMeta::ExactMatch(_) => {
+            super::SatisfyMeta::Empty | super::SatisfyMeta::ExactMatch(_) => {
                 panic!("expected a list of coercions")
             }
         }

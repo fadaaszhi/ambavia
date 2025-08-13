@@ -1340,21 +1340,12 @@ impl TypeChecker {
                             }
                         }
                     }
-                    // canonicalize (Point, Number) order for MulNumberPoint
-                    name if name.overloads().contains(&Op::MulNumberPoint) => {
-                        if checked_args.len() == 2
-                            && let Some([a, b]) = checked_args.first_chunk_mut()
-                            && [a.ty.base(), b.ty.base()] == [B::Point, B::Number]
-                        {
-                            mem::swap(a, b);
-                        }
-                    }
+                    // handle List[Bool] => Bool ? List : Empty
                     OpName::Index => {
-                        // handle List[Bool] => Bool ? List : Empty
-                        if let Some([a, b]) = checked_args.first_chunk()
-                            && a.ty.is_list()
-                            && b.ty == Type::Bool
-                        {
+                        let [a, b] = checked_args
+                            .first_chunk()
+                            .expect("Index should have two arguments");
+                        if a.ty.is_list() && b.ty == Type::Bool {
                             let mut it = checked_args.into_iter();
                             let (Some(list), Some(test)) = (it.next(), it.next()) else {
                                 unreachable!()
@@ -1370,18 +1361,29 @@ impl TypeChecker {
                             ));
                         }
                     }
+                    // canonicalize (Point, Number) order for MulNumberPoint
+                    name if name.overloads().contains(&Op::MulNumberPoint) => {
+                        if checked_args.len() == 2
+                            && let Some([a, b]) = checked_args.first_chunk_mut()
+                            && [a.ty.base(), b.ty.base()] == [B::Point, B::Number]
+                        {
+                            mem::swap(a, b);
+                        }
+                    }
                     _ => {}
                 }
-                dbg!(&checked_args);
                 let (op, SigSatisfies { return_ty, meta }) =
                     operation.overload_for(checked_args.iter().map(|v| v.ty))?;
                 Ok(match meta {
-                    crate::op::SatisfyMeta::EmptyList => match operation {
-                        OpName::Min
-                        | OpName::Max
-                        | OpName::Median
-                        | OpName::Mean
-                        | OpName::Index => te(Type::Number, Expression::Number(f64::NAN)),
+                    crate::op::SatisfyMeta::Empty => match operation {
+                        OpName::Index if !checked_args[1].ty.is_list() => {
+                            te(Type::Number, Expression::Number(f64::NAN))
+                        }
+                        OpName::Min | OpName::Max | OpName::Median | OpName::Mean
+                            if checked_args.len() == 1 =>
+                        {
+                            te(Type::Number, Expression::Number(f64::NAN))
+                        }
                         OpName::Count | OpName::Total => te(Type::Number, Expression::Number(0.0)),
                         _ => return empty_list(return_ty.base()),
                     },

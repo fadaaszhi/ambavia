@@ -531,6 +531,7 @@ impl Signature {
             && self.param_types.first().unwrap().is_list()
             && !self.return_type.is_list();
         let mut needs_splat = false;
+
         let (len, meta) =
             try_satisfy_inner(candidate_types.clone(), self.param_types.iter().copied()).or(
                 is_splat_candidate
@@ -546,7 +547,7 @@ impl Signature {
                     })
                     .flatten(),
             )?;
-        if !needs_splat && len != self.param_types.len() {
+        if len < self.param_types.len() {
             return None;
         }
         let return_ty = match meta {

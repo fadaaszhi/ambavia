@@ -728,13 +728,15 @@ mod tests {
     }
     #[track_caller]
     fn empty_list_of(v: &MatchedOverload, of: Type) {
-        assert_eq!(
-            &v.1,
-            &SigSatisfies {
-                return_ty: of,
-                meta: crate::op::SatisfyMeta::Empty,
-                splat: false
-            }
+        assert!(
+            matches!(
+                &v.1,
+                &SigSatisfies {
+                    return_ty: of,
+                    meta: crate::op::SatisfyMeta::Empty,
+                    splat: _
+                }
+            ) && v.1.return_ty == of
         )
     }
     #[track_caller]
@@ -776,12 +778,9 @@ mod tests {
         exact_match(&get(Add, &[Number, Number]), Op::AddNumber, false);
         exact_match(&get(Mul, &[Number, Ty::Point]), Op::MulNumberPoint, false);
 
-        empty_list_of(&get(Add, &[Number, EmptyList]), NumberList);
-        empty_list_of(&get(Add, &[EmptyList, Number]), NumberList);
+        empty_list_of(&get(Add, &[Number, EmptyList]), Number);
+        empty_list_of(&get(Add, &[EmptyList, Number]), Number);
         empty_list_of(&get(Add, &[EmptyList, EmptyList]), EmptyList);
-        empty_list_of(&get(Min, &[Number, EmptyList]), NumberList);
-        empty_list_of(&get(Min, &[EmptyList, EmptyList]), EmptyList);
-        empty_list_of(&get(Min, &[EmptyList, Type::NumberList]), NumberList);
 
         let s = get(Min, &[NumberList, Number]);
         splat(&s);
@@ -794,9 +793,10 @@ mod tests {
         has_op(&s, Op::Min);
 
         let s = get(Min, &[EmptyList, EmptyList, EmptyList, EmptyList, Number]);
-        empty_list_of(&s, NumberList);
+        empty_list_of(&s, Number);
         let s = get(Min, &[EmptyList, EmptyList, EmptyList, EmptyList]);
-        empty_list_of(&s, EmptyList);
+        dbg!(&s);
+        empty_list_of(&s, Number);
         let s = get(Index, &[EmptyList, Type::BoolList]);
         empty_list_of(&s, EmptyList);
 

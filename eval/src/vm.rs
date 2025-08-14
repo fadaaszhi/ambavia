@@ -661,8 +661,8 @@ impl<'a> Vm<'a> {
                     let bx = self.pop().number();
                     let ay = self.pop().number();
                     let ax = self.pop().number();
-                    self.push((ax + bx) / 2.0);
-                    self.push((ay + by) / 2.0);
+                    self.push(ax.midpoint(bx));
+                    self.push(ay.midpoint(by));
                 }
                 Instruction::Distance => {
                     let by = self.pop().number();

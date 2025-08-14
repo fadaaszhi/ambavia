@@ -1394,14 +1394,13 @@ impl TypeChecker {
                         _ => return empty_list(return_ty.base()),
                     },
 
-                    crate::op::SatisfyMeta::NeedsBroadcastFor(..) => {
+                    crate::op::SatisfyMeta::NeedsBroadcast(..) => {
                         // we need a "function" because only drop glue can drop partially moved values
                         // (the compiler is not smart enough to see that we move the only Drop type out of meta)
                         let destructure_and_drop = {
                             #[inline]
                             move || {
-                                let crate::op::SatisfyMeta::NeedsBroadcastFor(transform) = meta
-                                else {
+                                let crate::op::SatisfyMeta::NeedsBroadcast(transform) = meta else {
                                     unreachable!()
                                 };
                                 (transform, splat)

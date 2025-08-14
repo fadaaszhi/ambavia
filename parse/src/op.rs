@@ -483,25 +483,22 @@ impl SatisfyMeta<()> {
         }
         match (supplied, desired) {
             (s, d) if s == d => Some(Self::ExactMatch),
-            (s, d) if Type::single(s.base()) == d => Some(Self::NeedsBroadcastFor(())),
+            (s, d) if Type::single(s.base()) == d => Some(Self::NeedsBroadcast(())),
             _ => None,
         }
     }
     fn combine(self, other: Self) -> Self {
         match other {
             SatisfyMeta::Empty => SatisfyMeta::Empty,
-            SatisfyMeta::NeedsBroadcastFor(_) => {
-                if let Self::Empty = self {
-                    SatisfyMeta::Empty
-                } else {
-                    Self::NeedsBroadcastFor(())
-                }
-            }
+            SatisfyMeta::NeedsBroadcast(_) => match self {
+                SatisfyMeta::ExactMatch | SatisfyMeta::NeedsBroadcast(()) => other,
+                SatisfyMeta::Empty => self,
+            },
             SatisfyMeta::ExactMatch => self,
         }
     }
     fn needs_broadcast(self) -> bool {
-        matches!(self, Self::NeedsBroadcastFor(()))
+        matches!(self, Self::NeedsBroadcast(()))
     }
 }
 impl Signature {
@@ -554,7 +551,7 @@ impl Signature {
         }
         let return_ty = match meta {
             SatisfyMeta::ExactMatch | SatisfyMeta::Empty => self.return_type,
-            SatisfyMeta::NeedsBroadcastFor(_) => {
+            SatisfyMeta::NeedsBroadcast(_) => {
                 if self.return_type.is_list() {
                     return None;
                 } else {
@@ -599,14 +596,14 @@ pub(crate) struct SigSatisfies<T> {
 #[derive(Debug, PartialEq)]
 pub(crate) enum SatisfyMeta<T> {
     Empty,
-    NeedsBroadcastFor(T),
+    NeedsBroadcast(T),
     ExactMatch,
 }
 impl<T> SatisfyMeta<T> {
     fn map_iter<U>(self, f: impl FnOnce(T) -> U) -> SatisfyMeta<U> {
         match self {
             SatisfyMeta::Empty => SatisfyMeta::Empty,
-            SatisfyMeta::NeedsBroadcastFor(it) => SatisfyMeta::NeedsBroadcastFor(f(it)),
+            SatisfyMeta::NeedsBroadcast(it) => SatisfyMeta::NeedsBroadcast(f(it)),
             SatisfyMeta::ExactMatch => SatisfyMeta::ExactMatch,
         }
     }
@@ -762,7 +759,7 @@ mod tests {
     #[track_caller]
     fn has_coercions(v: &MatchedOverload, broadcast: &[CoercionMeta]) {
         match &v.1.meta {
-            super::SatisfyMeta::NeedsBroadcastFor(c) => assert_eq!(c, broadcast),
+            super::SatisfyMeta::NeedsBroadcast(c) => assert_eq!(c, broadcast),
             super::SatisfyMeta::Empty | super::SatisfyMeta::ExactMatch => {
                 panic!("expected a list of coercions")
             }

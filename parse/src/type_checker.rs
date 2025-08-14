@@ -1372,8 +1372,14 @@ impl TypeChecker {
                     }
                     _ => {}
                 }
-                let (op, SigSatisfies { return_ty, meta }) =
-                    operation.overload_for(checked_args.iter().map(|v| v.ty))?;
+                let (
+                    op,
+                    SigSatisfies {
+                        return_ty,
+                        meta,
+                        splat,
+                    },
+                ) = operation.overload_for(checked_args.iter().map(|v| v.ty))?;
                 Ok(match meta {
                     crate::op::SatisfyMeta::Empty => match operation {
                         OpName::Index if !checked_args[1].ty.is_list() => {
@@ -1388,13 +1394,13 @@ impl TypeChecker {
                         _ => return empty_list(return_ty.base()),
                     },
 
-                    crate::op::SatisfyMeta::PartialMatch(..) => {
+                    crate::op::SatisfyMeta::NeedsBroadcastFor(..) => {
                         // we need a "function" because only drop glue can drop partially moved values
                         // (the compiler is not smart enough to see that we move the only Drop type out of meta)
                         let destructure_and_drop = {
                             #[inline]
                             move || {
-                                let crate::op::SatisfyMeta::PartialMatch(transform, splat) = meta
+                                let crate::op::SatisfyMeta::NeedsBroadcastFor(transform) = meta
                                 else {
                                     unreachable!()
                                 };
@@ -1434,7 +1440,7 @@ impl TypeChecker {
                             },
                         )
                     }
-                    crate::op::SatisfyMeta::ExactMatch(splat) => {
+                    crate::op::SatisfyMeta::ExactMatch => {
                         drop(meta);
                         if splat {
                             checked_args = vec![te(

@@ -407,6 +407,7 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
             }
         }
         Expression::Op { operation, args } => {
+            dbg!(operation, args);
             use parse::op::Op;
             match operation {
                 Op::JoinNumber | Op::JoinPoint | Op::JoinPolygon => {

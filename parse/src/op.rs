@@ -533,19 +533,21 @@ impl Signature {
         let mut needs_splat = false;
 
         let (len, meta) =
-            try_satisfy_inner(candidate_types.clone(), self.param_types.iter().copied()).or(
-                is_splat_candidate
-                    .then(|| {
-                        let r = try_satisfy_inner(
-                            candidate_types.clone(),
-                            repeat(self.param_types[0].as_single()),
-                        );
-                        if r.is_some() {
-                            needs_splat = true;
-                        }
-                        r
-                    })
-                    .flatten(),
+            try_satisfy_inner(candidate_types.clone(), self.param_types.iter().copied()).or_else(
+                || {
+                    is_splat_candidate
+                        .then(|| {
+                            let r = try_satisfy_inner(
+                                candidate_types.clone(),
+                                repeat(self.param_types[0].as_single()),
+                            );
+                            if r.is_some() {
+                                needs_splat = true;
+                            }
+                            r
+                        })
+                        .flatten()
+                },
             )?;
         if len < self.param_types.len() {
             return None;

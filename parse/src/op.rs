@@ -2,7 +2,7 @@ use std::iter::{once, repeat, zip};
 
 use crate::{
     ast, name_resolver,
-    type_checker::{self, BaseType, Type},
+    type_checker::{self, Type},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -10,10 +10,6 @@ pub struct Signature {
     pub param_types: &'static [Type],
     pub return_type: Type,
 }
-
-pub(crate) const AST_USE_OP: bool = true;
-pub(crate) const NAMERESOLVE_USE_OP: bool = true;
-pub(crate) const TYCK_USE_OP: bool = true;
 
 macro_rules! declare_ops {
     (
@@ -732,7 +728,7 @@ mod tests {
             matches!(
                 &v.1,
                 &SigSatisfies {
-                    return_ty: of,
+                    return_ty: _,
                     meta: crate::op::SatisfyMeta::Empty,
                     splat: _
                 }

@@ -884,23 +884,24 @@ impl ExpressionList {
                         fn get_number(e: &parse::ast::Expression) -> Option<f64> {
                             match e {
                                 parse::ast::Expression::Number(x) => Some(*x),
-                                parse::ast::Expression::UnaryOperation {
-                                    operation: parse::ast::UnaryOperator::Neg,
-                                    arg,
-                                } => Some(-get_number(arg)?),
+                                parse::ast::Expression::Op {
+                                    operation: parse::op::OpName::Neg,
+                                    arguments,
+                                } => Some(-get_number(
+                                    arguments.get(0).expect("neg should have one argument"),
+                                )?),
                                 _ => None,
                             }
                         }
                         if let parse::ast::ExpressionListEntry::Assignment { value, .. } = ast {
                             if let Some(value) = get_number(value) {
                                 e.output.set_slider(value, -10.0, 10.0);
-                            } else if let parse::ast::Expression::BinaryOperation {
-                                operation: parse::ast::BinaryOperator::Point,
-                                left,
-                                right,
+                            } else if let parse::ast::Expression::Op {
+                                operation: parse::op::OpName::Point,
+                                arguments,
                             } = value
-                                && let Some(x) = get_number(left)
-                                && let Some(y) = get_number(right)
+                                && let Some(x) = get_number(&arguments[0])
+                                && let Some(y) = get_number(&arguments[1])
                             {
                                 let mut latex = vec![C('=')];
                                 point(&mut latex, x, y);

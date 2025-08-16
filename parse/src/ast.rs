@@ -53,15 +53,6 @@ pub enum Expression {
         before_ellipsis: Vec<Expression>,
         after_ellipsis: Vec<Expression>,
     },
-    UnaryOperation {
-        operation: UnaryOperator,
-        arg: Box<Expression>,
-    },
-    BinaryOperation {
-        operation: BinaryOperator,
-        left: Box<Expression>,
-        right: Box<Expression>,
-    },
     Op {
         operation: OpName,
         arguments: Vec<Expression>,

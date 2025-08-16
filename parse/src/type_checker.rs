@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, collections::HashMap, iter::zip, mem};
+use std::{borrow::Borrow, collections::HashMap, mem};
 
 use derive_more::{From, Into};
 use typed_index_collections::{TiSlice, TiVec, ti_vec};
@@ -6,7 +6,7 @@ use typed_index_collections::{TiSlice, TiVec, ti_vec};
 pub use crate::name_resolver::{ComparisonOperator, SumProdKind};
 use crate::{
     name_resolver::{self as nr},
-    op::{Op, SigSatisfies, TYCK_USE_OP},
+    op::{Op, SigSatisfies},
 };
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -309,15 +309,6 @@ pub enum Expression {
         vectors: Vec<Assignment>,
         body: Box<TypedExpression>,
     },
-    UnaryOperation {
-        operation: UnaryOperator,
-        arg: Box<TypedExpression>,
-    },
-    BinaryOperation {
-        operation: BinaryOperator,
-        left: Box<TypedExpression>,
-        right: Box<TypedExpression>,
-    },
     Op {
         operation: Op,
         args: Vec<TypedExpression>,
@@ -342,10 +333,6 @@ pub enum Expression {
         body: Body,
         lists: Vec<Assignment>,
     },
-    BuiltIn {
-        name: BuiltIn,
-        args: Vec<TypedExpression>,
-    },
 }
 
 #[derive(Debug, PartialEq)]
@@ -366,40 +353,15 @@ struct TypeChecker {
     id_counter: usize,
 }
 fn binary(operation: BinaryOperator, left: TypedExpression, right: TypedExpression) -> Expression {
-    if TYCK_USE_OP {
-        Expression::Op {
-            operation: operation.into(),
-            args: vec![left, right],
-        }
-    } else {
-        Expression::BinaryOperation {
-            operation,
-            left: Box::new(left),
-            right: Box::new(right),
-        }
-    }
-}
-fn unary(operation: UnaryOperator, arg: TypedExpression) -> Expression {
-    if TYCK_USE_OP {
-        Expression::Op {
-            operation: operation.into(),
-            args: vec![arg],
-        }
-    } else {
-        Expression::UnaryOperation {
-            operation,
-            arg: Box::new(arg),
-        }
+    Expression::Op {
+        operation: operation.into(),
+        args: vec![left, right],
     }
 }
 fn builtin(name: BuiltIn, args: Vec<TypedExpression>) -> Expression {
-    if TYCK_USE_OP {
-        Expression::Op {
-            operation: name.into(),
-            args,
-        }
-    } else {
-        Expression::BuiltIn { name, args }
+    Expression::Op {
+        operation: name.into(),
+        args,
     }
 }
 impl TypeChecker {
@@ -499,253 +461,6 @@ impl TypeChecker {
                         after_ellipsis,
                     },
                 ))
-            }
-            nr::Expression::UnaryOperation { operation, arg } => {
-                let arg = self.check_expression(arg)?;
-
-                if arg.ty == Type::EmptyList {
-                    return empty_list(match operation {
-                        nr::UnaryOperator::Neg => B::Empty,
-                        nr::UnaryOperator::Fac
-                        | nr::UnaryOperator::Sqrt
-                        | nr::UnaryOperator::Norm
-                        | nr::UnaryOperator::PointX
-                        | nr::UnaryOperator::PointY => B::Number,
-                    });
-                }
-
-                use UnaryOperator as O;
-                let (ty, operation) = match operation {
-                    nr::UnaryOperator::Neg => match arg.ty.base() {
-                        B::Number => (B::Number, O::NegNumber),
-                        B::Point => (B::Point, O::NegPoint),
-                        _ => return Err(format!("cannot negate {}", arg.ty)),
-                    },
-                    nr::UnaryOperator::Fac => match arg.ty.base() {
-                        B::Number => (B::Number, O::Fac),
-                        _ => return Err(format!("cannot take the factorial of {}", arg.ty)),
-                    },
-                    nr::UnaryOperator::Sqrt => match arg.ty.base() {
-                        B::Number => (B::Number, O::Sqrt),
-                        _ => return Err(format!("cannot take the square root of {}", arg.ty)),
-                    },
-                    nr::UnaryOperator::Norm => match arg.ty.base() {
-                        B::Number => (B::Number, O::Abs),
-                        B::Point => (B::Number, O::Mag),
-                        _ => return Err(format!("cannot take the absolute value of {}", arg.ty)),
-                    },
-                    nr::UnaryOperator::PointX => match arg.ty.base() {
-                        B::Point => (B::Number, O::PointX),
-                        _ => return Err(format!("cannot access coordinate '.x' of {}", arg.ty)),
-                    },
-                    nr::UnaryOperator::PointY => match arg.ty.base() {
-                        B::Point => (B::Number, O::PointY),
-                        _ => return Err(format!("cannot access coordinate '.y' of {}", arg.ty)),
-                    },
-                };
-
-                if arg.ty.is_list() {
-                    let arg_ty = Type::single(arg.ty.base());
-                    let arg = self.create_assignment(arg);
-                    let id = arg.id;
-                    Ok(te(
-                        Type::list_of(ty),
-                        Expression::Broadcast {
-                            scalars: vec![],
-                            vectors: vec![arg],
-                            body: Box::new(te(
-                                Type::single(ty),
-                                unary(operation, te(arg_ty, Expression::Identifier(id))),
-                            )),
-                        },
-                    ))
-                } else {
-                    Ok(te(Type::single(ty), unary(operation, arg)))
-                }
-            }
-            nr::Expression::BinaryOperation {
-                operation,
-                left,
-                right,
-            } => {
-                let mut left = self.check_expression(left)?;
-                let mut right = self.check_expression(right)?;
-
-                let broadcast_left = left.ty.is_list() && *operation != nr::BinaryOperator::Index;
-                let broadcast_right = right.ty.is_list();
-
-                use BinaryOperator as O;
-                let (ty, operation) = match operation {
-                    nr::BinaryOperator::Add => match (left.ty.base(), right.ty.base()) {
-                        (B::Number, B::Number) => (B::Number, O::AddNumber),
-                        (B::Point, B::Point) => (B::Point, O::AddPoint),
-                        (B::Number, B::Empty) | (B::Empty, B::Number) => {
-                            return empty_list(B::Number);
-                        }
-                        (B::Point, B::Empty) | (B::Empty, B::Point) => return empty_list(B::Point),
-                        _ => return Err(format!("cannot add {} and {}", left.ty, right.ty)),
-                    },
-                    nr::BinaryOperator::Sub => match (left.ty.base(), right.ty.base()) {
-                        (B::Number, B::Number) => (B::Number, O::SubNumber),
-                        (B::Point, B::Point) => (B::Point, O::SubPoint),
-                        (B::Number, B::Empty) | (B::Empty, B::Number) => {
-                            return empty_list(B::Number);
-                        }
-                        (B::Point, B::Empty) | (B::Empty, B::Point) => return empty_list(B::Point),
-                        _ => return Err(format!("cannot subtract {} from {}", left.ty, right.ty)),
-                    },
-                    nr::BinaryOperator::Mul => match (left.ty.base(), right.ty.base()) {
-                        (B::Number, B::Number) => (B::Number, O::MulNumber),
-                        (B::Number, B::Point) | (B::Point, B::Number) => {
-                            (B::Point, O::MulNumberPoint)
-                        }
-                        (B::Number, B::Empty) | (B::Empty, B::Number) => {
-                            return empty_list(B::Empty);
-                        }
-                        (B::Point, B::Empty) | (B::Empty, B::Point) => return empty_list(B::Point),
-                        _ => return Err(format!("cannot multiply {} by {}", left.ty, right.ty)),
-                    },
-                    nr::BinaryOperator::Div => match (left.ty.base(), right.ty.base()) {
-                        (B::Number, B::Number) => (B::Number, O::DivNumber),
-                        (B::Point, B::Number) => (B::Point, O::DivPointNumber),
-                        (B::Number, B::Empty) => return empty_list(B::Number),
-                        (B::Empty, B::Number) => return empty_list(B::Empty),
-                        (B::Point, B::Empty) => return empty_list(B::Point),
-                        _ => return Err(format!("cannot divide {} by {}", left.ty, right.ty)),
-                    },
-                    nr::BinaryOperator::Pow => match (left.ty.base(), right.ty.base()) {
-                        (B::Number, B::Number) => (B::Number, O::Pow),
-                        (B::Number, B::Empty) | (B::Empty, B::Number) => {
-                            return empty_list(B::Number);
-                        }
-                        _ => return Err(format!("cannot raise {} to {}", left.ty, right.ty)),
-                    },
-                    nr::BinaryOperator::Dot => match (left.ty.base(), right.ty.base()) {
-                        (B::Number, B::Number) => (B::Number, O::MulNumber),
-                        (B::Point, B::Number) | (B::Number, B::Point) => {
-                            (B::Point, O::MulNumberPoint)
-                        }
-                        (B::Point, B::Point) => (B::Number, O::Dot),
-                        (B::Number, B::Empty)
-                        | (B::Empty, B::Number)
-                        | (B::Point, B::Empty)
-                        | (B::Empty, B::Point) => return empty_list(B::Empty),
-                        _ => return Err(format!("cannot multiply {} by {}", left.ty, right.ty)),
-                    },
-                    nr::BinaryOperator::Cross => match (left.ty.base(), right.ty.base()) {
-                        (B::Number, B::Number) => (B::Number, O::MulNumber),
-                        (B::Point, B::Number) | (B::Number, B::Point) => {
-                            (B::Point, O::MulNumberPoint)
-                        }
-                        (B::Number, B::Empty) | (B::Empty, B::Number) => {
-                            return empty_list(B::Empty);
-                        }
-                        (B::Point, B::Empty) | (B::Empty, B::Point) => return empty_list(B::Point),
-                        (B::Point, B::Point) => {
-                            return Err(format!(
-                                "cannot take the cross product of {} and {}",
-                                left.ty, right.ty,
-                            ));
-                        }
-                        _ => return Err(format!("cannot multiply {} by {}", left.ty, right.ty)),
-                    },
-                    nr::BinaryOperator::Point => match (left.ty.base(), right.ty.base()) {
-                        (B::Number, B::Number) => (B::Point, O::Point),
-                        (B::Number, B::Empty) | (B::Empty, B::Number) => {
-                            return empty_list(B::Point);
-                        }
-                        _ => {
-                            return Err(format!(
-                                "cannot use {} and {} as the coordinates of a point",
-                                left.ty, right.ty
-                            ));
-                        }
-                    },
-                    nr::BinaryOperator::Index => match (left.ty, right.ty.base()) {
-                        (Type::NumberList, B::Number) => (B::Number, O::IndexNumberList),
-                        (Type::NumberList, B::Empty) => return empty_list(B::Number),
-                        (Type::PointList, B::Number) => (B::Point, O::IndexPointList),
-                        (Type::PointList, B::Empty) => return empty_list(B::Point),
-                        (Type::PolygonList, B::Number) => (B::Polygon, O::IndexPolygonList),
-                        (Type::PolygonList, B::Empty) => return empty_list(B::Polygon),
-                        (Type::EmptyList, B::Number) => (B::Number, O::IndexNumberList),
-                        (Type::EmptyList, B::Bool) => return empty_list(B::Empty),
-                        (Type::EmptyList, B::Empty) => return empty_list(B::Empty),
-                        (
-                            ty @ (Type::NumberList | Type::PointList | Type::PolygonList),
-                            B::Bool,
-                        ) => {
-                            return Ok(if !right.ty.is_list() {
-                                te(
-                                    ty,
-                                    Expression::Piecewise {
-                                        test: Box::new(right),
-                                        consequent: Box::new(left),
-                                        alternate: Box::new(te(ty, Expression::List(vec![]))),
-                                    },
-                                )
-                            } else {
-                                te(
-                                    ty,
-                                    binary(
-                                        match ty {
-                                            Type::NumberList => O::FilterNumberList,
-                                            Type::PointList => O::FilterPointList,
-                                            Type::PolygonList => O::FilterPolygonList,
-                                            _ => unreachable!(),
-                                        },
-                                        left,
-                                        right,
-                                    ),
-                                )
-                            });
-                        }
-                        _ => return Err(format!("cannot index {} with {}", left.ty, right.ty)),
-                    },
-                };
-                // normalize MulPointNumber into MulNumberPoint
-                if operation == O::MulNumberPoint && left.ty.base() != B::Number {
-                    mem::swap(&mut left, &mut right);
-                }
-
-                if broadcast_left || broadcast_right {
-                    let left_ty = if broadcast_left {
-                        Type::single(left.ty.base())
-                    } else {
-                        left.ty
-                    };
-                    let right_ty = if broadcast_right {
-                        Type::single(right.ty.base())
-                    } else {
-                        right.ty
-                    };
-                    let left = self.create_assignment(left);
-                    let right = self.create_assignment(right);
-                    let body = Box::new(te(
-                        Type::single(ty),
-                        binary(
-                            operation,
-                            te(left_ty, Expression::Identifier(left.id)),
-                            te(right_ty, Expression::Identifier(right.id)),
-                        ),
-                    ));
-                    let (scalars, vectors) = match (broadcast_left, broadcast_right) {
-                        (true, true) => (vec![], vec![left, right]),
-                        (true, false) => (vec![right], vec![left]),
-                        (false, true) => (vec![left], vec![right]),
-                        (false, false) => unreachable!(),
-                    };
-                    Ok(te(
-                        Type::list_of(ty),
-                        Expression::Broadcast {
-                            scalars,
-                            vectors,
-                            body,
-                        },
-                    ))
-                } else {
-                    Ok(te(Type::single(ty), binary(operation, left, right)))
-                }
             }
             nr::Expression::ChainedComparison {
                 operands,
@@ -921,329 +636,6 @@ impl TypeChecker {
                 Ok(te(
                     Type::list_of(body.value.ty.base()),
                     Expression::For { body, lists },
-                ))
-            }
-            nr::Expression::BuiltIn { name, args } => {
-                use BuiltIn as Bi;
-                use Type::{
-                    EmptyList as EL, Number as N, NumberList as NL, Point as P, PointList as PL,
-                    Polygon as Pg, PolygonList as PgL,
-                };
-                use nr::BuiltIn as Nb;
-                let args = self.check_expressions(args)?;
-
-                if args.len() == 1 && args[0].ty == Type::EmptyList {
-                    match name {
-                        Nb::Min | Nb::Max | Nb::Median | Nb::Mean => {
-                            return Ok(te(N, Expression::Number(f64::NAN)));
-                        }
-                        Nb::Count | Nb::Total => return Ok(te(N, Expression::Number(0.0))),
-                        Nb::Unique => return empty_list(B::Empty),
-                        Nb::Sort => return empty_list(B::Number),
-                        Nb::Polygon => {
-                            return Ok(te(
-                                Pg,
-                                builtin(Bi::Polygon, vec![te(PL, Expression::List(vec![]))]),
-                            ));
-                        }
-                        _ => {}
-                    }
-                }
-
-                if *name == Nb::Polygon
-                    && args.len() == 2
-                    && let (Type::NumberList, Type::NumberList)
-                    | (Type::NumberList, Type::Number)
-                    | (Type::NumberList, Type::EmptyList)
-                    | (Type::Number, Type::NumberList)
-                    | (Type::Number, Type::EmptyList)
-                    | (Type::EmptyList, Type::NumberList)
-                    | (Type::EmptyList, Type::Number)
-                    | (Type::EmptyList, Type::EmptyList) = (args[0].ty, args[1].ty)
-                {
-                    let [x, y] = args.try_into().unwrap();
-                    if x.ty == Type::EmptyList || y.ty == Type::EmptyList {
-                        return Ok(te(
-                            Type::Polygon,
-                            builtin(
-                                Bi::Polygon,
-                                vec![te(Type::PointList, Expression::List(vec![]))],
-                            ),
-                        ));
-                    } else {
-                        let broadcast_x = x.ty.is_list();
-                        let broadcast_y = y.ty.is_list();
-                        let x = self.create_assignment(x);
-                        let y = self.create_assignment(y);
-                        let body = Box::new(te(
-                            Type::Point,
-                            binary(
-                                BinaryOperator::Point,
-                                te(Type::Number, Expression::Identifier(x.id)),
-                                te(Type::Number, Expression::Identifier(y.id)),
-                            ),
-                        ));
-                        let (scalars, vectors) = match (broadcast_x, broadcast_y) {
-                            (true, true) => (vec![], vec![x, y]),
-                            (true, false) => (vec![y], vec![x]),
-                            (false, true) => (vec![x], vec![y]),
-                            (false, false) => unreachable!(),
-                        };
-                        return Ok(te(
-                            Type::Polygon,
-                            builtin(
-                                BuiltIn::Polygon,
-                                vec![te(
-                                    Type::PointList,
-                                    Expression::Broadcast {
-                                        scalars,
-                                        vectors,
-                                        body,
-                                    },
-                                )],
-                            ),
-                        ));
-                    }
-                }
-
-                if *name == Nb::Sort && args.len() == 2 {
-                    match (args[0].ty, args[1].ty) {
-                        (EL, EL | NL) => return empty_list(B::Empty),
-                        (l @ (NL | PL | PgL), EL) => return empty_list(l.base()),
-                        _ => {}
-                    }
-                }
-
-                if *name == Nb::Join {
-                    let mut first_non_empty: Option<Type> = None;
-                    let mut new_args = vec![];
-
-                    for a in args {
-                        if a.ty == EL {
-                            continue;
-                        }
-                        let ty = first_non_empty.get_or_insert(a.ty);
-                        if ty.base() != a.ty.base() {
-                            return Err(format!("cannot join {ty} and {}", a.ty));
-                        }
-                        new_args.push(a);
-                    }
-
-                    let Some(ty) = first_non_empty else {
-                        assert_eq!(new_args, vec![]);
-                        return empty_list(B::Empty);
-                    };
-                    return Ok(te(
-                        Type::list_of(ty.base()),
-                        builtin(
-                            match ty.base() {
-                                B::Number => Bi::JoinNumber,
-                                B::Point => Bi::JoinPoint,
-                                B::Polygon => Bi::JoinPolygon,
-                                _ => unreachable!(),
-                            },
-                            new_args,
-                        ),
-                    ));
-                }
-
-                let overloads: &[(&[Type], Type, BuiltIn)] = match name {
-                    Nb::Ln => &[(&[N], N, Bi::Ln)],
-                    Nb::Exp => &[(&[N], N, Bi::Exp)],
-                    Nb::Erf => &[(&[N], N, Bi::Erf)],
-                    Nb::Sin => &[(&[N], N, Bi::Sin)],
-                    Nb::Cos => &[(&[N], N, Bi::Cos)],
-                    Nb::Tan => &[(&[N], N, Bi::Tan)],
-                    Nb::Sec => &[(&[N], N, Bi::Sec)],
-                    Nb::Csc => &[(&[N], N, Bi::Csc)],
-                    Nb::Cot => &[(&[N], N, Bi::Cot)],
-                    Nb::Sinh => &[(&[N], N, Bi::Sinh)],
-                    Nb::Cosh => &[(&[N], N, Bi::Cosh)],
-                    Nb::Tanh => &[(&[N], N, Bi::Tanh)],
-                    Nb::Sech => &[(&[N], N, Bi::Sech)],
-                    Nb::Csch => &[(&[N], N, Bi::Csch)],
-                    Nb::Coth => &[(&[N], N, Bi::Coth)],
-                    Nb::Asin => &[(&[N], N, Bi::Asin)],
-                    Nb::Acos => &[(&[N], N, Bi::Acos)],
-                    Nb::Atan => &[(&[N], N, Bi::Atan), (&[N, N], N, Bi::Atan2)],
-                    Nb::Asec => &[(&[N], N, Bi::Asec)],
-                    Nb::Acsc => &[(&[N], N, Bi::Acsc)],
-                    Nb::Acot => &[(&[N], N, Bi::Acot)],
-                    Nb::Asinh => &[(&[N], N, Bi::Asinh)],
-                    Nb::Acosh => &[(&[N], N, Bi::Acosh)],
-                    Nb::Atanh => &[(&[N], N, Bi::Atanh)],
-                    Nb::Asech => &[(&[N], N, Bi::Asech)],
-                    Nb::Acsch => &[(&[N], N, Bi::Acsch)],
-                    Nb::Acoth => &[(&[N], N, Bi::Acoth)],
-                    Nb::Abs => &[(&[N], N, Bi::Abs)],
-                    Nb::Sgn => &[(&[N], N, Bi::Sgn)],
-                    Nb::Round => &[(&[N], N, Bi::Round), (&[N, N], N, Bi::RoundWithPrecision)],
-                    Nb::Floor => &[(&[N], N, Bi::Floor)],
-                    Nb::Ceil => &[(&[N], N, Bi::Ceil)],
-                    Nb::Mod => &[(&[N, N], N, Bi::Mod)],
-                    Nb::Midpoint => &[(&[P, P], P, Bi::Midpoint)],
-                    Nb::Distance => &[(&[P, P], N, Bi::Distance)],
-                    Nb::Min => &[(&[NL], N, Bi::Min)],
-                    Nb::Max => &[(&[NL], N, Bi::Max)],
-                    Nb::Median => &[(&[NL], N, Bi::Median)],
-                    Nb::Total => &[(&[NL], N, Bi::TotalNumber), (&[PL], P, Bi::TotalPoint)],
-                    Nb::Mean => &[(&[NL], N, Bi::MeanNumber), (&[PL], P, Bi::MeanPoint)],
-                    Nb::Count => &[
-                        (&[NL], N, Bi::CountNumber),
-                        (&[PL], N, Bi::CountPoint),
-                        (&[PgL], N, Bi::CountPolygon),
-                    ],
-                    Nb::Unique => &[
-                        (&[NL], NL, Bi::UniqueNumber),
-                        (&[PL], PL, Bi::UniquePoint),
-                        (&[PgL], PgL, Bi::UniquePolygon),
-                    ],
-                    Nb::Sort => &[
-                        (&[NL], NL, Bi::Sort),
-                        (&[NL, NL], NL, Bi::SortKeyNumber),
-                        (&[PL, NL], PL, Bi::SortKeyPoint),
-                        (&[PgL, NL], PgL, Bi::SortKeyPolygon),
-                    ],
-                    Nb::Polygon => &[(&[PL], Pg, Bi::Polygon)],
-                    Nb::Join => unreachable!(),
-                };
-
-                'overload: for (arg_tys, ret_ty, builtin) in overloads {
-                    'normal: {
-                        if arg_tys.len() != args.len() {
-                            break 'normal;
-                        }
-
-                        let broadcastable = !ret_ty.is_list();
-                        let mut do_broadcast = false;
-                        let mut empty = false;
-                        for (a, t) in zip(&args, *arg_tys) {
-                            if a.ty == *t {
-                                continue;
-                            }
-                            if broadcastable && !t.is_list() {
-                                if a.ty == Type::EmptyList {
-                                    empty = true;
-                                    continue;
-                                }
-                                if Type::single(a.ty.base()) == *t {
-                                    do_broadcast = true;
-                                    continue;
-                                }
-                            }
-                            break 'normal;
-                        }
-
-                        if empty {
-                            return empty_list(B::Empty);
-                        }
-
-                        if do_broadcast {
-                            let assignments = args
-                                .into_iter()
-                                .map(|a| self.create_assignment(a))
-                                .collect::<Vec<_>>();
-                            let body = Box::new(te(
-                                *ret_ty,
-                                self::builtin(
-                                    *builtin,
-                                    assignments
-                                        .iter()
-                                        .map(|a| te(Type::Point, Expression::Identifier(a.id)))
-                                        .collect(),
-                                ),
-                            ));
-                            let mut vectors = vec![];
-                            let mut scalars = vec![];
-                            for (a, t) in zip(assignments, *arg_tys) {
-                                if a.value.ty == *t {
-                                    scalars.push(a);
-                                } else {
-                                    vectors.push(a);
-                                }
-                            }
-                            return Ok(te(
-                                Type::list_of(ret_ty.base()),
-                                Expression::Broadcast {
-                                    scalars,
-                                    vectors,
-                                    body,
-                                },
-                            ));
-                        } else {
-                            return Ok(te(*ret_ty, self::builtin(*builtin, args)));
-                        }
-                    }
-
-                    // splat
-                    if !ret_ty.is_list()
-                        && arg_tys.len() == 1
-                        && let t = arg_tys[0]
-                        && t.is_list()
-                    {
-                        let b = Type::single(t.base());
-                        let mut do_broadcast = false;
-                        let mut empty = false;
-                        for a in &args {
-                            if a.ty == b {
-                                continue;
-                            }
-                            if a.ty == Type::EmptyList {
-                                empty = true;
-                                continue;
-                            }
-                            if Type::single(a.ty.base()) == b {
-                                do_broadcast = true;
-                                continue;
-                            }
-                            continue 'overload;
-                        }
-
-                        if empty {
-                            return empty_list(B::Empty);
-                        }
-
-                        if do_broadcast {
-                            let assignments = args
-                                .into_iter()
-                                .map(|a| self.create_assignment(a))
-                                .collect::<Vec<_>>();
-                            let body = Box::new(te(
-                                *ret_ty,
-                                self::builtin(
-                                    *builtin,
-                                    vec![te(
-                                        t,
-                                        Expression::List(
-                                            assignments
-                                                .iter()
-                                                .map(|a| te(b, Expression::Identifier(a.id)))
-                                                .collect(),
-                                        ),
-                                    )],
-                                ),
-                            ));
-                            let (vectors, scalars) =
-                                assignments.into_iter().partition(|a| a.value.ty.is_list());
-                            return Ok(te(
-                                Type::list_of(ret_ty.base()),
-                                Expression::Broadcast {
-                                    scalars,
-                                    vectors,
-                                    body,
-                                },
-                            ));
-                        } else {
-                            return Ok(te(
-                                *ret_ty,
-                                self::builtin(*builtin, vec![te(t, Expression::List(args))]),
-                            ));
-                        }
-                    }
-                }
-
-                Err(format!(
-                    "function '{name:?}' cannot be applied to these arguments"
                 ))
             }
             nr::Expression::Op { operation, args } => {
@@ -1506,21 +898,19 @@ pub fn type_check(
 
 #[cfg(test)]
 mod tests {
+    use crate::op::OpName;
+
     use super::{
         Assignment as As, BinaryOperator as Bo,
         Expression::{Identifier as Id, Number as Num},
         nr::{
-            Assignment as NAs, BinaryOperator as NBo,
-            Expression::{BinaryOperation as NBop, Identifier as NId, Number as NNum},
+            Assignment as NAs,
+            Expression::{Identifier as NId, Number as NNum, Op as NOp},
         },
         *,
     };
 
     use pretty_assertions::assert_eq;
-
-    fn bx<T>(x: T) -> Box<T> {
-        Box::new(x)
-    }
 
     fn num(e: Expression) -> TypedExpression {
         te(Type::Number, e)
@@ -1549,28 +939,25 @@ mod tests {
                 NAs {
                     id: 2,
                     name: "b".into(),
-                    value: NBop {
-                        operation: NBo::Point,
-                        left: bx(NNum(3.0)),
-                        right: bx(NNum(2.0))
+                    value: NOp {
+                        operation: OpName::Point,
+                        args: vec![NNum(3.0), NNum(2.0)]
                     }
                 },
                 NAs {
                     id: 3,
                     name: "c".into(),
-                    value: NBop {
-                        operation: NBo::Dot,
-                        left: bx(NId(2)),
-                        right: bx(NId(0))
+                    value: NOp {
+                        operation: OpName::Dot,
+                        args: vec![NId(2), NId(0)]
                     }
                 },
                 NAs {
                     id: 88,
                     name: "d".into(),
-                    value: NBop {
-                        operation: NBo::Add,
-                        left: bx(NId(2)),
-                        right: bx(NId(0))
+                    value: NOp {
+                        operation: OpName::Add,
+                        args: vec![NId(2), NId(0)]
                     }
                 },
                 NAs {

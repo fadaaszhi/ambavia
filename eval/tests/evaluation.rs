@@ -211,9 +211,9 @@ const NAN: f64 = f64::NAN;
 #[case(r"[(1,2), (3,4), (5,6)][[7...9]>=8]", [(3, 4), (5, 6)])]
 #[case(r"[1,2][[7...9]>=8]", [2])]
 #[case(r"[][[7...9]>=8] + (1,2)", [(0, 0); 0])]
-#[case(r"\operatorname{min}([1])", 1)]
+#[case(r"\min([1])", 1)]
 #[case(r"\polygon()", polygon([]))]
-#[case(r"\operatorname{total}([], [])", Value::EmptyList)]
+#[case(r"\total([], [])", Value::EmptyList)]
 #[case(r"\polygon(4,[5,6,7])", polygon([(4, 5), (4, 6), (4, 7)]))]
 #[case(r"1\times(2,3)", (2, 3))]
 #[case(r"(4,5)\times6", (24, 30))]
@@ -223,6 +223,7 @@ const NAN: f64 = f64::NAN;
 #[case(r"\polygon([],[],[])", Value::PolygonList(vec![]))]
 #[case(r"\polygon((8,9),[])", Value::PolygonList(vec![]))]
 #[case(r"[\polygon()][1]", polygon([]))]
+#[case(r"\unique([])+(0,0)", [(0, 0); 0])]
 fn expression_eq(#[case] expression: &str, #[case] expected: impl Into<Value>) {
     assert_expression_eq(expression, expected.into());
 }
@@ -232,6 +233,7 @@ fn expression_eq(#[case] expression: &str, #[case] expected: impl Into<Value>) {
     r"\{1<2:(3,4),5\}",
     "cannot use a point and a number as the branches in a piecewise, every branch must have the same type"
 )]
+#[case(r"\sort([])+(0,0)", "cannot Add a list of numbers and a point")]
 fn expression_type_error(#[case] expression: &str, #[case] error: &str) {
     assert_type_error(expression, error);
 }

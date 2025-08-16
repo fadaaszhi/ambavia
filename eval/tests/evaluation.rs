@@ -96,7 +96,7 @@ impl<const N: usize> From<[(i64, i64); N]> for Value {
 fn polygon<const N: usize>(points: [(i64, i64); N]) -> Value {
     Value::Polygon(points.map(|(x, y)| (x as f64, y as f64)).into())
 }
-
+#[track_caller]
 fn assert_expression_eq<'a>(source: &str, value: Value) {
     println!("expression: {source}");
     let tree = parse_latex(source).unwrap();
@@ -207,6 +207,9 @@ const NAN: f64 = f64::NAN;
 #[case(r"[(1,2), (3,4), (5,6)][[7...9]>=8]", [(3, 4), (5, 6)])]
 #[case(r"[1,2][[7...9]>=8]", [2])]
 #[case(r"[][[7...9]>=8] + (1,2)", [(0, 0); 0])]
+#[case(r"\operatorname{min}([1])", 1)]
+#[case(r"\polygon()", polygon([]))]
+#[case(r"\operatorname{total}([], [])", Value::EmptyList)]
 #[case(r"\polygon(4,[5,6,7])", polygon([(4, 5), (4, 6), (4, 7)]))]
 fn expression_eq(#[case] expression: &str, #[case] expected: impl Into<Value>) {
     assert_expression_eq(expression, expected.into());

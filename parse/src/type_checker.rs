@@ -1338,6 +1338,14 @@ impl TypeChecker {
                                     },
                                 ));
                             }
+                        } else if checked_args.len() == 0 {
+                            return Ok(te(
+                                Type::Polygon,
+                                Expression::Op {
+                                    operation: Op::Polygon,
+                                    args: vec![te(Type::PointList, Expression::List(vec![]))],
+                                },
+                            ));
                         }
                     }
                     // handle List[Bool] => Bool ? List : Empty

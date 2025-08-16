@@ -215,6 +215,13 @@ const NAN: f64 = f64::NAN;
 #[case(r"\polygon()", polygon([]))]
 #[case(r"\operatorname{total}([], [])", Value::EmptyList)]
 #[case(r"\polygon(4,[5,6,7])", polygon([(4, 5), (4, 6), (4, 7)]))]
+#[case(r"1\times(2,3)", (2, 3))]
+#[case(r"(4,5)\times6", (24, 30))]
+#[case(r"\total([])", 0)]
+#[case(r"[][7]", f64::NAN)]
+#[case(r"\polygon([])", polygon([]))]
+#[case(r"\polygon([],[],[])", Value::PolygonList(vec![]))]
+#[case(r"\polygon((8,9),[])", Value::PolygonList(vec![]))]
 #[case(r"[\polygon()][1]", polygon([]))]
 fn expression_eq(#[case] expression: &str, #[case] expected: impl Into<Value>) {
     assert_expression_eq(expression, expected.into());

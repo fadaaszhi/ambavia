@@ -1,5 +1,5 @@
 [package]
-name = "ambavia"
+name = "ui"
 version = "0.1.0"
 edition = "2024"
 
@@ -19,5 +19,13 @@ image = { version = "0.25.6", default-features = false, features = [
 ] }
 pollster = "0.4.0"
 glam = { version = "0.30.4", features = ["bytemuck"] }
-wgpu = "26.0"
+# trim some unneeded (for now) features for faster compiles
+wgpu = { version = "26.0", default-features = false, features = [
+    "std",
+    "dx12",
+    "metal",
+    "vulkan",
+    "wgsl",
+    "parking_lot",
+] }
 winit = "0.30.11"

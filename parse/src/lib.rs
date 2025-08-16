@@ -6,4 +6,5 @@ pub mod ast;
 pub mod ast_parser;
 
 pub mod name_resolver;
+pub mod op;
 pub mod type_checker;

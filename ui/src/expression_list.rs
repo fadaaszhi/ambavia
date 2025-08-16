@@ -884,23 +884,24 @@ impl ExpressionList {
                         fn get_number(e: &parse::ast::Expression) -> Option<f64> {
                             match e {
                                 parse::ast::Expression::Number(x) => Some(*x),
-                                parse::ast::Expression::UnaryOperation {
-                                    operation: parse::ast::UnaryOperator::Neg,
-                                    arg,
-                                } => Some(-get_number(arg)?),
+                                parse::ast::Expression::Op {
+                                    operation: parse::op::OpName::Neg,
+                                    args: arguments,
+                                } => Some(-get_number(
+                                    arguments.first().expect("neg should have one argument"),
+                                )?),
                                 _ => None,
                             }
                         }
                         if let parse::ast::ExpressionListEntry::Assignment { value, .. } = ast {
                             if let Some(value) = get_number(value) {
                                 e.output.set_slider(value, -10.0, 10.0);
-                            } else if let parse::ast::Expression::BinaryOperation {
-                                operation: parse::ast::BinaryOperator::Point,
-                                left,
-                                right,
+                            } else if let parse::ast::Expression::Op {
+                                operation: parse::op::OpName::Point,
+                                args: arguments,
                             } = value
-                                && let Some(x) = get_number(left)
-                                && let Some(y) = get_number(right)
+                                && let Some(x) = get_number(&arguments[0])
+                                && let Some(y) = get_number(&arguments[1])
                             {
                                 let mut latex = vec![C('=')];
                                 point(&mut latex, x, y);
@@ -1164,7 +1165,7 @@ impl ExpressionList {
                 .map(|x| (x.clamp(0.0, 1.0) * 65535.0).round())
                 .as_u16vec2();
 
-            indices.push(vertices.len() as u32 + 0);
+            indices.push((vertices.len() as u32 + 0));
             indices.push(vertices.len() as u32 + 1);
             indices.push(vertices.len() as u32 + 2);
             indices.push(vertices.len() as u32 + 3);

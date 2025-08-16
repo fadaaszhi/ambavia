@@ -1,25 +1,4 @@
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub enum UnaryOperator {
-    Neg,
-    Fac,
-    Sqrt,
-    Norm,
-    PointX,
-    PointY,
-}
-
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub enum BinaryOperator {
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Pow,
-    Dot,
-    Cross,
-    Point,
-    Index,
-}
+use crate::op::OpName;
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum ComparisonOperator {
@@ -51,14 +30,9 @@ pub enum Expression {
         before_ellipsis: Vec<Expression>,
         after_ellipsis: Vec<Expression>,
     },
-    UnaryOperation {
-        operation: UnaryOperator,
-        arg: Box<Expression>,
-    },
-    BinaryOperation {
-        operation: BinaryOperator,
-        left: Box<Expression>,
-        right: Box<Expression>,
+    Op {
+        operation: OpName,
+        args: Vec<Expression>,
     },
     CallOrMultiply {
         callee: String,

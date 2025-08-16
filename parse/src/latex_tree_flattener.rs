@@ -241,8 +241,8 @@ fn flatten_helper<'a>(
             }
         }
 
-        if let Some(Token::IdentFrag(word)) = tokens.last() {
-            if let Some(new_token) = match word.as_ref() {
+        if let Some(Token::IdentFrag(word)) = tokens.last()
+            && let Some(new_token) = match word.as_ref() {
                 "cdot" => Some(Token::Cdot),
                 "times" => Some(Token::Times),
                 "div" => Some(Token::Div),
@@ -259,9 +259,9 @@ fn flatten_helper<'a>(
                 "ge" => Some(Token::GreaterEqual),
                 "geq" => Some(Token::GreaterEqual),
                 _ => None,
-            } {
-                *tokens.last_mut().unwrap() = new_token;
             }
+        {
+            *tokens.last_mut().unwrap() = new_token;
         }
     }
 

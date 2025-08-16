@@ -1,10 +1,13 @@
-use std::{borrow::Borrow, collections::HashMap, iter::zip};
+use std::{array, borrow::Borrow, collections::HashMap, iter::zip};
 
 use derive_more::{From, Into};
 use typed_index_collections::{TiSlice, TiVec};
 
-use crate::ast::{self, ExpressionListEntry};
-pub use crate::ast::{BinaryOperator, ComparisonOperator, SumProdKind, UnaryOperator};
+pub use crate::ast::{ComparisonOperator, SumProdKind};
+use crate::{
+    ast::{self, ExpressionListEntry},
+    op::OpName,
+};
 
 #[derive(Debug, PartialEq)]
 pub enum Expression {
@@ -15,14 +18,9 @@ pub enum Expression {
         before_ellipsis: Vec<Expression>,
         after_ellipsis: Vec<Expression>,
     },
-    UnaryOperation {
-        operation: UnaryOperator,
-        arg: Box<Expression>,
-    },
-    BinaryOperation {
-        operation: BinaryOperator,
-        left: Box<Expression>,
-        right: Box<Expression>,
+    Op {
+        operation: OpName,
+        args: Vec<Expression>,
     },
     ChainedComparison {
         operands: Vec<Expression>,
@@ -44,65 +42,11 @@ pub enum Expression {
         body: Body,
         lists: Vec<Assignment>,
     },
-    BuiltIn {
-        name: BuiltIn,
-        args: Vec<Expression>,
-    },
 }
 
-#[derive(Debug, PartialEq)]
-pub enum BuiltIn {
-    // Log,
-    Ln,
-    Exp,
-    Erf,
-    Sin,
-    Cos,
-    Tan,
-    Sec,
-    Csc,
-    Cot,
-    Sinh,
-    Cosh,
-    Tanh,
-    Sech,
-    Csch,
-    Coth,
-    Asin,
-    Acos,
-    Atan,
-    Asec,
-    Acsc,
-    Acot,
-    Asinh,
-    Acosh,
-    Atanh,
-    Asech,
-    Acsch,
-    Acoth,
-    Abs,
-    Sgn,
-    Round,
-    Floor,
-    Ceil,
-    Mod,
-    Midpoint,
-    Distance,
-    Min,
-    Max,
-    Median,
-    Total,
-    Mean,
-    Count,
-    Unique,
-    Sort,
-    Polygon,
-    Join,
-}
-
-impl BuiltIn {
-    fn from_str(name: &str) -> Option<BuiltIn> {
-        use BuiltIn::*;
+impl OpName {
+    fn from_str(name: &str) -> Option<OpName> {
+        use OpName::*;
         Some(match name {
             "ln" => Ln,
             "exp" => Exp,
@@ -256,7 +200,12 @@ struct Resolver<'a> {
     dynamic_scope: ScopeMap<'a, (usize, Dependencies<'a>)>,
     global_scope: ScopeMap<'a, ((usize, Option<String>), Dependencies<'a>)>,
 }
-
+fn builtin(name: OpName, args: Vec<Expression>) -> Expression {
+    Expression::Op {
+        operation: name,
+        args,
+    }
+}
 #[derive(Debug, Copy, Clone, From, Into)]
 pub struct ExpressionIndex(usize);
 type ExpressionList<E> = TiSlice<ExpressionIndex, E>;
@@ -324,15 +273,15 @@ impl<'a> Resolver<'a> {
     }
 
     fn resolve_variable(&mut self, name: &'a str) -> (Result<usize, String>, Dependencies<'a>) {
-        if let Some(((id, err), deps)) = self.get_maybe_outdated_variable(name) {
-            if deps.map.iter().all(|(n, d)| match d {
+        if let Some(((id, err), deps)) = self.get_maybe_outdated_variable(name)
+            && deps.map.iter().all(|(n, d)| match d {
                 Dependency::Assignment(i) => self.get_maybe_outdated_variable(n).unwrap().0.0 == i,
                 Dependency::NotDynamic => !self.dynamic_scope.contains_key(n),
-            }) {
-                let mut deps = deps.clone();
-                deps.map.insert(name, Dependency::Assignment(*id));
-                return (err.cloned().map_or(Ok(*id), Err), deps);
-            }
+            })
+        {
+            let mut deps = deps.clone();
+            deps.map.insert(name, Dependency::Assignment(*id));
+            return (err.cloned().map_or(Ok(*id), Err), deps);
         }
 
         let entry = match self
@@ -467,13 +416,13 @@ impl<'a> Resolver<'a> {
     ) -> (Result<Expression, String>, Dependencies<'a>) {
         let err = |s| (Err(s), Dependencies::none());
 
-        if let Some(name) = BuiltIn::from_str(callee) {
+        if let Some(name) = OpName::from_str(callee) {
             let (args, deps) = match self.resolve_expressions(args) {
                 (Ok(v), d) => (v, d),
                 (Err(e), d) => return (Err(e), d),
             };
 
-            return (Ok(Expression::BuiltIn { name, args }), deps);
+            return (Ok(builtin(name, args)), deps);
         }
 
         let (parameters, body) = match self.globals.get(callee).cloned() {
@@ -542,40 +491,8 @@ impl<'a> Resolver<'a> {
                     d0.merged(d1),
                 )
             }
-            ast::Expression::UnaryOperation { operation, arg } => {
-                let (arg, d) = self.resolve_expression(arg);
-                (
-                    arg.map(|arg| Expression::UnaryOperation {
-                        operation: *operation,
-                        arg: Box::new(arg),
-                    }),
-                    d,
-                )
-            }
-            ast::Expression::BinaryOperation {
-                operation,
-                left,
-                right,
-            } => {
-                let (left, d0) = match self.resolve_expression(left) {
-                    (Ok(v), d) => (v, d),
-                    (Err(e), d) => return (Err(e), d),
-                };
-                let (right, d1) = match self.resolve_expression(right) {
-                    (Ok(v), d) => (v, d),
-                    (Err(e), d) => return (Err(e), d0.merged(d)),
-                };
-                (
-                    Ok(Expression::BinaryOperation {
-                        operation: *operation,
-                        left: Box::new(left),
-                        right: Box::new(right),
-                    }),
-                    d0.merged(d1),
-                )
-            }
             ast::Expression::CallOrMultiply { callee, args } => {
-                if BuiltIn::from_str(callee).is_some()
+                if OpName::from_str(callee).is_some()
                     || matches!(
                         self.globals.get(callee.as_str()),
                         Some(Ok(ExpressionListEntry::FunctionDeclaration { .. }))
@@ -597,18 +514,22 @@ impl<'a> Resolver<'a> {
                     (
                         if len == 1 || len == 2 {
                             let mut right_iter = right.into_iter();
-                            Ok(Expression::BinaryOperation {
-                                operation: BinaryOperator::Mul,
-                                left: Box::new(Expression::Identifier(left)),
-                                right: Box::new(if len == 1 {
-                                    right_iter.next().unwrap()
-                                } else {
-                                    Expression::BinaryOperation {
-                                        operation: BinaryOperator::Point,
-                                        left: Box::new(right_iter.next().unwrap()),
-                                        right: Box::new(right_iter.next().unwrap()),
-                                    }
-                                }),
+                            Ok(Expression::Op {
+                                operation: OpName::Mul,
+                                args: vec![
+                                    Expression::Identifier(left),
+                                    if len == 1 {
+                                        right_iter.next().unwrap()
+                                    } else {
+                                        Expression::Op {
+                                            operation: OpName::Point,
+                                            args: array::from_fn::<_, 2, _>(|_| {
+                                                right_iter.next().unwrap()
+                                            })
+                                            .into(),
+                                        }
+                                    },
+                                ],
                             })
                         } else {
                             Err(if len == 0 {
@@ -774,6 +695,22 @@ impl<'a> Resolver<'a> {
                     list_deps.merged(body_deps),
                 )
             }
+            ast::Expression::Op {
+                operation,
+                args: arguments,
+            } => {
+                let (args, deps) = match self.resolve_expressions(arguments) {
+                    (Ok(v), d) => (v, d),
+                    (Err(e), d) => return (Err(e), d),
+                };
+                (
+                    Ok(Expression::Op {
+                        operation: *operation,
+                        args,
+                    }),
+                    deps,
+                )
+            }
         }
     }
 }
@@ -852,23 +789,20 @@ mod tests {
     use ExpressionListEntry::{
         Assignment as ElAssign, Expression as ElExpr, FunctionDeclaration as ElFunction,
     };
-    use ast::{
-        BinaryOperator as ABo,
-        Expression::{
-            BinaryOperation as ABop,
-            Call as ACall,
-            CallOrMultiply as ACallMul,
-            // ChainedComparison as AComparison,
-            For as AFor,
-            Identifier as AId,
-            List as AList,
-            ListRange as AListRange,
-            Number as ANum,
-            // Piecewise as APiecewise,
-            // SumProd as ASumProd,
-            // UnaryOperation as AUop,
-            With as AWith,
-        },
+    use ast::Expression::{
+        Call as ACall,
+        CallOrMultiply as ACallMul,
+        // ChainedComparison as AComparison,
+        For as AFor,
+        Identifier as AId,
+        List as AList,
+        ListRange as AListRange,
+        Number as ANum,
+        Op as AOp,
+        // Piecewise as APiecewise,
+        // SumProd as ASumProd,
+        // UnaryOperation as AUop,
+        With as AWith,
     };
     use pretty_assertions::assert_eq;
 
@@ -893,10 +827,9 @@ mod tests {
         assert_eq!(
             resolve_names_ti(&[
                 ElExpr(ANum(5.0)),
-                ElExpr(ABop {
-                    operation: ABo::Add,
-                    left: bx(ANum(1.0)),
-                    right: bx(ANum(2.0)),
+                ElExpr(AOp {
+                    operation: OpName::Add,
+                    args: vec![ANum(1.0), ANum(2.0)]
                 }),
             ]),
             (
@@ -909,10 +842,9 @@ mod tests {
                     Assignment {
                         id: 1,
                         name: "<anonymous>".into(),
-                        value: Expression::BinaryOperation {
-                            operation: BinaryOperator::Add,
-                            left: bx(Expression::Number(1.0)),
-                            right: bx(Expression::Number(2.0)),
+                        value: Expression::Op {
+                            operation: OpName::Add,
+                            args: vec![Expression::Number(1.0), Expression::Number(2.0)],
                         },
                     },
                 ],
@@ -1294,23 +1226,23 @@ mod tests {
                     Assignment {
                         id: 1,
                         name: "<anonymous>".into(),
-                        value: Expression::BinaryOperation {
-                            operation: BinaryOperator::Mul,
-                            left: bx(Expression::Identifier(0)),
-                            right: bx(Expression::Number(2.0)),
+                        value: Expression::Op {
+                            operation: OpName::Mul,
+                            args: vec![Expression::Identifier(0), Expression::Number(2.0)]
                         },
                     },
                     Assignment {
                         id: 2,
                         name: "<anonymous>".into(),
-                        value: Expression::BinaryOperation {
-                            operation: BinaryOperator::Mul,
-                            left: bx(Expression::Identifier(0)),
-                            right: bx(Expression::BinaryOperation {
-                                operation: BinaryOperator::Point,
-                                left: bx(Expression::Number(3.0)),
-                                right: bx(Expression::Number(4.0)),
-                            }),
+                        value: Expression::Op {
+                            operation: OpName::Mul,
+                            args: vec![
+                                Expression::Identifier(0),
+                                Expression::Op {
+                                    operation: OpName::Point,
+                                    args: vec![Expression::Number(3.0), Expression::Number(4.0)],
+                                }
+                            ]
                         },
                     },
                 ],
@@ -1642,14 +1574,15 @@ mod tests {
                 // p = (q,i+k)
                 ElAssign {
                     name: "p".into(),
-                    value: ABop {
-                        operation: BinaryOperator::Point,
-                        left: bx(AId("q".into())),
-                        right: bx(ABop {
-                            operation: ABo::Add,
-                            left: bx(AId("i".into())),
-                            right: bx(AId("k".into()))
-                        }),
+                    value: AOp {
+                        operation: OpName::Point,
+                        args: vec![
+                            AId("q".into()),
+                            AOp {
+                                operation: OpName::Add,
+                                args: vec![AId("i".into()), AId("k".into())]
+                            }
+                        ]
                     },
                 },
                 // c = [2]
@@ -1660,10 +1593,9 @@ mod tests {
                 // q = jj
                 ElAssign {
                     name: "q".into(),
-                    value: ABop {
-                        operation: BinaryOperator::Mul,
-                        left: bx(AId("j".into())),
-                        right: bx(AId("j".into())),
+                    value: AOp {
+                        operation: OpName::Mul,
+                        args: vec![AId("j".into()), AId("j".into())]
                     },
                 },
                 // k = 3
@@ -1697,24 +1629,30 @@ mod tests {
                                     Assignment {
                                         id: 3,
                                         name: "q".into(),
-                                        value: Expression::BinaryOperation {
-                                            operation: BinaryOperator::Mul,
-                                            left: bx(Expression::Identifier(1)),
-                                            right: bx(Expression::Identifier(1)),
+                                        value: Expression::Op {
+                                            operation: OpName::Mul,
+                                            args: vec![
+                                                Expression::Identifier(1),
+                                                Expression::Identifier(1)
+                                            ]
                                         },
                                     },
                                     // p = (q,i+k)
                                     Assignment {
                                         id: 5,
                                         name: "p".into(),
-                                        value: Expression::BinaryOperation {
-                                            operation: BinaryOperator::Point,
-                                            left: bx(Expression::Identifier(3)),
-                                            right: bx(Expression::BinaryOperation {
-                                                operation: BinaryOperator::Add,
-                                                left: bx(Expression::Identifier(2)),
-                                                right: bx(Expression::Identifier(4)),
-                                            }),
+                                        value: Expression::Op {
+                                            operation: OpName::Point,
+                                            args: vec![
+                                                Expression::Identifier(3),
+                                                Expression::Op {
+                                                    operation: OpName::Add,
+                                                    args: vec![
+                                                        Expression::Identifier(2),
+                                                        Expression::Identifier(4)
+                                                    ]
+                                                }
+                                            ],
                                         },
                                     },
                                 ],
@@ -1756,16 +1694,18 @@ mod tests {
                 ElAssign {
                     name: "E".into(),
                     value: AFor {
-                        body: bx(ABop {
-                            operation: ABo::Add,
-                            left: bx(ACall {
-                                callee: "total".into(),
-                                args: vec![AId("C".into())],
-                            }),
-                            right: bx(ACall {
-                                callee: "total".into(),
-                                args: vec![AId("D".into())],
-                            }),
+                        body: bx(AOp {
+                            operation: OpName::Add,
+                            args: vec![
+                                ACall {
+                                    callee: "total".into(),
+                                    args: vec![AId("C".into())],
+                                },
+                                ACall {
+                                    callee: "total".into(),
+                                    args: vec![AId("D".into())],
+                                }
+                            ]
                         }),
                         lists: vec![(
                             "j".into(),
@@ -1794,14 +1734,15 @@ mod tests {
                 ElAssign {
                     name: "D".into(),
                     value: AFor {
-                        body: bx(ABop {
-                            operation: ABo::Add,
-                            left: bx(ABop {
-                                operation: ABo::Add,
-                                left: bx(AId("B".into())),
-                                right: bx(AId("A".into())),
-                            }),
-                            right: bx(AId("F".into())),
+                        body: bx(AOp {
+                            operation: OpName::Add,
+                            args: vec![
+                                AOp {
+                                    operation: OpName::Add,
+                                    args: vec![AId("B".into()), AId("A".into())]
+                                },
+                                AId("F".into())
+                            ]
                         }),
                         lists: vec![(
                             "i".into(),
@@ -1815,20 +1756,18 @@ mod tests {
                 // B = i^2
                 ElAssign {
                     name: "B".into(),
-                    value: ABop {
-                        operation: ABo::Pow,
-                        left: bx(AId("i".into())),
-                        right: bx(ANum(2.0)),
-                    },
+                    value: AOp {
+                        operation: OpName::Pow,
+                        args: vec![AId("i".into()), ANum(2.0)]
+                    }
                 },
                 // F = i + j
                 ElAssign {
                     // TODO: change this back to "J" and see why it was panicking
                     name: "F".into(),
-                    value: ABop {
-                        operation: ABo::Add,
-                        left: bx(AId("i".into())),
-                        right: bx(AId("j".into())),
+                    value: AOp {
+                        operation: OpName::Add,
+                        args: vec![AId("i".into()), AId("j".into())]
                     },
                 },
                 // A = 5
@@ -1850,10 +1789,12 @@ mod tests {
                                     Assignment {
                                         id: 2,
                                         name: "B".into(),
-                                        value: Expression::BinaryOperation {
-                                            operation: ABo::Pow,
-                                            left: bx(Expression::Identifier(1)),
-                                            right: bx(Expression::Number(2.0)),
+                                        value: Expression::Op {
+                                            operation: OpName::Pow,
+                                            args: vec![
+                                                Expression::Identifier(1),
+                                                Expression::Number(2.0)
+                                            ]
                                         },
                                     },
                                 ],
@@ -1897,32 +1838,40 @@ mod tests {
                                                     Assignment {
                                                         id: 5,
                                                         name: "B".into(),
-                                                        value: Expression::BinaryOperation {
-                                                            operation: ABo::Pow,
-                                                            left: bx(Expression::Identifier(4)),
-                                                            right: bx(Expression::Number(2.0)),
+                                                        value: Expression::Op {
+                                                            operation: OpName::Pow,
+                                                            args: vec![
+                                                                Expression::Identifier(4),
+                                                                Expression::Number(2.0)
+                                                            ]
                                                         },
                                                     },
                                                     // F = i + j
                                                     Assignment {
                                                         id: 7,
                                                         name: "F".into(),
-                                                        value: Expression::BinaryOperation {
-                                                            operation: ABo::Add,
-                                                            left: bx(Expression::Identifier(4)),
-                                                            right: bx(Expression::Identifier(0)),
+                                                        value: Expression::Op {
+                                                            operation: OpName::Add,
+                                                            args: vec![
+                                                                Expression::Identifier(4),
+                                                                Expression::Identifier(0)
+                                                            ],
                                                         },
                                                     },
                                                 ],
                                                 // B + A + F
-                                                value: bx(Expression::BinaryOperation {
-                                                    operation: ABo::Add,
-                                                    left: bx(Expression::BinaryOperation {
-                                                        operation: ABo::Add,
-                                                        left: bx(Expression::Identifier(5)),
-                                                        right: bx(Expression::Identifier(6)),
-                                                    }),
-                                                    right: bx(Expression::Identifier(7)),
+                                                value: bx(Expression::Op {
+                                                    operation: OpName::Add,
+                                                    args: vec![
+                                                        Expression::Op {
+                                                            operation: OpName::Add,
+                                                            args: vec![
+                                                                Expression::Identifier(5),
+                                                                Expression::Identifier(6)
+                                                            ],
+                                                        },
+                                                        Expression::Identifier(7)
+                                                    ]
                                                 }),
                                             },
                                             lists: vec![
@@ -1944,16 +1893,12 @@ mod tests {
                                     },
                                 ],
                                 // C.total + D.total
-                                value: bx(Expression::BinaryOperation {
-                                    operation: ABo::Add,
-                                    left: bx(Expression::BuiltIn {
-                                        name: BuiltIn::Total,
-                                        args: vec![Expression::Identifier(3)]
-                                    }),
-                                    right: bx(Expression::BuiltIn {
-                                        name: BuiltIn::Total,
-                                        args: vec![Expression::Identifier(8)]
-                                    }),
+                                value: bx(Expression::Op {
+                                    operation: OpName::Add,
+                                    args: vec![
+                                        builtin(OpName::Total, vec![Expression::Identifier(3)]),
+                                        builtin(OpName::Total, vec![Expression::Identifier(8)])
+                                    ]
                                 }),
                             },
                             lists: vec![
@@ -1987,10 +1932,9 @@ mod tests {
         assert_eq!(
             resolve_names_ti(&[
                 ElExpr(AWith {
-                    body: bx(ABop {
-                        operation: ABo::Add,
-                        left: bx(AId("b".into())),
-                        right: bx(AId("c".into())),
+                    body: bx(AOp {
+                        operation: OpName::Add,
+                        args: vec![AId("b".into()), AId("c".into()),]
                     }),
                     substitutions: vec![("a".into(), ANum(1.0))],
                 }),

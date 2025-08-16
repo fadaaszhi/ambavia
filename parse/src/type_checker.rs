@@ -815,8 +815,8 @@ mod tests {
                     Ok(0),
                     Ok(1),
                     Ok(2),
-                    Err("cannot add a point and a number".into()),
-                    Err("cannot add a point and a number".into()),
+                    Err("cannot Add a point and a number".into()),
+                    Err("cannot Add a point and a number".into()),
                     Ok(3)
                 ]
             )

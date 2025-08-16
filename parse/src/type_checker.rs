@@ -1390,7 +1390,9 @@ impl TypeChecker {
                         {
                             te(Type::Number, Expression::Number(f64::NAN))
                         }
-                        OpName::Count | OpName::Total => te(Type::Number, Expression::Number(0.0)),
+                        OpName::Count | OpName::Total if checked_args.len() == 1 => {
+                            te(Type::Number, Expression::Number(0.0))
+                        }
                         _ => return empty_list(return_ty.base()),
                     },
 

@@ -142,7 +142,7 @@ declare_ops! {
         Point(N, N) -> P,
         IndexNumberList(NL, N) -> N,
         IndexPointList(PL, N) -> P,
-        IndexPolygonList(Pg, N) -> Pg,
+        IndexPolygonList(PgL, N) -> Pg,
         FilterNumberList(NL, BL) -> NL,
         FilterPointList(PL, BL) -> PL,
         FilterPolygonList(PgL, BL) -> PgL,

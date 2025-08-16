@@ -98,12 +98,16 @@ fn polygon<const N: usize>(points: [(i64, i64); N]) -> Value {
 }
 #[track_caller]
 fn assert_expression_eq<'a>(source: &str, value: Value) {
-    println!("expression: {source}");
+    println!("Expression: {source}");
     let tree = parse_latex(source).unwrap();
     let entry = parse_expression_list_entry(&tree).unwrap();
     let (assignments, ei_to_nr) = resolve_names([entry].as_slice().as_ref());
     let index = ei_to_nr.first().unwrap().clone().unwrap().unwrap();
     let (assignments, nr_to_tc) = type_check(assignments.as_slice().as_ref());
+    println!(
+        "Type checked: {:#?}",
+        <_ as AsRef<[_]>>::as_ref(&assignments)
+    );
     let index = nr_to_tc[index].clone().unwrap();
     let ty = assignments[index].value.ty;
     let (instructions, vars) = compile_assignments(&assignments);
@@ -211,6 +215,7 @@ const NAN: f64 = f64::NAN;
 #[case(r"\polygon()", polygon([]))]
 #[case(r"\operatorname{total}([], [])", Value::EmptyList)]
 #[case(r"\polygon(4,[5,6,7])", polygon([(4, 5), (4, 6), (4, 7)]))]
+#[case(r"[\polygon()][1]", polygon([]))]
 fn expression_eq(#[case] expression: &str, #[case] expected: impl Into<Value>) {
     assert_expression_eq(expression, expected.into());
 }

@@ -175,7 +175,7 @@ struct TypeChecker {
 }
 fn binary(operation: Op, left: TypedExpression, right: TypedExpression) -> Expression {
     Expression::Op {
-        operation: operation,
+        operation,
         args: vec![left, right],
     }
 }
@@ -551,7 +551,7 @@ impl TypeChecker {
                                     },
                                 ));
                             }
-                        } else if checked_args.len() == 0 {
+                        } else if checked_args.is_empty() {
                             return Ok(te(
                                 Type::Polygon,
                                 Expression::Op {

@@ -888,7 +888,7 @@ impl ExpressionList {
                                     operation: parse::op::OpName::Neg,
                                     args: arguments,
                                 } => Some(-get_number(
-                                    arguments.get(0).expect("neg should have one argument"),
+                                    arguments.first().expect("neg should have one argument"),
                                 )?),
                                 _ => None,
                             }
@@ -1165,7 +1165,7 @@ impl ExpressionList {
                 .map(|x| (x.clamp(0.0, 1.0) * 65535.0).round())
                 .as_u16vec2();
 
-            indices.push(vertices.len() as u32 + 0);
+            indices.push((vertices.len() as u32 + 0));
             indices.push(vertices.len() as u32 + 1);
             indices.push(vertices.len() as u32 + 2);
             indices.push(vertices.len() as u32 + 3);

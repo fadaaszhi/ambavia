@@ -406,13 +406,13 @@ fn parse_piecewise_case(tokens: &mut Tokens, first: Expression) -> Result<Expres
 }
 fn unary(operation: OpName, arg: Expression) -> Expression {
     Expression::Op {
-        operation: operation,
+        operation,
         args: vec![arg],
     }
 }
 fn binary(operation: OpName, left: Expression, right: Expression) -> Expression {
     Expression::Op {
-        operation: operation,
+        operation,
         args: vec![left, right],
     }
 }

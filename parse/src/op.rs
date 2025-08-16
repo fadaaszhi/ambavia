@@ -1,4 +1,4 @@
-use std::iter::{repeat, zip};
+use std::iter::{once, repeat, zip};
 
 use crate::{
     ast, name_resolver,
@@ -673,14 +673,14 @@ impl OpName {
             })
             .and_then(|v| {
                 v.ok_or_else(|| {
-                    let Some(_) = ptypes.clone().next() else {
+                    let Some(first) = ptypes.next() else {
                         return format!("cannot {self:#?} nothing");
                     };
                     let last = ptypes.next_back();
-
                     format!(
                         "cannot {self:#?} {}{}",
-                        ptypes
+                        once(first)
+                            .chain(ptypes)
                             .map(|a| format!("{a}"))
                             .collect::<Vec<_>>()
                             .join(", "),

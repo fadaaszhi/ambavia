@@ -2,6 +2,7 @@ use crate::{
     ast::*,
     latex_tree::Node,
     latex_tree_flattener::{Token, flatten},
+    op::OpName,
 };
 
 struct Tokens<'a> {
@@ -205,28 +206,28 @@ fn parse_assignment(tokens: &mut Tokens, min_bp: u8) -> Result<(String, Expressi
 const FOR_PRECEDENCE: (u8, u8) = (1, 2);
 const WITH_PRECEDENCE: (u8, u8) = (3, 4);
 
-fn get_prefix_op(token: &Token) -> Option<(UnaryOperator, (), u8)> {
+fn get_prefix_op(token: &Token) -> Option<(OpName, (), u8)> {
     Some(match token {
-        Token::Minus => (UnaryOperator::Neg, (), 7),
+        Token::Minus => (OpName::Neg, (), 7),
         _ => return None,
     })
 }
 
-fn get_postfix_op(token: &Token) -> Option<(UnaryOperator, u8, ())> {
+fn get_postfix_op(token: &Token) -> Option<(OpName, u8, ())> {
     Some(match token {
-        Token::Exclamation => (UnaryOperator::Fac, 11, ()),
+        Token::Exclamation => (OpName::Fac, 11, ()),
         _ => return None,
     })
 }
 
-fn get_infix_op(token: &Token) -> Option<(BinaryOperator, u8, u8)> {
+fn get_infix_op(token: &Token) -> Option<(OpName, u8, u8)> {
     Some(match token {
-        Token::Plus => (BinaryOperator::Add, 5, 6),
-        Token::Minus => (BinaryOperator::Sub, 5, 6),
-        Token::Asterisk => (BinaryOperator::Mul, 9, 10),
-        Token::Div => (BinaryOperator::Div, 9, 10),
-        Token::Cdot => (BinaryOperator::Dot, 9, 10),
-        Token::Times => (BinaryOperator::Cross, 9, 10),
+        Token::Plus => (OpName::Add, 5, 6),
+        Token::Minus => (OpName::Sub, 5, 6),
+        Token::Asterisk => (OpName::Mul, 9, 10),
+        Token::Div => (OpName::Div, 9, 10),
+        Token::Cdot => (OpName::Dot, 9, 10),
+        Token::Times => (OpName::Cross, 9, 10),
         _ => return None,
     })
 }
@@ -403,16 +404,16 @@ fn parse_piecewise_case(tokens: &mut Tokens, first: Expression) -> Result<Expres
         alternate,
     })
 }
-fn unary(operation: UnaryOperator, arg: Expression) -> Expression {
+fn unary(operation: OpName, arg: Expression) -> Expression {
     Expression::Op {
-        operation: operation.into(),
-        arguments: vec![arg],
+        operation: operation,
+        args: vec![arg],
     }
 }
-fn binary(operation: BinaryOperator, left: Expression, right: Expression) -> Expression {
+fn binary(operation: OpName, left: Expression, right: Expression) -> Expression {
     Expression::Op {
-        operation: operation.into(),
-        arguments: vec![left, right],
+        operation: operation,
+        args: vec![left, right],
     }
 }
 fn parse_expression(tokens: &mut Tokens, min_bp: u8) -> Result<Expression, String> {
@@ -439,13 +440,13 @@ fn parse_expression(tokens: &mut Tokens, min_bp: u8) -> Result<Expression, Strin
                                 tokens.next();
                                 let arg = parse_expression(tokens, 0)?;
                                 tokens.expect(Token::RPipe)?;
-                                unary(UnaryOperator::Norm, arg)
+                                unary(OpName::Norm, arg)
                             }
                             _ => parse_expression(tokens, get_infix_op(&Token::Plus).unwrap().2)?,
                         };
                         if let Some(name) = name.strip_suffix("^2") {
                             binary(
-                                BinaryOperator::Pow,
+                                OpName::Pow,
                                 Expression::Call {
                                     callee: name.into(),
                                     args: vec![arg],
@@ -464,7 +465,7 @@ fn parse_expression(tokens: &mut Tokens, min_bp: u8) -> Result<Expression, Strin
                 }
                 Token::Frac { num, den } => {
                     let frac = binary(
-                        BinaryOperator::Div,
+                        OpName::Div,
                         parse_nodes_into_expression(num, Token::EndOfGroup)?,
                         parse_nodes_into_expression(den, Token::EndOfGroup)?,
                     );
@@ -475,16 +476,16 @@ fn parse_expression(tokens: &mut Tokens, min_bp: u8) -> Result<Expression, Strin
                     let arg = parse_nodes_into_expression(arg, Token::EndOfGroup)?;
                     let expr = if let Some(root) = root {
                         binary(
-                            BinaryOperator::Pow,
+                            OpName::Pow,
                             arg,
                             binary(
-                                BinaryOperator::Div,
+                                OpName::Div,
                                 Expression::Number(1.0),
                                 parse_nodes_into_expression(root, Token::EndOfGroup)?,
                             ),
                         )
                     } else {
-                        unary(UnaryOperator::Sqrt, arg)
+                        unary(OpName::Sqrt, arg)
                     };
                     tokens.next();
                     expr
@@ -497,7 +498,7 @@ fn parse_expression(tokens: &mut Tokens, min_bp: u8) -> Result<Expression, Strin
                         2 => {
                             let y = list.pop().unwrap();
                             let x = list.pop().unwrap();
-                            binary(BinaryOperator::Point, x, y)
+                            binary(OpName::Point, x, y)
                         }
                         _ => return Err("points may only have 2 coordinates".into()),
                     }
@@ -507,7 +508,7 @@ fn parse_expression(tokens: &mut Tokens, min_bp: u8) -> Result<Expression, Strin
                     tokens.next();
                     let arg = parse_expression(tokens, 0)?;
                     tokens.expect(Token::RPipe)?;
-                    unary(UnaryOperator::Norm, arg)
+                    unary(OpName::Norm, arg)
                 }
                 Token::LBrace => {
                     tokens.next();
@@ -607,7 +608,7 @@ fn parse_expression(tokens: &mut Tokens, min_bp: u8) -> Result<Expression, Strin
 
                     if let Some(sup) = sup {
                         left = binary(
-                            BinaryOperator::Pow,
+                            OpName::Pow,
                             left,
                             parse_nodes_into_expression(sup, Token::EndOfGroup)?,
                         )
@@ -618,7 +619,7 @@ fn parse_expression(tokens: &mut Tokens, min_bp: u8) -> Result<Expression, Strin
                 }
                 Token::LBracket => {
                     left = binary(
-                        BinaryOperator::Index,
+                        OpName::Index,
                         left,
                         match parse_list(tokens, true)? {
                             Expression::List(list) if list.is_empty() => {
@@ -674,8 +675,8 @@ fn parse_expression(tokens: &mut Tokens, min_bp: u8) -> Result<Expression, Strin
                     tokens.next();
                     let callee = parse_ident_frag(tokens)?;
                     left = match callee.as_str() {
-                        "x" => unary(UnaryOperator::PointX, left),
-                        "y" => unary(UnaryOperator::PointY, left),
+                        "x" => unary(OpName::PointX, left),
+                        "y" => unary(OpName::PointY, left),
                         _ => {
                             let mut args = vec![left];
                             if tokens.peek() == &Token::LParen {
@@ -683,7 +684,7 @@ fn parse_expression(tokens: &mut Tokens, min_bp: u8) -> Result<Expression, Strin
                             }
                             if let Some(callee) = callee.strip_suffix("^2") {
                                 binary(
-                                    BinaryOperator::Pow,
+                                    OpName::Pow,
                                     Expression::Call {
                                         callee: callee.into(),
                                         args,
@@ -840,16 +841,15 @@ mod tests {
     use crate::latex_tree::Node;
 
     use super::*;
-    use BinaryOperator::*;
     use ComparisonOperator::*;
     use Expression::{
         Call, CallOrMultiply as CallMull, For, Identifier as Id, List, ListRange, Number as Num,
         Piecewise, SumProd, With,
     };
     use ExpressionListEntry as Ele;
+    use OpName::*;
     use SumProdKind::*;
     use Token as T;
-    use UnaryOperator::*;
     use pretty_assertions::assert_eq;
 
     #[test]

@@ -3,7 +3,7 @@ use std::{array, borrow::Borrow, collections::HashMap, iter::zip};
 use derive_more::{From, Into};
 use typed_index_collections::{TiSlice, TiVec};
 
-pub use crate::ast::{BinaryOperator, ComparisonOperator, SumProdKind, UnaryOperator};
+pub use crate::ast::{ComparisonOperator, SumProdKind};
 use crate::{
     ast::{self, ExpressionListEntry},
     op::OpName,
@@ -44,59 +44,9 @@ pub enum Expression {
     },
 }
 
-#[derive(Debug, PartialEq)]
-pub enum BuiltIn {
-    // Log,
-    Ln,
-    Exp,
-    Erf,
-    Sin,
-    Cos,
-    Tan,
-    Sec,
-    Csc,
-    Cot,
-    Sinh,
-    Cosh,
-    Tanh,
-    Sech,
-    Csch,
-    Coth,
-    Asin,
-    Acos,
-    Atan,
-    Asec,
-    Acsc,
-    Acot,
-    Asinh,
-    Acosh,
-    Atanh,
-    Asech,
-    Acsch,
-    Acoth,
-    Abs,
-    Sgn,
-    Round,
-    Floor,
-    Ceil,
-    Mod,
-    Midpoint,
-    Distance,
-    Min,
-    Max,
-    Median,
-    Total,
-    Mean,
-    Count,
-    Unique,
-    Sort,
-    Polygon,
-    Join,
-}
-
-impl BuiltIn {
-    fn from_str(name: &str) -> Option<BuiltIn> {
-        use BuiltIn::*;
+impl OpName {
+    fn from_str(name: &str) -> Option<OpName> {
+        use OpName::*;
         Some(match name {
             "ln" => Ln,
             "exp" => Exp,
@@ -250,9 +200,9 @@ struct Resolver<'a> {
     dynamic_scope: ScopeMap<'a, (usize, Dependencies<'a>)>,
     global_scope: ScopeMap<'a, ((usize, Option<String>), Dependencies<'a>)>,
 }
-fn builtin(name: BuiltIn, args: Vec<Expression>) -> Expression {
+fn builtin(name: OpName, args: Vec<Expression>) -> Expression {
     Expression::Op {
-        operation: name.into(),
+        operation: name,
         args,
     }
 }
@@ -466,7 +416,7 @@ impl<'a> Resolver<'a> {
     ) -> (Result<Expression, String>, Dependencies<'a>) {
         let err = |s| (Err(s), Dependencies::none());
 
-        if let Some(name) = BuiltIn::from_str(callee) {
+        if let Some(name) = OpName::from_str(callee) {
             let (args, deps) = match self.resolve_expressions(args) {
                 (Ok(v), d) => (v, d),
                 (Err(e), d) => return (Err(e), d),
@@ -542,7 +492,7 @@ impl<'a> Resolver<'a> {
                 )
             }
             ast::Expression::CallOrMultiply { callee, args } => {
-                if BuiltIn::from_str(callee).is_some()
+                if OpName::from_str(callee).is_some()
                     || matches!(
                         self.globals.get(callee.as_str()),
                         Some(Ok(ExpressionListEntry::FunctionDeclaration { .. }))
@@ -747,7 +697,7 @@ impl<'a> Resolver<'a> {
             }
             ast::Expression::Op {
                 operation,
-                arguments,
+                args: arguments,
             } => {
                 let (args, deps) = match self.resolve_expressions(arguments) {
                     (Ok(v), d) => (v, d),
@@ -879,7 +829,7 @@ mod tests {
                 ElExpr(ANum(5.0)),
                 ElExpr(AOp {
                     operation: OpName::Add,
-                    arguments: vec![ANum(1.0), ANum(2.0)]
+                    args: vec![ANum(1.0), ANum(2.0)]
                 }),
             ]),
             (
@@ -1626,11 +1576,11 @@ mod tests {
                     name: "p".into(),
                     value: AOp {
                         operation: OpName::Point,
-                        arguments: vec![
+                        args: vec![
                             AId("q".into()),
                             AOp {
                                 operation: OpName::Add,
-                                arguments: vec![AId("i".into()), AId("k".into())]
+                                args: vec![AId("i".into()), AId("k".into())]
                             }
                         ]
                     },
@@ -1645,7 +1595,7 @@ mod tests {
                     name: "q".into(),
                     value: AOp {
                         operation: OpName::Mul,
-                        arguments: vec![AId("j".into()), AId("j".into())]
+                        args: vec![AId("j".into()), AId("j".into())]
                     },
                 },
                 // k = 3
@@ -1746,7 +1696,7 @@ mod tests {
                     value: AFor {
                         body: bx(AOp {
                             operation: OpName::Add,
-                            arguments: vec![
+                            args: vec![
                                 ACall {
                                     callee: "total".into(),
                                     args: vec![AId("C".into())],
@@ -1786,10 +1736,10 @@ mod tests {
                     value: AFor {
                         body: bx(AOp {
                             operation: OpName::Add,
-                            arguments: vec![
+                            args: vec![
                                 AOp {
                                     operation: OpName::Add,
-                                    arguments: vec![AId("B".into()), AId("A".into())]
+                                    args: vec![AId("B".into()), AId("A".into())]
                                 },
                                 AId("F".into())
                             ]
@@ -1808,7 +1758,7 @@ mod tests {
                     name: "B".into(),
                     value: AOp {
                         operation: OpName::Pow,
-                        arguments: vec![AId("i".into()), ANum(2.0)]
+                        args: vec![AId("i".into()), ANum(2.0)]
                     }
                 },
                 // F = i + j
@@ -1817,7 +1767,7 @@ mod tests {
                     name: "F".into(),
                     value: AOp {
                         operation: OpName::Add,
-                        arguments: vec![AId("i".into()), AId("j".into())]
+                        args: vec![AId("i".into()), AId("j".into())]
                     },
                 },
                 // A = 5
@@ -1946,8 +1896,8 @@ mod tests {
                                 value: bx(Expression::Op {
                                     operation: OpName::Add,
                                     args: vec![
-                                        builtin(BuiltIn::Total, vec![Expression::Identifier(3)]),
-                                        builtin(BuiltIn::Total, vec![Expression::Identifier(8)])
+                                        builtin(OpName::Total, vec![Expression::Identifier(3)]),
+                                        builtin(OpName::Total, vec![Expression::Identifier(8)])
                                     ]
                                 }),
                             },
@@ -1984,7 +1934,7 @@ mod tests {
                 ElExpr(AWith {
                     body: bx(AOp {
                         operation: OpName::Add,
-                        arguments: vec![AId("b".into()), AId("c".into()),]
+                        args: vec![AId("b".into()), AId("c".into()),]
                     }),
                     substitutions: vec![("a".into(), ANum(1.0))],
                 }),

@@ -886,7 +886,7 @@ impl ExpressionList {
                                 parse::ast::Expression::Number(x) => Some(*x),
                                 parse::ast::Expression::Op {
                                     operation: parse::op::OpName::Neg,
-                                    arguments,
+                                    args: arguments,
                                 } => Some(-get_number(
                                     arguments.get(0).expect("neg should have one argument"),
                                 )?),
@@ -898,7 +898,7 @@ impl ExpressionList {
                                 e.output.set_slider(value, -10.0, 10.0);
                             } else if let parse::ast::Expression::Op {
                                 operation: parse::op::OpName::Point,
-                                arguments,
+                                args: arguments,
                             } = value
                                 && let Some(x) = get_number(&arguments[0])
                                 && let Some(y) = get_number(&arguments[1])

@@ -117,185 +117,6 @@ fn te(ty: Type, e: Expression) -> TypedExpression {
 }
 
 #[derive(Debug, PartialEq)]
-pub enum UnaryOperator {
-    /// ([`Type::Number`]) => [`Type::Number`]
-    NegNumber,
-    /// ([`Type::Point`]) => [`Type::Point`]
-    NegPoint,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Fac,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Sqrt,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Abs,
-    /// ([`Type::Point`]) => [`Type::Number`]
-    Mag,
-    /// ([`Type::Point`]) => [`Type::Number`]
-    PointX,
-    /// ([`Type::Point`]) => [`Type::Number`]
-    PointY,
-}
-
-#[derive(Debug, PartialEq)]
-pub enum BinaryOperator {
-    /// ([`Type::Number`], [`Type::Number`]) => [`Type::Number`]
-    AddNumber,
-    /// ([`Type::Point`], [`Type::Point`]) => [`Type::Point`]
-    AddPoint,
-    /// ([`Type::Number`], [`Type::Number`]) => [`Type::Number`]
-    SubNumber,
-    /// ([`Type::Point`], [`Type::Point`]) => [`Type::Point`]
-    SubPoint,
-    /// ([`Type::Number`], [`Type::Number`]) => [`Type::Number`]
-    MulNumber,
-    /// ([`Type::Number`], [`Type::Point`]) => [`Type::Point`]
-    MulNumberPoint,
-    /// ([`Type::Number`], [`Type::Number`]) => [`Type::Number`]
-    DivNumber,
-    /// ([`Type::Point`], [`Type::Number`]) => [`Type::Point`]
-    DivPointNumber,
-    /// ([`Type::Number`], [`Type::Number`]) => [`Type::Number`]
-    Pow,
-    /// ([`Type::Point`], [`Type::Point`]) => [`Type::Number`]
-    Dot,
-    /// ([`Type::Number`], [`Type::Number`]) => [`Type::Point`]
-    Point,
-    /// ([`Type::NumberList`], [`Type::Number`]) => [`Type::Number`]
-    IndexNumberList,
-    /// ([`Type::PointList`], [`Type::Number`]) => [`Type::Point`]
-    IndexPointList,
-    /// ([`Type::PolygonList`], [`Type::Number`]) => [`Type::Polygon`]
-    IndexPolygonList,
-    /// ([`Type::NumberList`], [`Type::BoolList`]) => [`Type::Number`]
-    FilterNumberList,
-    /// ([`Type::PointList`], [`Type::BoolList`]) => [`Type::Point`]
-    FilterPointList,
-    /// ([`Type::PolygonList`], [`Type::BoolList`]) => [`Type::Polygon`]
-    FilterPolygonList,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum BuiltIn {
-    // Log
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Ln,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Exp,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Erf,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Sin,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Cos,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Tan,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Sec,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Csc,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Cot,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Sinh,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Cosh,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Tanh,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Sech,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Csch,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Coth,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Asin,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Acos,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Atan,
-    /// ([`Type::Number`], [`Type::Number`]) => [`Type::Number`]
-    Atan2,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Asec,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Acsc,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Acot,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Asinh,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Acosh,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Atanh,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Asech,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Acsch,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Acoth,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Abs,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Sgn,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Round,
-    /// ([`Type::Number`], [`Type::Number`]) => [`Type::Number`]
-    RoundWithPrecision,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Floor,
-    /// ([`Type::Number`]) => [`Type::Number`]
-    Ceil,
-    /// ([`Type::Number`], [`Type::Number`]) => [`Type::Number`]
-    Mod,
-    /// ([`Type::Point`], [`Type::Point`]) => [`Type::Point`]
-    Midpoint,
-    /// ([`Type::Point`], [`Type::Point`]) => [`Type::Number`]
-    Distance,
-    ///  ([`Type::NumberList`]) => [`Type::Number`]
-    Min,
-    ///  ([`Type::NumberList`]) => [`Type::Number`]
-    Max,
-    ///  ([`Type::NumberList`]) => [`Type::Number`]
-    Median,
-    ///  ([`Type::NumberList`]) => [`Type::Number`]
-    TotalNumber,
-    ///  ([`Type::PointList`]) => [`Type::Point`]
-    TotalPoint,
-    ///  ([`Type::NumberList`]) => [`Type::Number`]
-    MeanNumber,
-    ///  ([`Type::PointList`]) => [`Type::Point`]
-    MeanPoint,
-    ///  ([`Type::NumberList`]) => [`Type::Number`]
-    CountNumber,
-    ///  ([`Type::PointList`]) => [`Type::Number`]
-    CountPoint,
-    ///  ([`Type::PolygonList`]) => [`Type::Number`]
-    CountPolygon,
-    ///  ([`Type::NumberList`]) => [`Type::NumberList`]
-    UniqueNumber,
-    ///  ([`Type::PointList`]) => [`Type::PointList`]
-    UniquePoint,
-    ///  ([`Type::PolygonList`]) => [`Type::PolygonList`]
-    UniquePolygon,
-    /// ([`Type::NumberList`]) => [`Type::NumberList`]
-    Sort,
-    /// ([`Type::NumberList`], [`Type::NumberList`]) => [`Type::NumberList`]
-    SortKeyNumber,
-    /// ([`Type::PointList`], [`Type::NumberList`]) => [`Type::PointList`]
-    SortKeyPoint,
-    /// ([`Type::PolygonList`], [`Type::NumberList`]) => [`Type::PolygonList`]
-    SortKeyPolygon,
-    /// ([`Type::PointList`]) => [`Type::Polygon`]
-    Polygon,
-    /// (...[[`Type::Number`] | [`Type::NumberList`]]) => [`Type::NumberList`]
-    JoinNumber,
-    /// (...[[`Type::Point`] | [`Type::PointList`]]) => [`Type::PointList`]
-    JoinPoint,
-    /// (...[[`Type::Polygon`] | [`Type::PolygonList`]]) => [`Type::PolygonList`]
-    JoinPolygon,
-}
-
-#[derive(Debug, PartialEq)]
 pub enum Expression {
     Number(f64),
     Identifier(usize),
@@ -352,15 +173,15 @@ struct TypeChecker {
     names: HashMap<usize, Result<(Type, usize), String>>,
     id_counter: usize,
 }
-fn binary(operation: BinaryOperator, left: TypedExpression, right: TypedExpression) -> Expression {
+fn binary(operation: Op, left: TypedExpression, right: TypedExpression) -> Expression {
     Expression::Op {
-        operation: operation.into(),
+        operation: operation,
         args: vec![left, right],
     }
 }
-fn builtin(name: BuiltIn, args: Vec<TypedExpression>) -> Expression {
+fn builtin(name: Op, args: Vec<TypedExpression>) -> Expression {
     Expression::Op {
-        operation: name.into(),
+        operation: name,
         args,
     }
 }
@@ -532,7 +353,7 @@ impl TypeChecker {
                         B::Point => te(
                             Type::Point,
                             binary(
-                                BinaryOperator::Point,
+                                Op::Point,
                                 te(Type::Number, Expression::Number(f64::NAN)),
                                 te(Type::Number, Expression::Number(f64::NAN)),
                             ),
@@ -540,7 +361,7 @@ impl TypeChecker {
                         B::Polygon => te(
                             Type::Polygon,
                             builtin(
-                                BuiltIn::Polygon,
+                                Op::Polygon,
                                 vec![te(Type::PointList, Expression::List(vec![]))],
                             ),
                         ),
@@ -704,7 +525,7 @@ impl TypeChecker {
                                 let body = Box::new(te(
                                     Type::Point,
                                     binary(
-                                        BinaryOperator::Point,
+                                        Op::Point,
                                         te(Type::Number, Expression::Identifier(x.id)),
                                         te(Type::Number, Expression::Identifier(y.id)),
                                     ),
@@ -901,7 +722,7 @@ mod tests {
     use crate::op::OpName;
 
     use super::{
-        Assignment as As, BinaryOperator as Bo,
+        Assignment as As,
         Expression::{Identifier as Id, Number as Num},
         nr::{
             Assignment as NAs,
@@ -979,11 +800,11 @@ mod tests {
                     },
                     As {
                         id: 1,
-                        value: pt(binary(Bo::Point, num(Num(3.0)), num(Num(2.0))))
+                        value: pt(binary(Op::Point, num(Num(3.0)), num(Num(2.0))))
                     },
                     As {
                         id: 2,
-                        value: pt(binary(Bo::MulNumberPoint, num(Id(0)), pt(Id(1))))
+                        value: pt(binary(Op::MulNumberPoint, num(Id(0)), pt(Id(1))))
                     },
                     As {
                         id: 3,

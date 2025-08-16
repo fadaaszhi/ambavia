@@ -1,29 +1,6 @@
 use crate::op::OpName;
 
 #[derive(Debug, PartialEq, Clone, Copy)]
-pub enum UnaryOperator {
-    Neg,
-    Fac,
-    Sqrt,
-    Norm,
-    PointX,
-    PointY,
-}
-
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub enum BinaryOperator {
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Pow,
-    Dot,
-    Cross,
-    Point,
-    Index,
-}
-
-#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum ComparisonOperator {
     Equal,
     Less,
@@ -55,7 +32,7 @@ pub enum Expression {
     },
     Op {
         operation: OpName,
-        arguments: Vec<Expression>,
+        args: Vec<Expression>,
     },
     CallOrMultiply {
         callee: String,

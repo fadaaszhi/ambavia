@@ -614,6 +614,13 @@ impl TypeChecker {
                         OpName::Count | OpName::Total if checked_args.len() == 1 => {
                             te(Type::Number, Expression::Number(0.0))
                         }
+                        OpName::Polygon if checked_args.len() == 1 => te(
+                            Type::Polygon,
+                            Expression::Op {
+                                operation: Op::Polygon,
+                                args: vec![te(Type::PointList, Expression::List(vec![]))],
+                            },
+                        ),
                         _ => return empty_list(return_ty.base()),
                     },
 

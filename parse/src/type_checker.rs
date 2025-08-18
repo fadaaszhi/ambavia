@@ -593,6 +593,33 @@ impl TypeChecker {
                     }
                     _ => {}
                 }
+
+                // Narrow EmptyList to concrete types for functions that don't
+                // map EmptyList to EmptyList
+                match operation {
+                    OpName::Index
+                        if checked_args[0].ty == Type::EmptyList
+                            && checked_args[1].ty.base() == B::Number =>
+                    {
+                        checked_args[0].ty = Type::NumberList;
+                    }
+                    OpName::Min
+                    | OpName::Max
+                    | OpName::Median
+                    | OpName::Mean
+                    | OpName::Count
+                    | OpName::Total
+                        if checked_args.len() == 1 && checked_args[0].ty == Type::EmptyList =>
+                    {
+                        checked_args[0].ty = Type::NumberList;
+                    }
+                    OpName::Polygon
+                        if checked_args.len() == 1 && checked_args[0].ty == Type::EmptyList =>
+                    {
+                        checked_args[0].ty = Type::PointList;
+                    }
+                    _ => {}
+                }
                 let (
                     op,
                     SigSatisfies {
@@ -602,27 +629,7 @@ impl TypeChecker {
                     },
                 ) = operation.overload_for(checked_args.iter().map(|v| v.ty))?;
                 Ok(match meta {
-                    crate::op::SatisfyMeta::Empty => match operation {
-                        OpName::Index if !checked_args[1].ty.is_list() => {
-                            te(Type::Number, Expression::Number(f64::NAN))
-                        }
-                        OpName::Min | OpName::Max | OpName::Median | OpName::Mean
-                            if checked_args.len() == 1 =>
-                        {
-                            te(Type::Number, Expression::Number(f64::NAN))
-                        }
-                        OpName::Count | OpName::Total if checked_args.len() == 1 => {
-                            te(Type::Number, Expression::Number(0.0))
-                        }
-                        OpName::Polygon if checked_args.len() == 1 => te(
-                            Type::Polygon,
-                            Expression::Op {
-                                operation: Op::Polygon,
-                                args: vec![te(Type::PointList, Expression::List(vec![]))],
-                            },
-                        ),
-                        _ => return empty_list(return_ty.base()),
-                    },
+                    crate::op::SatisfyMeta::Empty => return empty_list(return_ty.base()),
 
                     crate::op::SatisfyMeta::NeedsBroadcast(..) => {
                         // we need a "function" because only drop glue can drop partially moved values

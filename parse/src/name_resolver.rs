@@ -92,6 +92,7 @@ impl OpName {
             "mean" => Mean,
             "count" => Count,
             "unique" => Unique,
+            "uniquePerm" => UniquePerm,
             "sort" => Sort,
             "sortPerm" => SortPerm,
             "polygon" => Polygon,

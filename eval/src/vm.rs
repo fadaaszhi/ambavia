@@ -107,6 +107,9 @@ pub enum Instruction {
     Unique,
     Unique2,
     UniquePolygon,
+    UniquePerm,
+    UniquePerm2,
+    UniquePermPolygon,
     Sort,
     SortKey,
     SortKey2,
@@ -840,6 +843,51 @@ impl<'a> Vm<'a> {
                                 seen.insert(h.finish())
                             })
                             .cloned()
+                            .collect::<Vec<_>>(),
+                    )));
+                }
+                Instruction::UniquePerm => {
+                    let a = self.pop().list();
+                    let mut seen = HashSet::new();
+                    self.push(Rc::new(RefCell::new(
+                        a.borrow()
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(i, &x)| seen.insert(OrderedFloat(x)).then_some(i as f64))
+                            .collect::<Vec<_>>(),
+                    )));
+                }
+                Instruction::UniquePerm2 => {
+                    let a = self.pop().list();
+                    let mut seen = HashSet::new();
+                    self.push(Rc::new(RefCell::new(
+                        a.borrow()
+                            .as_chunks::<2>()
+                            .0
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(i, &[x, y])| {
+                                seen.insert((OrderedFloat(x), OrderedFloat(y)))
+                                    .then_some(i as f64)
+                            })
+                            .collect::<Vec<_>>(),
+                    )));
+                }
+                Instruction::UniquePermPolygon => {
+                    let a = self.pop().polygon_list();
+                    let mut seen = HashSet::new();
+                    self.push(Rc::new(RefCell::new(
+                        a.borrow()
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(i, p)| {
+                                let p = p.borrow();
+                                let mut h = DefaultHasher::new();
+                                for &x in p.as_slice() {
+                                    OrderedFloat(x).hash(&mut h);
+                                }
+                                seen.insert(h.finish()).then_some(i as f64)
+                            })
                             .collect::<Vec<_>>(),
                     )));
                 }

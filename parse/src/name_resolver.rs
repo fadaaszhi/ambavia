@@ -93,6 +93,7 @@ impl OpName {
             "count" => Count,
             "unique" => Unique,
             "sort" => Sort,
+            "sortPerm" => SortPerm,
             "polygon" => Polygon,
             "join" => Join,
             _ => return None,

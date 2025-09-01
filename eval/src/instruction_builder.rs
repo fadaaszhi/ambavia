@@ -171,7 +171,7 @@ impl InstructionBuilder {
             Total2 | Mean2 => (Type::PointList, Type::Point),
             Count2 => (Type::PointList, Type::Number),
             CountPolygonList => (Type::PolygonList, Type::Number),
-            Unique | Sort => (Type::NumberList, Type::NumberList),
+            Unique | Sort | SortPerm => (Type::NumberList, Type::NumberList),
             Unique2 => (Type::PointList, Type::PointList),
             UniquePolygon => (Type::PolygonList, Type::PolygonList),
             Polygon => (Type::PointList, Type::Polygon),

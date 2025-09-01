@@ -111,6 +111,7 @@ pub enum OpName {
     Count,
     Unique,
     Sort,
+    SortPerm,
     Polygon,
     Join,
 }
@@ -206,6 +207,7 @@ declare_ops! {
         SortKeyNumber(NL, NL) -> NL,
         SortKeyPoint(PL, NL) -> PL,
         SortKeyPolygon(PgL, NL) -> PgL,
+        SortPerm(NL) -> NL,
         Polygon(PL) -> Pg,
         // These have more complicated type signatures than what we can represent (due to potential list of list)
         // and are thus left taking "no" input and handled as a special case
@@ -285,6 +287,7 @@ impl OpName {
             OpName::Count => &[CountNumber, CountPoint, CountPolygon],
             OpName::Unique => &[UniqueNumber, UniquePoint, UniquePolygon],
             OpName::Sort => &[Sort, SortKeyNumber, SortKeyPoint, SortKeyPolygon],
+            OpName::SortPerm => &[SortPerm],
             OpName::Polygon => &[Polygon],
             OpName::Join => &[],
         }

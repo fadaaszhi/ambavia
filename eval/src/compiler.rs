@@ -297,6 +297,7 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
                         Op::SortKeyNumber => builder.instr2(SortKey, arg(), arg()),
                         Op::SortKeyPoint => builder.instr2(SortKey2, arg(), arg()),
                         Op::SortKeyPolygon => builder.instr2(SortKeyPolygon, arg(), arg()),
+                        Op::SortPerm => builder.instr1(SortPerm, arg()),
                         Op::Polygon => builder.instr1(Polygon, arg()),
                         Op::AddNumber => builder.instr2(Add, arg(), arg()),
                         Op::AddPoint => builder.instr2(Add2, arg(), arg()),

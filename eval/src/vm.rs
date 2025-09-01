@@ -111,6 +111,7 @@ pub enum Instruction {
     SortKey,
     SortKey2,
     SortKeyPolygon,
+    SortPerm,
     Polygon,
     Push,
     Push2,
@@ -229,6 +230,12 @@ impl std::fmt::Display for Value {
             }
         }
     }
+}
+
+fn sort_perm(list: &[f64]) -> Vec<usize> {
+    let mut indices = (0..list.len()).collect::<Vec<_>>();
+    indices.sort_by(|a, b| list[*a].total_cmp(&list[*b]));
+    indices
 }
 
 #[derive(Debug, Default)]
@@ -846,10 +853,11 @@ impl<'a> Vm<'a> {
                     let key = key.borrow();
                     let list = self.pop().list();
                     let list = list.borrow();
-                    let mut indices = (0..key.len().min(list.len())).collect::<Vec<_>>();
-                    indices.sort_by(|a, b| key[*a].total_cmp(&key[*b]));
                     self.push(Rc::new(RefCell::new(
-                        indices.iter().map(|&i| list[i]).collect::<Vec<_>>(),
+                        sort_perm(&key[..key.len().min(list.len())])
+                            .iter()
+                            .map(|&i| list[i])
+                            .collect::<Vec<_>>(),
                     )));
                 }
                 Instruction::SortKey2 => {
@@ -857,10 +865,8 @@ impl<'a> Vm<'a> {
                     let key = key.borrow();
                     let list = self.pop().list();
                     let list = list.borrow();
-                    let mut indices = (0..key.len().min(list.len() / 2)).collect::<Vec<_>>();
-                    indices.sort_by(|a, b| key[*a].total_cmp(&key[*b]));
                     self.push(Rc::new(RefCell::new(
-                        indices
+                        sort_perm(&key[..key.len().min(list.len())])
                             .iter()
                             .flat_map(|&i| [list[2 * i], list[2 * i + 1]])
                             .collect::<Vec<_>>(),
@@ -871,12 +877,20 @@ impl<'a> Vm<'a> {
                     let key = key.borrow();
                     let list = self.pop().polygon_list();
                     let list = list.borrow();
-                    let mut indices = (0..key.len().min(list.len())).collect::<Vec<_>>();
-                    indices.sort_by(|a, b| key[*a].total_cmp(&key[*b]));
                     self.push(Rc::new(RefCell::new(
-                        indices
+                        sort_perm(&key[..key.len().min(list.len())])
                             .iter()
                             .map(|&i| Rc::clone(&list[i]))
+                            .collect::<Vec<_>>(),
+                    )));
+                }
+                Instruction::SortPerm => {
+                    let key = self.pop().list();
+                    let key = key.borrow();
+                    self.push(Rc::new(RefCell::new(
+                        sort_perm(&key)
+                            .iter()
+                            .map(|i| *i as f64)
                             .collect::<Vec<_>>(),
                     )));
                 }

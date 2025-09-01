@@ -50,15 +50,15 @@ const EMPTY_WIDTH: f64 = 0.5;
 // Reverse alphabetical order makes it so "tan" doesn't stop "tanh" from being chosen.
 pub const OPERATORNAMES: &[&str] = &[
     "with", "width", "varp", "variance", "var", "unique", "tscore", "total", "tone", "tanh", "tan",
-    "stdevp", "stdev", "stddevp", "stddev", "stdDevP", "stdDev", "spearman", "sort", "sinh", "sin",
-    "signum", "sign", "shuffle", "sgn", "sech", "sec", "round", "rgb", "real", "random",
-    "quartile", "quantile", "polygon", "nPr", "nCr", "mod", "min", "midpoint", "median", "mean",
-    "mcm", "mcd", "max", "mad", "log", "ln", "length", "lcm", "join", "imag", "hsv", "height",
-    "gcf", "gcd", "for", "floor", "exp", "erf", "distance", "csch", "csc", "covp", "cov", "count",
-    "coth", "cot", "cosh", "cos", "corr", "conj", "ceil", "artanh", "arsinh", "arsech", "argmin",
-    "argmax", "arg", "arctanh", "arctan", "arcsinh", "arcsin", "arcsech", "arcsec", "arcsch",
-    "arcoth", "arcosh", "arccsch", "arccsc", "arccoth", "arccot", "arccosh", "arccos", "abs",
-    "TScore",
+    "stdevp", "stdev", "stddevp", "stddev", "stdDevP", "stdDev", "spearman", "sortPerm", "sort",
+    "sinh", "sin", "signum", "sign", "shuffle", "sgn", "sech", "sec", "round", "rgb", "real",
+    "random", "quartile", "quantile", "polygon", "nPr", "nCr", "mod", "min", "midpoint", "median",
+    "mean", "mcm", "mcd", "max", "mad", "log", "ln", "length", "lcm", "join", "imag", "hsv",
+    "height", "gcf", "gcd", "for", "floor", "exp", "erf", "distance", "csch", "csc", "covp", "cov",
+    "count", "coth", "cot", "cosh", "cos", "corr", "conj", "ceil", "artanh", "arsinh", "arsech",
+    "argmin", "argmax", "arg", "arctanh", "arctan", "arcsinh", "arcsin", "arcsech", "arcsec",
+    "arcsch", "arcoth", "arcosh", "arccsch", "arccsc", "arccoth", "arccot", "arccosh", "arccos",
+    "abs", "TScore",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq)]

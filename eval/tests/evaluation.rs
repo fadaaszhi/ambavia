@@ -231,6 +231,8 @@ const NAN: f64 = f64::NAN;
 #[case(r"\argmin([4,9,2,5,2,9,1/0])", 3)]
 #[case(r"\argmax([4,9,2,5,2,9,1/0])", 7)]
 #[case(r"\argmax([4,9,2,5,0/0,9,1/0])", 0)]
+#[case(r"\sortPerm([])", [0; 0])]
+#[case(r"\sortPerm([4,9,2,3])", [2,3,0,1])]
 fn expression_eq(#[case] expression: &str, #[case] expected: impl Into<Value>) {
     assert_expression_eq(expression, expected.into());
 }

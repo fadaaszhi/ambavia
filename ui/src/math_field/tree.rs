@@ -55,9 +55,10 @@ pub const OPERATORNAMES: &[&str] = &[
     "quartile", "quantile", "polygon", "nPr", "nCr", "mod", "min", "midpoint", "median", "mean",
     "mcm", "mcd", "max", "mad", "log", "ln", "length", "lcm", "join", "imag", "hsv", "height",
     "gcf", "gcd", "for", "floor", "exp", "erf", "distance", "csch", "csc", "covp", "cov", "count",
-    "coth", "cot", "cosh", "cos", "corr", "conj", "ceil", "artanh", "arsinh", "arsech", "arg",
-    "arctanh", "arctan", "arcsinh", "arcsin", "arcsech", "arcsec", "arcsch", "arcoth", "arcosh",
-    "arccsch", "arccsc", "arccoth", "arccot", "arccosh", "arccos", "abs", "TScore",
+    "coth", "cot", "cosh", "cos", "corr", "conj", "ceil", "artanh", "arsinh", "arsech", "argmin",
+    "argmax", "arg", "arctanh", "arctan", "arcsinh", "arcsin", "arcsech", "arcsec", "arcsch",
+    "arcoth", "arcosh", "arccsch", "arccsc", "arccoth", "arccot", "arccosh", "arccos", "abs",
+    "TScore",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq)]

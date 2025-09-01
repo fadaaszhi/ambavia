@@ -281,6 +281,8 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
                         Op::Min => builder.instr1(Min, arg()),
                         Op::Max => builder.instr1(Max, arg()),
                         Op::Median => builder.instr1(Median, arg()),
+                        Op::Argmin => builder.instr1(Argmin, arg()),
+                        Op::Argmax => builder.instr1(Argmax, arg()),
                         Op::TotalNumber => builder.instr1(Total, arg()),
                         Op::TotalPoint => builder.instr1(Total2, arg()),
                         Op::MeanNumber => builder.instr1(Mean, arg()),

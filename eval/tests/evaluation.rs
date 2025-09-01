@@ -225,6 +225,12 @@ const NAN: f64 = f64::NAN;
 #[case(r"[\polygon()][1]", polygon([]))]
 #[case(r"\unique([])+(0,0)", [(0, 0); 0])]
 #[case(r"[][1,2,3]", &[f64::NAN, f64::NAN, f64::NAN])]
+#[case(r"\argmin([])", 0)]
+#[case(r"\argmin([3])", 1)]
+#[case(r"\argmin([3,3])", 1)]
+#[case(r"\argmin([4,9,2,5,2,9,1/0])", 3)]
+#[case(r"\argmax([4,9,2,5,2,9,1/0])", 7)]
+#[case(r"\argmax([4,9,2,5,0/0,9,1/0])", 0)]
 fn expression_eq(#[case] expression: &str, #[case] expected: impl Into<Value>) {
     assert_expression_eq(expression, expected.into());
 }

@@ -606,6 +606,8 @@ impl TypeChecker {
                     OpName::Min
                     | OpName::Max
                     | OpName::Median
+                    | OpName::Argmin
+                    | OpName::Argmax
                     | OpName::Mean
                     | OpName::Count
                     | OpName::Total
@@ -629,6 +631,7 @@ impl TypeChecker {
                     },
                 ) = operation.overload_for(checked_args.iter().map(|v| v.ty))?;
                 Ok(match meta {
+                    // TODO: make it a runtime error if something like total([])=0 isn't handled
                     crate::op::SatisfyMeta::Empty => return empty_list(return_ty.base()),
 
                     crate::op::SatisfyMeta::NeedsBroadcast(..) => {

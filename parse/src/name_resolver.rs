@@ -86,6 +86,8 @@ impl OpName {
             "min" => Min,
             "max" => Max,
             "median" => Median,
+            "argmin" => Argmin,
+            "argmax" => Argmax,
             "total" => Total,
             "mean" => Mean,
             "count" => Count,

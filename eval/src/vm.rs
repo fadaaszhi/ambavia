@@ -95,6 +95,8 @@ pub enum Instruction {
     Min,
     Max,
     Median,
+    Argmin,
+    Argmax,
     Total,
     Total2,
     Mean,
@@ -713,6 +715,40 @@ impl<'a> Vm<'a> {
                     } else {
                         self.push(medians::Medianf64::medf_unchecked(a.as_slice()));
                     }
+                }
+                Instruction::Argmin => {
+                    let a = self.pop().list();
+                    let a = a.borrow();
+                    let mut result = 0.0;
+                    let mut index = 0;
+                    for (i, &x) in a.iter().enumerate() {
+                        if x.is_nan() {
+                            index = 0;
+                            break;
+                        }
+                        if i == 0 || x < result {
+                            result = x;
+                            index = i + 1;
+                        }
+                    }
+                    self.push(index as f64);
+                }
+                Instruction::Argmax => {
+                    let a = self.pop().list();
+                    let a = a.borrow();
+                    let mut result = 0.0;
+                    let mut index = 0;
+                    for (i, &x) in a.iter().enumerate() {
+                        if x.is_nan() {
+                            index = 0;
+                            break;
+                        }
+                        if i == 0 || x > result {
+                            result = x;
+                            index = i + 1;
+                        }
+                    }
+                    self.push(index as f64);
                 }
                 Instruction::Total => {
                     let a = self.pop().list();

@@ -165,7 +165,9 @@ impl InstructionBuilder {
             }
             Neg2 => (Type::Point, Type::Point),
             PointX | PointY | Hypot => (Type::Point, Type::Number),
-            Min | Max | Median | Total | Mean | Count => (Type::NumberList, Type::Number),
+            Min | Max | Median | Argmin | Argmax | Total | Mean | Count => {
+                (Type::NumberList, Type::Number)
+            }
             Total2 | Mean2 => (Type::PointList, Type::Point),
             Count2 => (Type::PointList, Type::Number),
             CountPolygonList => (Type::PolygonList, Type::Number),

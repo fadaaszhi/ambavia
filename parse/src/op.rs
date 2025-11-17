@@ -128,7 +128,7 @@ declare_ops! {
         NegPoint(P) -> P,
         Fac(N) -> N,
         Sqrt(N) -> N,
-        Mag(P) -> P,
+        Mag(P) -> N,
         PointX(P) -> N,
         PointY(P) -> N,
 

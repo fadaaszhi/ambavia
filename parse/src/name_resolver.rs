@@ -1,4 +1,10 @@
-use std::{array, borrow::Borrow, collections::HashMap, iter::zip};
+use std::{
+    array,
+    borrow::Borrow,
+    collections::HashMap,
+    iter::zip,
+    ops::{Deref, DerefMut},
+};
 
 use derive_more::{From, Into};
 use typed_index_collections::{TiSlice, TiVec};
@@ -102,9 +108,12 @@ impl OpName {
     }
 }
 
+type Id = usize;
+type Level = usize;
+
 #[derive(Debug, PartialEq)]
 pub struct Assignment {
-    pub id: usize,
+    pub id: Id,
     pub name: String,
     pub value: Expression,
 }
@@ -115,117 +124,92 @@ pub struct Body {
     pub value: Box<Expression>,
 }
 
-#[derive(Debug, PartialEq, Clone)]
-enum Dependency {
-    Assignment(usize),
-    NotDynamic,
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct DynamicInfo {
+    id: Id,
+    level: Level,
 }
 
-#[derive(Clone)]
-struct Dependencies<'a> {
-    level: usize,
-    map: HashMap<&'a str, Dependency>,
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Dependency {
+    Dynamic(DynamicInfo),
+    Computed,
+}
+
+#[derive(Debug, Default)]
+struct Dependencies<'a>(HashMap<&'a str, Dependency>);
+
+impl<'a> Deref for Dependencies<'a> {
+    type Target = HashMap<&'a str, Dependency>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a> DerefMut for Dependencies<'a> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
 }
 
 impl<'a> Dependencies<'a> {
-    fn with_level(level: usize) -> Self {
-        Self {
-            level,
-            map: HashMap::new(),
-        }
-    }
-
-    fn none() -> Self {
-        Dependencies::with_level(0)
-    }
-}
-
-trait Merge {
-    fn merge(&mut self, other: Self);
-
-    fn merged(mut self, other: Self) -> Self
-    where
-        Self: Sized,
-    {
-        self.merge(other);
-        self
-    }
-}
-
-impl<'a> Merge for Dependencies<'a> {
-    fn merge(&mut self, other: Self) {
-        for (name, dep) in &other.map {
-            let d = self.map.entry(name).or_insert(Dependency::NotDynamic);
-
-            if let Dependency::Assignment(id) = dep {
-                if let Dependency::Assignment(i) = d {
-                    assert_eq!(i, id);
-                }
-
-                *d = dep.clone();
+    fn level(&self) -> Level {
+        let mut level = 0;
+        for d in self.0.values() {
+            if let Dependency::Dynamic(i) = d {
+                level = level.max(i.level);
             }
         }
+        level
+    }
 
-        self.map.extend(other.map);
-        self.level = self.level.max(other.level);
+    fn extend(&mut self, other: &Self) {
+        for (name, kind) in other.iter() {
+            if let Some(existing) = self.get(name) {
+                assert_eq!(existing, kind);
+            }
+        }
+        self.0.extend(other.iter());
     }
 }
 
-struct ScopeMap<'a, T>(HashMap<&'a str, Vec<T>>);
-
-impl<'a, T> Default for ScopeMap<'a, T> {
-    fn default() -> Self {
-        Self(Default::default())
-    }
+#[derive(Debug, Default)]
+struct Scope<'a> {
+    dynamic: HashMap<&'a str, DynamicInfo>,
+    computed: HashMap<&'a str, (Result<Id, String>, Dependencies<'a>)>,
 }
 
-impl<'a, T> ScopeMap<'a, T> {
-    fn get(&self, k: &str) -> Option<&T> {
-        self.0.get(k).and_then(|v| v.last())
-    }
-
-    fn contains_key(&self, k: &str) -> bool {
-        self.0.get(k).map(|v| !v.is_empty()).unwrap_or_default()
-    }
-
-    fn push(&mut self, k: &'a str, v: T) {
-        self.0.entry(k).or_default().push(v);
-    }
-
-    fn pop(&mut self, k: &str) -> Option<T> {
-        self.0.get_mut(k).and_then(|v| v.pop())
+impl<'a> Scope<'a> {
+    fn get_dynamic(&self, name: &str) -> Option<DynamicInfo> {
+        self.dynamic.get(name).cloned()
     }
 }
 
 struct Resolver<'a> {
-    globals: HashMap<&'a str, Result<&'a ExpressionListEntry, String>>,
+    scopes: Vec<Scope<'a>>,
+    definitions: HashMap<&'a str, Result<&'a ExpressionListEntry, String>>,
+    dependencies_being_tracked: Option<Dependencies<'a>>,
     assignments: Vec<Vec<Assignment>>,
     id_counter: usize,
-    dynamic_scope: ScopeMap<'a, (usize, Dependencies<'a>)>,
-    global_scope: ScopeMap<'a, ((usize, Option<String>), Dependencies<'a>)>,
 }
-fn builtin(name: OpName, args: Vec<Expression>) -> Expression {
-    Expression::Op {
-        operation: name,
-        args,
-    }
-}
+
 #[derive(Debug, Copy, Clone, From, Into)]
 pub struct ExpressionIndex(usize);
 type ExpressionList<E> = TiSlice<ExpressionIndex, E>;
 
 impl<'a> Resolver<'a> {
     fn new(list: &'a ExpressionList<impl Borrow<ExpressionListEntry>>) -> Self {
-        let mut globals = HashMap::new();
+        let mut definitions = HashMap::new();
 
         for entry in list {
             match entry.borrow() {
                 ExpressionListEntry::Assignment { name, .. }
                 | ExpressionListEntry::FunctionDeclaration { name, .. } => {
-                    if let Some(result @ Ok(_)) = globals.get_mut(name.as_str()) {
+                    if let Some(result @ Ok(_)) = definitions.get_mut(name.as_str()) {
                         *result = Err(format!("'{name}' defined multiple times"));
                     } else {
-                        globals.insert(name.as_str(), Ok(entry.borrow()));
+                        definitions.insert(name.as_str(), Ok(entry.borrow()));
                     }
                 }
                 _ => continue,
@@ -233,213 +217,208 @@ impl<'a> Resolver<'a> {
         }
 
         Self {
-            globals,
+            scopes: vec![Scope::default()],
+            definitions,
+            dependencies_being_tracked: None,
             assignments: vec![vec![]],
             id_counter: 0,
-            dynamic_scope: Default::default(),
-            global_scope: Default::default(),
         }
     }
 
-    fn next_id(&mut self) -> usize {
+    fn create_assignment(&mut self, name: &str, value: Expression) -> Assignment {
         let id = self.id_counter;
         self.id_counter += 1;
-        id
-    }
-
-    fn create_assignment(&mut self, name: &str, value: Expression) -> Assignment {
         Assignment {
-            id: self.next_id(),
+            id,
             name: name.to_string(),
             value,
         }
     }
 
-    fn push_assignment(&mut self, name: &str, level: usize, value: Expression) -> usize {
+    fn push_assignment(&mut self, name: &str, level: usize, value: Expression) -> Id {
         let assignment = self.create_assignment(name, value);
         let id = assignment.id;
         self.assignments[level].push(assignment);
         id
     }
 
-    fn get_maybe_outdated_variable(
-        &self,
-        name: &'a str,
-    ) -> Option<((&usize, Option<&String>), &Dependencies<'a>)> {
-        self.dynamic_scope
-            .get(name)
-            .map(|(id, deps)| ((id, None), deps))
-            .or_else(|| {
-                self.global_scope
-                    .get(name)
-                    .map(|((id, err), deps)| ((id, err.as_ref()), deps))
-            })
+    fn push_dependency(&mut self, name: &'a str, kind: Dependency) {
+        if let Some(d) = &mut self.dependencies_being_tracked {
+            d.insert(name, kind);
+        }
     }
 
-    fn resolve_variable(&mut self, name: &'a str) -> (Result<usize, String>, Dependencies<'a>) {
-        if let Some(((id, err), deps)) = self.get_maybe_outdated_variable(name)
-            && deps.map.iter().all(|(n, d)| match d {
-                Dependency::Assignment(i) => self.get_maybe_outdated_variable(n).unwrap().0.0 == i,
-                Dependency::NotDynamic => !self.dynamic_scope.contains_key(n),
-            })
-        {
-            let mut deps = deps.clone();
-            deps.map.insert(name, Dependency::Assignment(*id));
-            return (err.cloned().map_or(Ok(*id), Err), deps);
+    /// Same as [`Resolver::resolve_expression`] but additionally tracks the
+    /// dependencies used while resolving the expression.
+    fn resolve_expression_with_dependencies(
+        &mut self,
+        expression: &'a ast::Expression,
+    ) -> (Result<Expression, String>, Dependencies<'a>) {
+        // Track an empty set of dependencies
+        let mut original = self.dependencies_being_tracked.replace(Default::default());
+        let resolved_expression = self.resolve_expression(expression);
+        let dependencies = self.dependencies_being_tracked.take().unwrap();
+
+        // Add these dependencies back to the original
+        if let Some(original) = &mut original {
+            original.extend(&dependencies);
+        }
+        self.dependencies_being_tracked = original;
+
+        (resolved_expression, dependencies)
+    }
+
+    /// Computes a variable or finds an existing assignment ID if it's already been resolved before.
+    fn resolve_variable(&mut self, name: &'a str) -> Result<Id, String> {
+        // First check scopes to see if it's already available without having to compute it again
+        for scope in self.scopes.iter().rev() {
+            // Dynamic variables get priority
+            if let Some(&i) = scope.dynamic.get(name) {
+                self.push_dependency(name, Dependency::Dynamic(i));
+                return Ok(i.id);
+            }
+
+            if let Some((id, deps)) = scope.computed.get(name) {
+                // now check if deps are up to date so we can use this id
+                let mut up_to_date = true;
+                for (dep_name, &recorded) in deps.iter() {
+                    let found = self
+                        .scopes
+                        .iter()
+                        .rev()
+                        .find_map(|scope| scope.get_dynamic(dep_name))
+                        .map_or(Dependency::Computed, Dependency::Dynamic);
+                    if found != recorded {
+                        up_to_date = false;
+                        break;
+                    }
+                }
+                if up_to_date {
+                    let id = id.clone();
+                    if let Some(d) = &mut self.dependencies_being_tracked {
+                        d.extend(deps);
+                    }
+                    self.push_dependency(name, Dependency::Computed);
+                    return id;
+                }
+            }
         }
 
-        let entry = match self
-            .globals
-            .get(name)
-            .ok_or_else(|| format!("'{name}' is not defined"))
-            .cloned()
-            .and_then(|x| x)
-        {
-            Ok(entry) => entry,
-            Err(err) => {
-                return (
-                    Err(err),
-                    Dependencies {
-                        level: 0,
-                        map: [(name, Dependency::NotDynamic)].into(),
-                    },
-                );
+        self.push_dependency(name, Dependency::Computed);
+        let Some(entry) = self.definitions.get(name) else {
+            return Err(format!("'{name}' is not defined"));
+        };
+        let expr = match entry.as_ref()? {
+            ExpressionListEntry::Assignment { value, .. } => value,
+            ExpressionListEntry::FunctionDeclaration { .. } => {
+                return Err(format!("'{name}' is a function, try using parentheses"));
             }
+            _ => unreachable!(),
         };
 
-        match entry {
-            ExpressionListEntry::Assignment { value, .. } => {
-                let (value, mut deps) = self.resolve_expression(value);
-                let (id, err) = match value {
-                    Ok(v) => (self.push_assignment(name, deps.level, v), None),
-                    Err(e) => (self.next_id(), Some(e)),
-                };
-                self.global_scope
-                    .push(name, ((id, err.clone()), deps.clone()));
-                deps.map.insert(name, Dependency::Assignment(id));
-                (err.map_or(Ok(id), Err), deps)
+        let (value, deps) = self.resolve_expression_with_dependencies(expr);
+        let level = deps
+            .values()
+            .filter_map(|x| match x {
+                Dependency::Dynamic(i) => Some(i.level),
+                Dependency::Computed => None,
+            })
+            .max()
+            .unwrap_or(0);
+        let id = value.map(|value| self.push_assignment(name, level, value));
+
+        let mut scope_index = self.scopes.len();
+        'outer: for (i, scope) in self.scopes.iter().enumerate().rev() {
+            scope_index = i;
+            for (dep_name, recorded) in deps.iter() {
+                let found = scope.dynamic.get(dep_name);
+                if let Some(found) = found
+                    && let Dependency::Dynamic(recorded) = recorded
+                {
+                    assert_eq!(found, recorded);
+                    break 'outer;
+                } else {
+                    assert_eq!(found, None);
+                }
             }
-            ExpressionListEntry::FunctionDeclaration { .. } => (
-                Err(format!("'{name}' is a function, try using parentheses")),
-                Dependencies::none(),
-            ),
-            _ => unreachable!(),
         }
+        self.scopes[scope_index]
+            .computed
+            .insert(name, (id.clone(), deps));
+
+        id
     }
 
     fn resolve_expressions(
         &mut self,
         es: &'a [ast::Expression],
-    ) -> (Result<Vec<Expression>, String>, Dependencies<'a>) {
-        let mut result = vec![];
-        let mut deps = Dependencies::none();
-
-        for e in es {
-            let (e, d) = self.resolve_expression(e);
-            deps.merge(d);
-            match e {
-                Ok(e) => result.push(e),
-                Err(e) => return (Err(e), deps),
-            }
-        }
-
-        (Ok(result), deps)
+    ) -> Result<Vec<Expression>, String> {
+        es.iter().map(|e| self.resolve_expression(e)).collect()
     }
 
     fn resolve_dynamic(
         &mut self,
         body: &'a ast::Expression,
-        bindings: impl Iterator<Item = (&'a String, &'a ast::Expression)>,
+        bindings: impl Iterator<Item = (&'a String, &'a ast::Expression)> + Clone,
         error_string: impl FnOnce(&str) -> String,
-    ) -> (Result<Expression, String>, Dependencies<'a>) {
-        let mut seen = HashMap::new();
-        let mut binding_deps = Dependencies::none();
+    ) -> Result<Expression, String> {
+        let mut scope = Scope::default();
 
-        for (name, value) in bindings {
-            if seen.contains_key(name.as_str()) {
-                return (Err(error_string(name)), binding_deps);
+        for (name, value) in bindings.clone() {
+            if scope.dynamic.contains_key(name.as_str()) {
+                return Err(error_string(name));
             }
 
-            let (value, d) = match self.resolve_expression(value) {
-                (Ok(v), d) => (v, d),
-                (Err(e), d) => return (Err(e), binding_deps.merged(d)),
-            };
-            let id = self.push_assignment(name, d.level, value);
-            seen.insert(name.as_str(), (id, d.level));
-            binding_deps.merge(d);
+            let (value, deps) = self.resolve_expression_with_dependencies(value);
+            let level = deps.level();
+            let id = self.push_assignment(name, deps.level(), value?);
+            scope
+                .dynamic
+                .insert(name.as_str(), DynamicInfo { id, level });
         }
 
-        for (name, &(id, level)) in &seen {
-            self.dynamic_scope
-                .push(name, (id, Dependencies::with_level(level)));
-        }
-
-        let (body, mut body_deps) = self.resolve_expression(body);
-
-        for (name, (id, _)) in &seen {
-            let popped = self.dynamic_scope.pop(name);
-            assert_eq!(popped.map(|(i, _)| i), Some(*id))
-        }
-
-        for (name, (id, _)) in &seen {
-            if let Some(dep) = body_deps.map.remove(name) {
-                assert_eq!(dep, Dependency::Assignment(*id));
-            }
-        }
-
-        for (name, dep) in &mut body_deps.map {
-            if self.dynamic_scope.contains_key(name) {
-                continue;
-            }
-
-            if *dep == Dependency::NotDynamic {
-                continue;
-            }
-
-            let d = &self.global_scope.get(name).unwrap().1;
-
-            for (n, (i, _)) in &seen {
-                if let Some(x) = d.map.get(n) {
-                    assert_eq!(*x, Dependency::Assignment(*i));
+        self.scopes.push(scope);
+        let body = self.resolve_expression(body);
+        let scope = self.scopes.pop().unwrap();
+        if let Some(deps) = &mut self.dependencies_being_tracked {
+            for (name, _) in bindings {
+                let removed = deps.remove(name.as_str());
+                if let Some(removed) = removed {
+                    assert_eq!(
+                        removed,
+                        scope
+                            .get_dynamic(name)
+                            .map_or(Dependency::Computed, Dependency::Dynamic)
+                    );
                 }
             }
-
-            if seen.iter().any(|(n, _)| d.map.contains_key(n)) {
-                self.global_scope.pop(name);
-                *dep = Dependency::NotDynamic;
-            }
         }
-
-        (body, binding_deps.merged(body_deps))
+        body
     }
 
     fn resolve_call(
         &mut self,
         callee: &'a str,
         args: &'a [ast::Expression],
-    ) -> (Result<Expression, String>, Dependencies<'a>) {
-        let err = |s| (Err(s), Dependencies::none());
-
-        if let Some(name) = OpName::from_str(callee) {
-            let (args, deps) = match self.resolve_expressions(args) {
-                (Ok(v), d) => (v, d),
-                (Err(e), d) => return (Err(e), d),
-            };
-
-            return (Ok(builtin(name, args)), deps);
+    ) -> Result<Expression, String> {
+        if let Some(operation) = OpName::from_str(callee) {
+            return Ok(Expression::Op {
+                operation,
+                args: self.resolve_expressions(args)?,
+            });
         }
 
-        let (parameters, body) = match self.globals.get(callee).cloned() {
+        let (parameters, body) = match self.definitions.get(callee) {
             Some(Ok(ExpressionListEntry::FunctionDeclaration {
                 parameters, body, ..
             })) => (parameters, body),
-            Some(Ok(_)) => return err(format!("variable '{callee}' can't be used as a function")),
-            Some(Err(e)) => return err(e),
-            None => return err(format!("'{callee}' is not defined")),
+            Some(Ok(_)) => return Err(format!("variable '{callee}' can't be used as a function")),
+            Some(Err(e)) => return Err(e.clone()),
+            None => return Err(format!("'{callee}' is not defined")),
         };
 
         if parameters.len() != args.len() {
-            return err(format!(
+            return Err(format!(
                 "function '{callee}' requires {}{}",
                 if args.len() > parameters.len() {
                     "only "
@@ -459,46 +438,24 @@ impl<'a> Resolver<'a> {
         })
     }
 
-    fn resolve_expression(
-        &mut self,
-        e: &'a ast::Expression,
-    ) -> (Result<Expression, String>, Dependencies<'a>) {
+    fn resolve_expression(&mut self, e: &'a ast::Expression) -> Result<Expression, String> {
         match e {
-            ast::Expression::Number(value) => {
-                (Ok(Expression::Number(*value)), Dependencies::none())
-            }
+            ast::Expression::Number(value) => Ok(Expression::Number(*value)),
             ast::Expression::Identifier(name) => {
-                let (id, d) = self.resolve_variable(name);
-                (id.map(Expression::Identifier), d)
+                Ok(Expression::Identifier(self.resolve_variable(name)?))
             }
-            ast::Expression::List(list) => {
-                let (list, d) = self.resolve_expressions(list);
-                (list.map(Expression::List), d)
-            }
+            ast::Expression::List(list) => Ok(Expression::List(self.resolve_expressions(list)?)),
             ast::Expression::ListRange {
                 before_ellipsis,
                 after_ellipsis,
-            } => {
-                let (before_ellipsis, d0) = match self.resolve_expressions(before_ellipsis) {
-                    (Ok(v), d) => (v, d),
-                    (Err(e), d) => return (Err(e), d),
-                };
-                let (after_ellipsis, d1) = match self.resolve_expressions(after_ellipsis) {
-                    (Ok(v), d) => (v, d),
-                    (Err(e), d) => return (Err(e), d0.merged(d)),
-                };
-                (
-                    Ok(Expression::ListRange {
-                        before_ellipsis,
-                        after_ellipsis,
-                    }),
-                    d0.merged(d1),
-                )
-            }
+            } => Ok(Expression::ListRange {
+                before_ellipsis: self.resolve_expressions(before_ellipsis)?,
+                after_ellipsis: self.resolve_expressions(after_ellipsis)?,
+            }),
             ast::Expression::CallOrMultiply { callee, args } => {
                 if OpName::from_str(callee).is_some()
                     || matches!(
-                        self.globals.get(callee.as_str()),
+                        self.definitions.get(callee.as_str()),
                         Some(Ok(ExpressionListEntry::FunctionDeclaration { .. }))
                     )
                 {
@@ -506,96 +463,61 @@ impl<'a> Resolver<'a> {
                 } else {
                     let (left, right) = (callee, args);
                     let name = left;
-                    let (left, d0) = match self.resolve_variable(left) {
-                        (Ok(v), d) => (v, d),
-                        (Err(e), d) => return (Err(e), d),
-                    };
+                    let left = self.resolve_variable(left)?;
                     let len = right.len();
-                    let (right, d1) = match self.resolve_expressions(right) {
-                        (Ok(v), d) => (v, d),
-                        (Err(e), d) => return (Err(e), d0.merged(d)),
-                    };
-                    (
-                        if len == 1 || len == 2 {
-                            let mut right_iter = right.into_iter();
-                            Ok(Expression::Op {
-                                operation: OpName::Mul,
-                                args: vec![
-                                    Expression::Identifier(left),
-                                    if len == 1 {
-                                        right_iter.next().unwrap()
-                                    } else {
-                                        Expression::Op {
-                                            operation: OpName::Point,
-                                            args: array::from_fn::<_, 2, _>(|_| {
-                                                right_iter.next().unwrap()
-                                            })
-                                            .into(),
-                                        }
-                                    },
-                                ],
-                            })
+                    let right = self.resolve_expressions(right)?;
+                    if len == 1 || len == 2 {
+                        let mut right_iter = right.into_iter();
+                        Ok(Expression::Op {
+                            operation: OpName::Mul,
+                            args: vec![
+                                Expression::Identifier(left),
+                                if len == 1 {
+                                    right_iter.next().unwrap()
+                                } else {
+                                    Expression::Op {
+                                        operation: OpName::Point,
+                                        args: array::from_fn::<_, 2, _>(|_| {
+                                            right_iter.next().unwrap()
+                                        })
+                                        .into(),
+                                    }
+                                },
+                            ],
+                        })
+                    } else {
+                        Err(if len == 0 {
+                            format!("variable '{name}' can't be used as a function")
                         } else {
-                            Err(if len == 0 {
-                                format!("variable '{name}' can't be used as a function")
-                            } else {
-                                "points may only have 2 coordinates".into()
-                            })
-                        },
-                        d0.merged(d1),
-                    )
+                            "points may only have 2 coordinates".into()
+                        })
+                    }
                 }
             }
             ast::Expression::Call { callee, args } => self.resolve_call(callee, args),
             ast::Expression::ChainedComparison(ast::ChainedComparison {
                 operands,
                 operators,
-            }) => {
-                let (operands, d) = self.resolve_expressions(operands);
-                (
-                    operands.map(|operands| Expression::ChainedComparison {
-                        operands,
-                        operators: operators.clone(),
-                    }),
-                    d,
-                )
-            }
+            }) => Ok(Expression::ChainedComparison {
+                operands: self.resolve_expressions(operands)?,
+                operators: operators.clone(),
+            }),
             ast::Expression::Piecewise {
                 test,
                 consequent,
                 alternate,
-            } => {
-                let (test, d0) = match self.resolve_expression(test) {
-                    (Ok(v), d) => (v, d),
-                    (Err(e), d) => return (Err(e), d),
-                };
-                let (consequent, d1) = match self.resolve_expression(consequent) {
-                    (Ok(v), d) => (v, d),
-                    (Err(e), d) => return (Err(e), d0.merged(d)),
-                };
-                let mut d = d0.merged(d1);
-                (
-                    Ok(Expression::Piecewise {
-                        test: Box::new(test),
-                        consequent: Box::new(consequent),
-                        alternate: if let Some(e) = alternate {
-                            let (alternate, d2) = self.resolve_expression(e);
-                            d.merge(d2);
-                            match alternate {
-                                Ok(a) => Some(Box::new(a)),
-                                Err(e) => return (Err(e), d),
-                            }
-                        } else {
-                            None
-                        },
-                    }),
-                    d,
-                )
+            } => Ok(Expression::Piecewise {
+                test: Box::new(self.resolve_expression(test)?),
+                consequent: Box::new(self.resolve_expression(consequent)?),
+                alternate: if let Some(e) = alternate {
+                    Some(Box::new(self.resolve_expression(e)?))
+                } else {
+                    None
+                },
+            }),
+            ast::Expression::SumProd { .. } => {
+                Err("todo: sum and prod are not supported yet".into())
             }
-            ast::Expression::SumProd { .. } => (
-                Err("todo: sum and prod are not supported yet".into()),
-                Dependencies::none(),
-            ),
             ast::Expression::With {
                 body,
                 substitutions,
@@ -604,117 +526,62 @@ impl<'a> Resolver<'a> {
             }),
             ast::Expression::For { body, lists } => {
                 let mut seen = HashMap::new();
-                let mut list_deps = Dependencies::none();
                 let mut resolved_lists = vec![];
 
                 for (name, value) in lists {
                     if seen.contains_key(name.as_str()) {
-                        return (
-                            Err(format!(
-                                "you can't define '{name}' more than once on the right-hand side of 'for'"
-                            )),
-                            list_deps,
-                        );
+                        return Err(format!(
+                            "you can't define '{name}' more than once on the right-hand side of 'for'"
+                        ));
                     }
 
-                    let (value, d) = match self.resolve_expression(value) {
-                        (Ok(v), d) => (v, d),
-                        (Err(e), d) => return (Err(e), list_deps.merged(d)),
-                    };
+                    let value = self.resolve_expression(value)?;
                     let assignment = self.create_assignment(name, value);
                     seen.insert(name.as_str(), assignment.id);
-                    list_deps.merge(d);
                     resolved_lists.push(assignment);
                 }
 
-                let new_level = self.assignments.len();
+                let level = self.assignments.len();
                 self.assignments.push(vec![]);
+                let mut scope = Scope::default();
 
-                for (name, id) in &seen {
-                    self.dynamic_scope
-                        .push(name, (*id, Dependencies::with_level(new_level)));
+                for (name, id) in seen {
+                    scope.dynamic.insert(name, DynamicInfo { id, level });
                 }
 
-                let (body, mut body_deps) = self.resolve_expression(body);
+                self.scopes.push(scope);
 
-                for (name, id) in &seen {
-                    let popped = self.dynamic_scope.pop(name);
-                    assert_eq!(popped.map(|(i, _)| i), Some(*id))
+                let body = self.resolve_expression(body);
+
+                let scope = self.scopes.pop().unwrap();
+
+                if let Some(deps) = &mut self.dependencies_being_tracked {
+                    for (name, _) in lists {
+                        let removed = deps.remove(name.as_str());
+                        if let Some(removed) = removed {
+                            assert_eq!(
+                                removed,
+                                scope
+                                    .get_dynamic(name)
+                                    .map_or(Dependency::Computed, Dependency::Dynamic)
+                            );
+                        }
+                    }
                 }
 
                 let assignments = self.assignments.pop().unwrap();
-
-                for (name, id) in &seen {
-                    if let Some(dep) = body_deps.map.remove(name) {
-                        assert_eq!(dep, Dependency::Assignment(*id));
-                    }
-                }
-
-                for (name, dep) in &mut body_deps.map {
-                    if self.dynamic_scope.contains_key(name) {
-                        continue;
-                    }
-
-                    if *dep == Dependency::NotDynamic {
-                        continue;
-                    }
-
-                    let d = &self.global_scope.get(name).unwrap().1;
-
-                    for (n, i) in &seen {
-                        if let Some(x) = d.map.get(n) {
-                            assert_eq!(*x, Dependency::Assignment(*i));
-                        }
-                    }
-
-                    if seen.iter().any(|(n, _)| d.map.contains_key(n)) {
-                        self.global_scope.pop(name);
-                        *dep = Dependency::NotDynamic;
-                    }
-                }
-
-                body_deps.level = 0;
-
-                for (name, dep) in &mut body_deps.map {
-                    if *dep == Dependency::NotDynamic {
-                        continue;
-                    }
-
-                    body_deps.level = self
-                        .get_maybe_outdated_variable(name)
-                        .unwrap()
-                        .1
-                        .level
-                        .max(body_deps.level);
-                }
-
-                (
-                    body.map(|body| Expression::For {
-                        body: Body {
-                            assignments,
-                            value: Box::new(body),
-                        },
-                        lists: resolved_lists,
-                    }),
-                    list_deps.merged(body_deps),
-                )
+                Ok(Expression::For {
+                    body: Body {
+                        assignments,
+                        value: Box::new(body?),
+                    },
+                    lists: resolved_lists,
+                })
             }
-            ast::Expression::Op {
-                operation,
-                args: arguments,
-            } => {
-                let (args, deps) = match self.resolve_expressions(arguments) {
-                    (Ok(v), d) => (v, d),
-                    (Err(e), d) => return (Err(e), d),
-                };
-                (
-                    Ok(Expression::Op {
-                        operation: *operation,
-                        args,
-                    }),
-                    deps,
-                )
-            }
+            ast::Expression::Op { operation, args } => Ok(Expression::Op {
+                operation: *operation,
+                args: self.resolve_expressions(args)?,
+            }),
         }
     }
 }
@@ -732,41 +599,36 @@ pub fn resolve_names(
     let assignment_ids = list
         .iter()
         .map(|e| {
-            assert!(resolver.dynamic_scope.0.iter().all(|(_, v)| v.is_empty()));
-            assert!(resolver.global_scope.0.iter().all(|(_, v)| v.len() <= 1));
+            // When we start resolving a new expression, there shouldn't be any
+            // variables that are in scope from a `for` or `with` clause
             assert_eq!(resolver.assignments.len(), 1);
+            assert_eq!(resolver.scopes.len(), 1);
+            assert_eq!(resolver.scopes[0].dynamic, HashMap::new());
 
             match e.borrow() {
                 ExpressionListEntry::Assignment { name, value } => {
-                    if let Some(((id, err), _)) = resolver.global_scope.get(name) {
-                        Some(err.clone().map_or(Ok(*id), Err))
+                    if let Some((id, _deps)) = resolver.scopes[0].computed.get(name.as_str()) {
+                        Some(id.clone())
                     } else {
-                        let (value, deps) = resolver.resolve_expression(value);
-                        let (id, err) = match value {
-                            Ok(v) => (resolver.push_assignment(name, deps.level, v), None),
-                            Err(e) => (resolver.next_id(), Some(e)),
-                        };
-                        if resolver.globals.get(name.as_str()).unwrap().is_ok() {
-                            resolver
-                                .global_scope
-                                .push(name, ((id, err.clone()), deps.clone()));
+                        let (value, deps) = resolver.resolve_expression_with_dependencies(value);
+                        let level = deps.level();
+                        assert_eq!(level, 0);
+                        let id = value.map(|value| resolver.push_assignment(name, level, value));
+                        if resolver.definitions.get(name.as_str()).unwrap().is_ok() {
+                            resolver.scopes[0].computed.insert(name, (id.clone(), deps));
                         }
-                        Some(err.map_or(Ok(id), Err))
+                        Some(id)
                     }
                 }
                 ExpressionListEntry::FunctionDeclaration { .. } => None,
                 ExpressionListEntry::Relation(..) => {
                     Some(Err("todo: relations are not supported yet".into()))
                 }
-                ExpressionListEntry::Expression(expression) => {
-                    Some(match resolver.resolve_expression(expression) {
-                        (Ok(value), _) => {
-                            let id = resolver.push_assignment("<anonymous>", 0, value);
-                            Ok(id)
-                        }
-                        (Err(error), _) => Err(error),
-                    })
-                }
+                ExpressionListEntry::Expression(expression) => Some(
+                    resolver
+                        .resolve_expression(expression)
+                        .map(|value| resolver.push_assignment("<anonymous>", 0, value)),
+                ),
             }
         })
         .collect::<TiVec<ExpressionIndex, _>>();
@@ -892,14 +754,17 @@ mod tests {
     fn multiple_definitions_error() {
         assert_eq!(
             resolve_names_ti(&[
+                // a = 1
                 ElAssign {
                     name: "a".into(),
                     value: ANum(1.0),
                 },
+                // a = 2
                 ElAssign {
                     name: "a".into(),
                     value: ANum(2.0),
                 },
+                // b = a
                 ElAssign {
                     name: "b".into(),
                     value: AId("a".into()),
@@ -929,8 +794,10 @@ mod tests {
 
     #[test]
     fn circular_error() {
-        return;
-        panic!("this currrently fails by stack overflow");
+        if true {
+            return;
+        }
+        (|| panic!("this currrently fails by stack overflow"))();
         assert_eq!(
             resolve_names_ti(&[
                 ElAssign {
@@ -1203,18 +1070,22 @@ mod tests {
     fn call_mul_disambiguation() {
         assert_eq!(
             resolve_names_ti(&[
+                // a = 1
                 ElAssign {
                     name: "a".into(),
                     value: ANum(1.0),
                 },
+                // a(2)
                 ElExpr(ACallMul {
                     callee: "a".into(),
                     args: vec![ANum(2.0)],
                 }),
+                // a(3, 4)
                 ElExpr(ACallMul {
                     callee: "a".into(),
                     args: vec![ANum(3.0), ANum(4.0)],
                 }),
+                // a(5, 6, 7, 8)
                 ElExpr(ACallMul {
                     callee: "a".into(),
                     args: vec![ANum(5.0), ANum(6.0), ANum(7.0), ANum(8.0)],
@@ -1308,79 +1179,79 @@ mod tests {
                 vec![
                     // a3 = 5
                     Assignment {
-                        id: 1,
+                        id: 0,
                         name: "a3".into(),
                         value: Expression::Number(5.0),
                     },
                     // c = a3
                     Assignment {
-                        id: 2,
+                        id: 1,
                         name: "c".into(),
-                        value: Expression::Identifier(1),
+                        value: Expression::Identifier(0),
                     },
                     // with a1 = 6
                     Assignment {
-                        id: 4,
+                        id: 2,
                         name: "a1".into(),
                         value: Expression::Number(6.0),
                     },
                     // with a2 = 7
                     Assignment {
-                        id: 5,
+                        id: 3,
                         name: "a2".into(),
                         value: Expression::Number(7.0),
                     },
                     // a1 = 1
                     Assignment {
-                        id: 6,
+                        id: 4,
                         name: "a1".into(),
                         value: Expression::Number(1.0),
                     },
                     // a2 = 2
                     Assignment {
-                        id: 7,
+                        id: 5,
                         name: "a2".into(),
                         value: Expression::Number(2.0),
                     },
                     // a3 = 3
                     Assignment {
-                        id: 8,
+                        id: 6,
                         name: "a3".into(),
                         value: Expression::Number(3.0),
                     },
                     // a4 = 4
                     Assignment {
-                        id: 9,
+                        id: 7,
                         name: "a4".into(),
                         value: Expression::Number(4.0),
                     },
                     // b = a2
                     Assignment {
-                        id: 10,
+                        id: 8,
                         name: "b".into(),
-                        value: Expression::Identifier(7),
+                        value: Expression::Identifier(5),
                     },
                     // c = a3
                     Assignment {
-                        id: 11,
+                        id: 9,
                         name: "c".into(),
-                        value: Expression::Identifier(8),
+                        value: Expression::Identifier(6),
                     },
                     // d = a4
                     Assignment {
-                        id: 12,
+                        id: 10,
                         name: "d".into(),
-                        value: Expression::Identifier(9),
+                        value: Expression::Identifier(7),
                     },
                     // [a1, b, c, d]
                     Assignment {
-                        id: 13,
+                        id: 11,
                         name: "<anonymous>".into(),
                         value: Expression::List(vec![
-                            Expression::Identifier(6),
+                            Expression::Identifier(4),
+                            Expression::Identifier(8),
+                            Expression::Identifier(9),
                             Expression::Identifier(10),
-                            Expression::Identifier(11),
-                            Expression::Identifier(12),
                         ]),
                     },
                 ],
@@ -1900,8 +1771,14 @@ mod tests {
                                 value: bx(Expression::Op {
                                     operation: OpName::Add,
                                     args: vec![
-                                        builtin(OpName::Total, vec![Expression::Identifier(3)]),
-                                        builtin(OpName::Total, vec![Expression::Identifier(8)])
+                                        Expression::Op {
+                                            operation: OpName::Total,
+                                            args: vec![Expression::Identifier(3)]
+                                        },
+                                        Expression::Op {
+                                            operation: OpName::Total,
+                                            args: vec![Expression::Identifier(8)]
+                                        }
                                     ]
                                 }),
                             },
@@ -1972,6 +1849,7 @@ mod tests {
     fn cache_errors() {
         assert_eq!(
             resolve_names_ti(&[
+                // a = c with b = 1
                 ElAssign {
                     name: "a".into(),
                     value: AWith {
@@ -1979,6 +1857,7 @@ mod tests {
                         substitutions: vec![("b".into(), ANum(1.0))]
                     }
                 },
+                // a
                 ElExpr(AId("a".into()))
             ]),
             (
@@ -1992,6 +1871,140 @@ mod tests {
                     Some(Err("'c' is not defined".into()))
                 ]
             )
+        );
+    }
+
+    #[test]
+    fn chained_with() {
+        assert_eq!(
+            resolve_names_ti(&[
+                // a = 1
+                ElAssign {
+                    name: "a".into(),
+                    value: ANum(1.0),
+                },
+                // b = a
+                ElAssign {
+                    name: "b".into(),
+                    value: AId("a".into()),
+                },
+                // c = b
+                ElAssign {
+                    name: "c".into(),
+                    value: AId("b".into()),
+                },
+                // c with a = 5
+                ElExpr(AWith {
+                    body: bx(AId("c".into())),
+                    substitutions: vec![("a".into(), ANum(5.0))],
+                }),
+            ]),
+            (
+                vec![
+                    // a = 1
+                    Assignment {
+                        id: 0,
+                        name: "a".into(),
+                        value: Expression::Number(1.0),
+                    },
+                    // b = a
+                    Assignment {
+                        id: 1,
+                        name: "b".into(),
+                        value: Expression::Identifier(0),
+                    },
+                    // c = b
+                    Assignment {
+                        id: 2,
+                        name: "c".into(),
+                        value: Expression::Identifier(1),
+                    },
+                    // with a = 5
+                    Assignment {
+                        id: 3,
+                        name: "a".into(),
+                        value: Expression::Number(5.0),
+                    },
+                    // b = a
+                    Assignment {
+                        id: 4,
+                        name: "b".into(),
+                        value: Expression::Identifier(3),
+                    },
+                    // c = b
+                    Assignment {
+                        id: 5,
+                        name: "c".into(),
+                        value: Expression::Identifier(4),
+                    },
+                    // c with a = 5
+                    Assignment {
+                        id: 6,
+                        name: "<anonymous>".into(),
+                        value: Expression::Identifier(5),
+                    },
+                ],
+                vec![Some(Ok(0)), Some(Ok(1)), Some(Ok(2)), Some(Ok(6)),],
+            ),
+        );
+    }
+
+    #[test]
+    fn stored_function_evaluation() {
+        assert_eq!(
+            resolve_names_ti(&[
+                // f() = 1
+                ElFunction {
+                    name: "f".into(),
+                    parameters: vec![],
+                    body: ANum(1.0)
+                },
+                // b = f()
+                ElAssign {
+                    name: "b".into(),
+                    value: ACall {
+                        callee: "f".into(),
+                        args: vec![]
+                    },
+                },
+                // b
+                ElExpr(AId("b".into())),
+                // c = f()
+                ElAssign {
+                    name: "c".into(),
+                    value: ACallMul {
+                        callee: "f".into(),
+                        args: vec![]
+                    },
+                },
+                // c
+                ElExpr(AId("c".into()))
+            ]),
+            (
+                vec![
+                    Assignment {
+                        id: 0,
+                        name: "b".into(),
+                        value: Expression::Number(1.0)
+                    },
+                    Assignment {
+                        id: 1,
+                        name: "<anonymous>".into(),
+                        value: Expression::Identifier(0)
+                    },
+                    Assignment {
+                        id: 2,
+                        name: "c".into(),
+                        value: Expression::Number(1.0)
+                    },
+                    Assignment {
+                        id: 3,
+                        name: "<anonymous>".into(),
+                        value: Expression::Identifier(2)
+                    }
+                ],
+                vec![None, Some(Ok(0)), Some(Ok(1)), Some(Ok(2)), Some(Ok(3))],
+            ),
         );
     }
 }

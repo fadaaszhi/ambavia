@@ -125,15 +125,29 @@ pub struct Body {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct DynamicInfo {
+struct SubstitutionInfo {
     id: Id,
     level: Level,
+    kind: ScopeKind,
+    scope_index: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Dependency {
-    Dynamic(DynamicInfo),
+    Substitution(SubstitutionInfo),
     Computed,
+}
+
+impl Dependency {
+    fn is_lexical(&self) -> bool {
+        matches!(
+            self,
+            Dependency::Substitution(SubstitutionInfo {
+                kind: ScopeKind::Lexical { .. },
+                ..
+            })
+        )
+    }
 }
 
 #[derive(Debug, Default)]
@@ -157,11 +171,21 @@ impl<'a> Dependencies<'a> {
     fn level(&self) -> Level {
         let mut level = 0;
         for d in self.0.values() {
-            if let Dependency::Dynamic(i) = d {
+            if let Dependency::Substitution(i) = d {
                 level = level.max(i.level);
             }
         }
         level
+    }
+
+    fn scope_index(&self) -> usize {
+        let mut scope_index = 0;
+        for d in self.0.values() {
+            if let Dependency::Substitution(i) = d {
+                scope_index = scope_index.max(i.scope_index);
+            }
+        }
+        scope_index
     }
 
     fn extend(&mut self, other: &Self) {
@@ -174,16 +198,17 @@ impl<'a> Dependencies<'a> {
     }
 }
 
-#[derive(Debug, Default)]
-struct Scope<'a> {
-    dynamic: HashMap<&'a str, DynamicInfo>,
-    computed: HashMap<&'a str, (Result<Id, String>, Dependencies<'a>)>,
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum ScopeKind {
+    Lexical { line_count: usize }, // function parameters, sum/prod index
+    Dynamic,                       // with/for variables
 }
 
-impl<'a> Scope<'a> {
-    fn get_dynamic(&self, name: &str) -> Option<DynamicInfo> {
-        self.dynamic.get(name).cloned()
-    }
+#[derive(Debug)]
+struct Scope<'a> {
+    kind: ScopeKind,
+    substitutions: HashMap<&'a str, SubstitutionInfo>,
+    computed: HashMap<&'a str, (Result<Id, String>, Dependencies<'a>)>,
 }
 
 #[derive(Debug, Default)]
@@ -230,7 +255,9 @@ impl<'a> CycleDetector<'a> {
 }
 
 struct Resolver<'a> {
+    use_v1_9_scoping_rules: bool,
     scopes: Vec<Scope<'a>>,
+    line_count: usize,
     definitions: HashMap<&'a str, Result<&'a ExpressionListEntry, String>>,
     dependencies_being_tracked: Option<Dependencies<'a>>,
     assignments: Vec<Vec<Assignment>>,
@@ -243,7 +270,10 @@ pub struct ExpressionIndex(usize);
 type ExpressionList<E> = TiSlice<ExpressionIndex, E>;
 
 impl<'a> Resolver<'a> {
-    fn new(list: &'a ExpressionList<impl Borrow<ExpressionListEntry>>) -> Self {
+    fn new(
+        list: &'a ExpressionList<impl Borrow<ExpressionListEntry>>,
+        use_v1_9_scoping_rules: bool,
+    ) -> Self {
         let mut definitions = HashMap::new();
 
         for entry in list {
@@ -261,7 +291,13 @@ impl<'a> Resolver<'a> {
         }
 
         Self {
-            scopes: vec![Scope::default()],
+            use_v1_9_scoping_rules,
+            scopes: vec![Scope {
+                kind: ScopeKind::Dynamic,
+                substitutions: HashMap::new(),
+                computed: HashMap::new(),
+            }],
+            line_count: 0,
             definitions,
             dependencies_being_tracked: None,
             assignments: vec![vec![]],
@@ -289,25 +325,33 @@ impl<'a> Resolver<'a> {
 
     fn push_dependency(&mut self, name: &'a str, kind: Dependency) {
         if let Some(d) = &mut self.dependencies_being_tracked {
-            let prev = d.insert(name, kind);
-            if let Some(prev) = prev {
-                assert_eq!(prev, kind);
+            if let Some(existing) = d.get(name) {
+                if !existing.is_lexical() && kind.is_lexical() {
+                    return;
+                }
+                if !existing.is_lexical() || kind.is_lexical() {
+                    assert_eq!(*existing, kind);
+                }
             }
+            d.insert(name, kind);
         }
     }
 
     /// Same as [`Resolver::resolve_expression`] but additionally tracks the
-    /// dependencies used and optionally uses a dynamic scope while resolving
+    /// dependencies used and optionally uses a substitution scope while resolving
     /// the expression.
     fn resolve_expression_with_dependencies(
         &mut self,
         expression: &'a ast::Expression,
-        dynamic: Option<HashMap<&'a str, DynamicInfo>>,
+        substitutions: Option<(ScopeKind, HashMap<&'a str, SubstitutionInfo>)>,
     ) -> (Result<Expression, String>, Dependencies<'a>) {
-        let using_scope = dynamic.is_some();
-        if let Some(dynamic) = dynamic {
-            let computed = HashMap::new();
-            self.scopes.push(Scope { dynamic, computed });
+        let using_scope = substitutions.is_some();
+        if let Some((kind, substitutions)) = substitutions {
+            self.scopes.push(Scope {
+                kind,
+                substitutions,
+                computed: HashMap::new(),
+            });
         }
 
         // Track an empty set of dependencies
@@ -317,10 +361,15 @@ impl<'a> Resolver<'a> {
 
         if using_scope {
             // Untrack dependencies on variables in the scope
-            for (name, info) in self.scopes.pop().unwrap().dynamic {
-                let removed = dependencies.remove(name);
-                if let Some(removed) = removed {
-                    assert_eq!(removed, Dependency::Dynamic(info));
+            for (name, info) in self.scopes.pop().unwrap().substitutions {
+                // The hoopla below is to deal with cases like the `function_transitive_dependency` test,
+                // where `f`'s body depends on the computed global value of `a` (transitively via `c`)
+                // while itself defining a more recent lexical substitution for `a`
+                if let Some(existing) = dependencies.get(name)
+                    && (info.kind == ScopeKind::Dynamic || existing.is_lexical())
+                {
+                    assert_eq!(*existing, Dependency::Substitution(info));
+                    dependencies.remove(name);
                 }
             }
         }
@@ -334,26 +383,60 @@ impl<'a> Resolver<'a> {
         (resolved_expression, dependencies)
     }
 
-    /// Computes a variable or finds an existing assignment ID if it's already been resolved before.
-    fn resolve_variable(&mut self, name: &'a str) -> Result<Id, String> {
-        // First check scopes to see if it's already available without having to compute it again
+    /// Finds the most recent substitution for a variable if it exists, with the
+    /// choice to include lexically scoped substitutions in the search or not.
+    fn find_substitution(&self, name: &'a str, include_lexical: bool) -> Option<SubstitutionInfo> {
+        // Search dynamic scopes, also including the current line's lexical scope
         for scope in self.scopes.iter().rev() {
-            // Dynamic variables get priority
-            if let Some(&i) = scope.dynamic.get(name) {
-                self.push_dependency(name, Dependency::Dynamic(i));
-                return Ok(i.id);
+            let line_count = self.line_count;
+            if (scope.kind == ScopeKind::Dynamic
+                || include_lexical && scope.kind == ScopeKind::Lexical { line_count })
+                && let Some(&i) = scope.substitutions.get(name)
+            {
+                return Some(i);
+            }
+        }
+
+        if include_lexical {
+            if self.definitions.contains_key(name) {
+                // Global definitions are preferred over lexical substitutions if
+                // the lexical substitution isn't in the current line
+                return None;
             }
 
+            for scope in self.scopes.iter().rev() {
+                if let ScopeKind::Lexical { .. } = scope.kind
+                    && let Some(&i) = scope.substitutions.get(name)
+                {
+                    return Some(i);
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Computes a variable or finds an existing assignment ID if it's already been resolved before.
+    fn resolve_variable(&mut self, name: &'a str) -> Result<Id, String> {
+        if let Some(i) = self.find_substitution(name, true) {
+            self.push_dependency(name, Dependency::Substitution(i));
+            return Ok(i.id);
+        }
+
+        // Check scopes to see if it's already available without having to compute it again
+        for scope in self.scopes.iter().rev() {
             if let Some((id, deps)) = scope.computed.get(name) {
                 // now check if deps are up to date so we can use this id
                 let mut up_to_date = true;
                 for (dep_name, &recorded) in deps.iter() {
+                    let depends_on_it_being_undefined = recorded == Dependency::Computed
+                        && !self.definitions.contains_key(dep_name);
                     let found = self
-                        .scopes
-                        .iter()
-                        .rev()
-                        .find_map(|scope| scope.get_dynamic(dep_name))
-                        .map_or(Dependency::Computed, Dependency::Dynamic);
+                        .find_substitution(
+                            dep_name,
+                            depends_on_it_being_undefined || recorded.is_lexical(),
+                        )
+                        .map_or(Dependency::Computed, Dependency::Substitution);
                     if found != recorded {
                         up_to_date = false;
                         break;
@@ -383,34 +466,13 @@ impl<'a> Resolver<'a> {
         };
 
         self.cycle_detector.push(name)?;
+        self.line_count += 1;
         let (value, deps) = self.resolve_expression_with_dependencies(expr, None);
+        self.line_count -= 1;
         self.cycle_detector.pop();
-        let level = deps
-            .values()
-            .filter_map(|x| match x {
-                Dependency::Dynamic(i) => Some(i.level),
-                Dependency::Computed => None,
-            })
-            .max()
-            .unwrap_or(0);
+        let level = deps.level();
         let id = value.map(|value| self.push_assignment(name, level, value));
-
-        let mut scope_index = self.scopes.len();
-        'outer: for (i, scope) in self.scopes.iter().enumerate().rev() {
-            scope_index = i;
-            for (dep_name, recorded) in deps.iter() {
-                let found = scope.dynamic.get(dep_name);
-                if let Some(found) = found
-                    && let Dependency::Dynamic(recorded) = recorded
-                {
-                    assert_eq!(found, recorded);
-                    break 'outer;
-                } else {
-                    assert_eq!(found, None);
-                }
-            }
-        }
-        self.scopes[scope_index]
+        self.scopes[deps.scope_index()]
             .computed
             .insert(name, (id.clone(), deps));
 
@@ -424,9 +486,10 @@ impl<'a> Resolver<'a> {
         es.iter().map(|e| self.resolve_expression(e)).collect()
     }
 
-    fn resolve_dynamic(
+    fn resolve_substitutions(
         &mut self,
         body: &'a ast::Expression,
+        kind: ScopeKind,
         bindings: impl Iterator<Item = (&'a String, &'a ast::Expression)>,
         error_string: impl FnOnce(&str) -> String,
     ) -> Result<Expression, String> {
@@ -439,11 +502,20 @@ impl<'a> Resolver<'a> {
 
             let (value, deps) = self.resolve_expression_with_dependencies(value, None);
             let level = deps.level();
-            let id = self.push_assignment(name, deps.level(), value?);
-            substitutions.insert(name.as_str(), DynamicInfo { id, level });
+            let id = self.push_assignment(name, level, value?);
+            substitutions.insert(
+                name.as_str(),
+                SubstitutionInfo {
+                    id,
+                    level,
+                    kind,
+                    scope_index: self.scopes.len(),
+                },
+            );
         }
 
-        let (body, _) = self.resolve_expression_with_dependencies(body, Some(substitutions));
+        let (body, _) =
+            self.resolve_expression_with_dependencies(body, Some((kind, substitutions)));
         body
     }
 
@@ -485,9 +557,18 @@ impl<'a> Resolver<'a> {
         }
 
         self.cycle_detector.push(callee)?;
-        let value = self.resolve_dynamic(body, zip(parameters, args), |name| {
+        self.line_count += 1;
+        let kind = if self.use_v1_9_scoping_rules {
+            ScopeKind::Dynamic
+        } else {
+            ScopeKind::Lexical {
+                line_count: self.line_count,
+            }
+        };
+        let value = self.resolve_substitutions(body, kind, zip(parameters, args), |name| {
             format!("cannot use '{name}' for multiple parameters of this function")
         });
+        self.line_count -= 1;
         self.cycle_detector.pop();
         value
     }
@@ -575,9 +656,14 @@ impl<'a> Resolver<'a> {
             ast::Expression::With {
                 body,
                 substitutions,
-            } => self.resolve_dynamic(body, substitutions.iter().map(|(n, v)| (n, v)), |name| {
-                format!("a 'with' expression cannot make multiple substitutions for '{name}'")
-            }),
+            } => self.resolve_substitutions(
+                body,
+                ScopeKind::Dynamic,
+                substitutions.iter().map(|(n, v)| (n, v)),
+                |name| {
+                    format!("a 'with' expression cannot make multiple substitutions for '{name}'")
+                },
+            ),
             ast::Expression::For { body, lists } => {
                 let level = self.assignments.len();
                 let mut substitutions = HashMap::new();
@@ -592,15 +678,24 @@ impl<'a> Resolver<'a> {
 
                     let value = self.resolve_expression(value)?;
                     let assignment = self.create_assignment(name, value);
-                    let id = assignment.id;
-                    substitutions.insert(name.as_str(), DynamicInfo { id, level });
+                    substitutions.insert(
+                        name.as_str(),
+                        SubstitutionInfo {
+                            id: assignment.id,
+                            level,
+                            kind: ScopeKind::Dynamic,
+                            scope_index: self.scopes.len(),
+                        },
+                    );
                     resolved_lists.push(assignment);
                 }
 
                 assert_eq!(self.assignments.len(), level);
                 self.assignments.push(vec![]);
-                let (body, _) =
-                    self.resolve_expression_with_dependencies(body, Some(substitutions));
+                let (body, _) = self.resolve_expression_with_dependencies(
+                    body,
+                    Some((ScopeKind::Dynamic, substitutions)),
+                );
                 let assignments = self.assignments.pop().unwrap();
                 Ok(Expression::For {
                     body: Body {
@@ -625,17 +720,19 @@ pub type ExpressionToAssignment = TiVec<ExpressionIndex, Option<Result<Assignmen
 
 pub fn resolve_names(
     list: &ExpressionList<impl Borrow<ExpressionListEntry>>,
+    use_v1_9_scoping_rules: bool,
 ) -> (TiVec<AssignmentIndex, Assignment>, ExpressionToAssignment) {
-    let mut resolver = Resolver::new(list);
+    let mut resolver = Resolver::new(list, use_v1_9_scoping_rules);
 
     let assignment_ids = list
         .iter()
         .map(|e| {
             // When we start resolving a new expression, there shouldn't be any
             // variables that are in scope from a `for` or `with` clause
+            assert_eq!(resolver.line_count, 0);
             assert_eq!(resolver.assignments.len(), 1);
             assert_eq!(resolver.scopes.len(), 1);
-            assert_eq!(resolver.scopes[0].dynamic, HashMap::new());
+            assert_eq!(resolver.scopes[0].substitutions, HashMap::new());
             assert_eq!(resolver.cycle_detector.stack, Vec::<&str>::new());
             assert!(resolver.cycle_detector.counts.values().all(|&c| c == 0));
 
@@ -719,7 +816,19 @@ mod tests {
     fn resolve_names_ti(
         list: &[ExpressionListEntry],
     ) -> (Vec<Assignment>, Vec<Option<Result<usize, String>>>) {
-        let (a, b) = resolve_names(list.as_ref());
+        let (a, b) = resolve_names(list.as_ref(), false);
+        (
+            a.into(),
+            b.into_iter()
+                .map(|x| x.map(|x| x.map(Into::into)))
+                .collect(),
+        )
+    }
+
+    fn resolve_names_ti_v1_9(
+        list: &[ExpressionListEntry],
+    ) -> (Vec<Assignment>, Vec<Option<Result<usize, String>>>) {
+        let (a, b) = resolve_names(list.as_ref(), true);
         (
             a.into(),
             b.into_iter()
@@ -1393,7 +1502,7 @@ mod tests {
     #[test]
     fn function_v1_9() {
         assert_eq!(
-            resolve_names_ti(&[
+            resolve_names_ti_v1_9(&[
                 // f(a1, a2, a3, a4) = [a1, b, c, d]
                 ElFunction {
                     name: "f".into(),
@@ -1526,124 +1635,360 @@ mod tests {
         );
     }
 
-    // #[test]
-    // fn function_v1_10() {
-    //     assert_eq!(
-    //         resolve_names(&[
-    //             // f(a1, a2, a3, a4) = [a1, b, c, d]
-    //             ElFunction {
-    //                 name: "f".into(),
-    //                 parameters: vec!["a1".into(), "a2".into(), "a3".into(), "a4".into()],
-    //                 body: AList(vec![
-    //                     AId("a1".into()),
-    //                     AId("b".into()),
-    //                     AId("c".into()),
-    //                     AId("d".into()),
-    //                 ]),
-    //             },
-    //             // b = a2
-    //             ElAssign {
-    //                 name: "b".into(),
-    //                 value: AId("a2".into()),
-    //             },
-    //             // c = a3
-    //             ElAssign {
-    //                 name: "c".into(),
-    //                 value: AId("a3".into()),
-    //             },
-    //             // a3 = 5
-    //             ElAssign {
-    //                 name: "a3".into(),
-    //                 value: ANum(5.0),
-    //             },
-    //             // d = a4
-    //             ElAssign {
-    //                 name: "d".into(),
-    //                 value: AId("a4".into()),
-    //             },
-    //             // f(1, 2, 3, 4) with a1 = 6, a2 = 7
-    //             ElExpr(AWith {
-    //                 body: bx(ACallMul {
-    //                     callee: "f".into(),
-    //                     args: vec![ANum(1.0), ANum(2.0), ANum(3.0), ANum(4.0)],
-    //                 }),
-    //                 substitutions: vec![("a1".into(), ANum(6.0)), ("a2".into(), ANum(7.0))],
-    //             }),
-    //         ]),
-    //         (
-    //             vec![
-    //                 // a3 = 5
-    //                 Assignment {
-    //                     id: 0,
-    //                     value: Expression::Number(5.0),
-    //                 },
-    //                 // c = a3
-    //                 Assignment {
-    //                     id: 1,
-    //                     value: Expression::Identifier(0),
-    //                 },
-    //                 // with a1 = 6
-    //                 Assignment {
-    //                     id: 2,
-    //                     value: Expression::Number(6.0),
-    //                 },
-    //                 // with a2 = 7
-    //                 Assignment {
-    //                     id: 3,
-    //                     value: Expression::Number(7.0),
-    //                 },
-    //                 // a1 = 1
-    //                 Assignment {
-    //                     id: 4,
-    //                     value: Expression::Number(1.0),
-    //                 },
-    //                 // a2 = 2
-    //                 Assignment {
-    //                     id: 5,
-    //                     value: Expression::Number(2.0),
-    //                 },
-    //                 // a3 = 3
-    //                 Assignment {
-    //                     id: 6,
-    //                     value: Expression::Number(3.0),
-    //                 },
-    //                 // a4 = 4
-    //                 Assignment {
-    //                     id: 7,
-    //                     value: Expression::Number(4.0),
-    //                 },
-    //                 // b = a2
-    //                 Assignment {
-    //                     id: 8,
-    //                     value: Expression::Identifier(3),
-    //                 },
-    //                 // d = a4
-    //                 Assignment {
-    //                     id: 9,
-    //                     value: Expression::Identifier(7),
-    //                 },
-    //                 // [a1, b, c, d]
-    //                 Assignment {
-    //                     id: 10,
-    //                     value: Expression::List(vec![
-    //                         Expression::Identifier(4),
-    //                         Expression::Identifier(8),
-    //                         Expression::Identifier(1),
-    //                         Expression::Identifier(9),
-    //                     ]),
-    //                 },
-    //             ],
-    //             vec![
-    //                 None,
-    //                 Some(Err("too many variables, try defining 'a2'".into())),
-    //                 Some(Ok(1)),
-    //                 Some(Ok(0)),
-    //                 Some(Err("too many variables, try defining 'a4'".into())),
-    //                 Some(Ok(10)),
-    //             ],
-    //         )
-    //     );
-    // }
+    #[test]
+    fn function_v1_10() {
+        // https://www.desmos.com/calculator/1jougp3ykk
+        assert_eq!(
+            resolve_names_ti(&[
+                // f(a1, a2, a3, a4) = [a1, b, c, d]
+                ElFunction {
+                    name: "f".into(),
+                    parameters: vec!["a1".into(), "a2".into(), "a3".into(), "a4".into()],
+                    body: AList(vec![
+                        AId("a1".into()),
+                        AId("b".into()),
+                        AId("c".into()),
+                        AId("d".into()),
+                    ]),
+                },
+                // b = a2
+                ElAssign {
+                    name: "b".into(),
+                    value: AId("a2".into()),
+                },
+                // c = a3
+                ElAssign {
+                    name: "c".into(),
+                    value: AId("a3".into()),
+                },
+                // a3 = 5
+                ElAssign {
+                    name: "a3".into(),
+                    value: ANum(5.0),
+                },
+                // d = a4
+                ElAssign {
+                    name: "d".into(),
+                    value: AId("a4".into()),
+                },
+                // f(1, 2, 3, 4) with a1 = 6, a2 = 7
+                ElExpr(AWith {
+                    body: bx(ACallMul {
+                        callee: "f".into(),
+                        args: vec![ANum(1.0), ANum(2.0), ANum(3.0), ANum(4.0)],
+                    }),
+                    substitutions: vec![("a1".into(), ANum(6.0)), ("a2".into(), ANum(7.0))],
+                }),
+            ]),
+            (
+                vec![
+                    // a3 = 5
+                    Assignment {
+                        id: 0,
+                        name: "a3".into(),
+                        value: Expression::Number(5.0),
+                    },
+                    // c = a3
+                    Assignment {
+                        id: 1,
+                        name: "c".into(),
+                        value: Expression::Identifier(0),
+                    },
+                    // with a1 = 6
+                    Assignment {
+                        id: 2,
+                        name: "a1".into(),
+                        value: Expression::Number(6.0),
+                    },
+                    // with a2 = 7
+                    Assignment {
+                        id: 3,
+                        name: "a2".into(),
+                        value: Expression::Number(7.0),
+                    },
+                    // a1 = 1
+                    Assignment {
+                        id: 4,
+                        name: "a1".into(),
+                        value: Expression::Number(1.0),
+                    },
+                    // a2 = 2
+                    Assignment {
+                        id: 5,
+                        name: "a2".into(),
+                        value: Expression::Number(2.0),
+                    },
+                    // a3 = 3
+                    Assignment {
+                        id: 6,
+                        name: "a3".into(),
+                        value: Expression::Number(3.0),
+                    },
+                    // a4 = 4
+                    Assignment {
+                        id: 7,
+                        name: "a4".into(),
+                        value: Expression::Number(4.0),
+                    },
+                    // b = a2
+                    Assignment {
+                        id: 8,
+                        name: "b".into(),
+                        value: Expression::Identifier(3),
+                    },
+                    // d = a4
+                    Assignment {
+                        id: 9,
+                        name: "d".into(),
+                        value: Expression::Identifier(7),
+                    },
+                    // [a1, b, c, d]
+                    Assignment {
+                        id: 10,
+                        name: "<anonymous>".into(),
+                        value: Expression::List(vec![
+                            Expression::Identifier(4),
+                            Expression::Identifier(8),
+                            Expression::Identifier(1),
+                            Expression::Identifier(9),
+                        ]),
+                    },
+                ],
+                vec![
+                    None,
+                    Some(Err("'a2' is not defined".into())),
+                    Some(Ok(1)),
+                    Some(Ok(0)),
+                    Some(Err("'a4' is not defined".into())),
+                    Some(Ok(10)),
+                ],
+            )
+        );
+    }
+
+    #[test]
+    fn wackscope() {
+        assert_eq!(
+            resolve_names_ti(&[
+                // f(a) = b + b
+                ElFunction {
+                    name: "f".into(),
+                    parameters: vec!["a".into()],
+                    body: AOp {
+                        operation: OpName::Add,
+                        args: vec![AId("b".into()), AId("b".into())]
+                    }
+                },
+                // b = a
+                ElAssign {
+                    name: "b".into(),
+                    value: AId("a".into())
+                },
+                // f(1)
+                ElExpr(ACallMul {
+                    callee: "f".into(),
+                    args: vec![ANum(1.0)]
+                })
+            ]),
+            (
+                vec![
+                    // a = 1
+                    Assignment {
+                        id: 0,
+                        name: "a".into(),
+                        value: Expression::Number(1.0)
+                    },
+                    // b = a
+                    Assignment {
+                        id: 1,
+                        name: "b".into(),
+                        value: Expression::Identifier(0)
+                    },
+                    // f(1)
+                    Assignment {
+                        id: 2,
+                        name: "<anonymous>".into(),
+                        value: Expression::Op {
+                            operation: OpName::Add,
+                            args: vec![Expression::Identifier(1), Expression::Identifier(1)]
+                        }
+                    },
+                ],
+                vec![None, Some(Err("'a' is not defined".into())), Some(Ok(2))]
+            )
+        );
+    }
+
+    #[test]
+    fn more_function_v1_10() {
+        assert_eq!(
+            resolve_names_ti(&[
+                // f(a) = b
+                ElFunction {
+                    name: "f".into(),
+                    parameters: vec!["a".into()],
+                    body: AId("b".into())
+                },
+                // b = a
+                ElAssign {
+                    name: "b".into(),
+                    value: AId("a".into())
+                },
+                // b + f(1) with a = 2
+                ElExpr(AWith {
+                    body: bx(AOp {
+                        operation: OpName::Add,
+                        args: vec![
+                            AId("b".into()),
+                            ACallMul {
+                                callee: "f".into(),
+                                args: vec![ANum(1.0)]
+                            }
+                        ]
+                    }),
+                    substitutions: vec![("a".into(), ANum(2.0))]
+                })
+            ]),
+            (
+                vec![
+                    // with a = 2
+                    Assignment {
+                        id: 0,
+                        name: "a".into(),
+                        value: Expression::Number(2.0)
+                    },
+                    // b = a
+                    Assignment {
+                        id: 1,
+                        name: "b".into(),
+                        value: Expression::Identifier(0)
+                    },
+                    // a = 1
+                    Assignment {
+                        id: 2,
+                        name: "a".into(),
+                        value: Expression::Number(1.0)
+                    },
+                    // b + f(1) with a = 2
+                    Assignment {
+                        id: 3,
+                        name: "<anonymous>".into(),
+                        value: Expression::Op {
+                            operation: OpName::Add,
+                            args: vec![Expression::Identifier(1), Expression::Identifier(1)]
+                        }
+                    },
+                ],
+                vec![None, Some(Err("'a' is not defined".into())), Some(Ok(3))]
+            )
+        );
+    }
+
+    #[test]
+    fn even_more_function_v1_10() {
+        assert_eq!(
+            resolve_names_ti(&[
+                // f(a) = b + b
+                ElFunction {
+                    name: "f".into(),
+                    parameters: vec!["a".into()],
+                    body: AOp {
+                        operation: OpName::Add,
+                        args: vec![AId("b".into()), AId("b".into())]
+                    }
+                },
+                // b = a
+                ElAssign {
+                    name: "b".into(),
+                    value: AId("a".into())
+                },
+                // g(a) = b + f(1) + b
+                ElFunction {
+                    name: "g".into(),
+                    parameters: vec!["a".into()],
+                    body: AOp {
+                        operation: OpName::Add,
+                        args: vec![
+                            AOp {
+                                operation: OpName::Add,
+                                args: vec![
+                                    AId("b".into()),
+                                    ACallMul {
+                                        callee: "f".into(),
+                                        args: vec![ANum(1.0)]
+                                    }
+                                ]
+                            },
+                            AId("b".into()),
+                        ]
+                    }
+                },
+                // g(2)
+                ElExpr(ACallMul {
+                    callee: "g".into(),
+                    args: vec![ANum(2.0)]
+                })
+            ]),
+            (
+                vec![
+                    // a = 2
+                    Assignment {
+                        id: 0,
+                        name: "a".into(),
+                        value: Expression::Number(2.0)
+                    },
+                    // b = a
+                    Assignment {
+                        id: 1,
+                        name: "b".into(),
+                        value: Expression::Identifier(0)
+                    },
+                    // a = 1
+                    Assignment {
+                        id: 2,
+                        name: "a".into(),
+                        value: Expression::Number(1.0)
+                    },
+                    // b = a
+                    Assignment {
+                        id: 3,
+                        name: "b".into(),
+                        value: Expression::Identifier(2)
+                    },
+                    // g(2) = b + f(1) + b
+                    Assignment {
+                        id: 4,
+                        name: "<anonymous>".into(),
+                        value: Expression::Op {
+                            operation: OpName::Add,
+                            args: vec![
+                                Expression::Op {
+                                    operation: OpName::Add,
+                                    args: vec![
+                                        Expression::Identifier(1),
+                                        Expression::Op {
+                                            operation: OpName::Add,
+                                            args: vec![
+                                                Expression::Identifier(3),
+                                                Expression::Identifier(3)
+                                            ]
+                                        }
+                                    ]
+                                },
+                                Expression::Identifier(1)
+                            ]
+                        }
+                    },
+                ],
+                vec![
+                    None,
+                    Some(Err("'a' is not defined".into())),
+                    None,
+                    Some(Ok(4))
+                ]
+            )
+        );
+    }
 
     #[test]
     fn efficiency() {
@@ -2422,6 +2767,70 @@ mod tests {
                 ],
                 vec![Some(Ok(0)), Some(Ok(1))],
             ),
+        );
+    }
+
+    #[test]
+    fn function_transitive_dependency() {
+        assert_eq!(
+            resolve_names_ti(&[
+                // f(a) = c + a
+                ElFunction {
+                    name: "f".into(),
+                    parameters: vec!["a".into()],
+                    body: AOp {
+                        operation: OpName::Add,
+                        args: vec![AId("c".into()), AId("a".into())]
+                    }
+                },
+                // a = 5
+                ElAssign {
+                    name: "a".into(),
+                    value: ANum(5.0)
+                },
+                // c = a
+                ElAssign {
+                    name: "c".into(),
+                    value: AId("a".into())
+                },
+                // f(3)
+                ElExpr(ACallMul {
+                    callee: "f".into(),
+                    args: vec![ANum(3.0)]
+                })
+            ]),
+            (
+                vec![
+                    // a = 5
+                    Assignment {
+                        id: 0,
+                        name: "a".into(),
+                        value: Expression::Number(5.0)
+                    },
+                    // c = a
+                    Assignment {
+                        id: 1,
+                        name: "c".into(),
+                        value: Expression::Identifier(0)
+                    },
+                    // a = 3
+                    Assignment {
+                        id: 2,
+                        name: "a".into(),
+                        value: Expression::Number(3.0)
+                    },
+                    // f(3) = c + a
+                    Assignment {
+                        id: 3,
+                        name: "<anonymous>".into(),
+                        value: Expression::Op {
+                            operation: OpName::Add,
+                            args: vec![Expression::Identifier(1), Expression::Identifier(2)]
+                        }
+                    },
+                ],
+                vec![None, Some(Ok(0)), Some(Ok(1)), Some(Ok(3))]
+            )
         );
     }
 }

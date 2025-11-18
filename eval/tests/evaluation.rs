@@ -101,7 +101,7 @@ fn assert_expression_eq<'a>(source: &str, value: Value) {
     println!("Expression: {source}");
     let tree = parse_latex(source).unwrap();
     let entry = parse_expression_list_entry(&tree).unwrap();
-    let (assignments, ei_to_nr) = resolve_names([entry].as_slice().as_ref());
+    let (assignments, ei_to_nr) = resolve_names([entry].as_slice().as_ref(), false);
     let index = ei_to_nr.first().unwrap().clone().unwrap().unwrap();
     let (assignments, nr_to_tc) = type_check(assignments.as_slice().as_ref());
     println!(
@@ -178,7 +178,7 @@ fn assert_type_error(source: &str, error: &str) {
     println!("expression: {source}");
     let tree = parse_latex(source).unwrap();
     let entry = parse_expression_list_entry(&tree).unwrap();
-    let (assignments, ei_to_nr) = resolve_names([entry].as_slice().as_ref());
+    let (assignments, ei_to_nr) = resolve_names([entry].as_slice().as_ref(), false);
     let index = ei_to_nr.first().unwrap().clone().unwrap().unwrap();
     let errors = type_check(assignments.as_slice().as_ref()).1;
     assert_eq!(errors[index], Err(error.into()));

@@ -923,7 +923,7 @@ impl ExpressionList {
                         ei_to_oi.push(i);
                     }
 
-                    let (assignments, ei_to_nr) = resolve_names(list.as_slice());
+                    let (assignments, ei_to_nr) = resolve_names(list.as_slice(), false);
                     let (assignments, nr_to_tc) = type_check(&assignments);
                     let (program, vars) = compile_assignments(&assignments);
                     let mut vm = Vm::with_program(program);

@@ -280,7 +280,7 @@ impl<'a> Resolver<'a> {
             match entry.borrow() {
                 ExpressionListEntry::Assignment { name, .. }
                 | ExpressionListEntry::FunctionDeclaration { name, .. } => {
-                    if let Some(result @ Ok(_)) = definitions.get_mut(name.as_str()) {
+                    if let Some(result) = definitions.get_mut(name.as_str()) {
                         *result = Err(format!("'{name}' defined multiple times"));
                     } else {
                         definitions.insert(name.as_str(), Ok(entry.borrow()));
@@ -918,6 +918,26 @@ mod tests {
                     name: "b".into(),
                     value: AId("a".into()),
                 },
+                // c = 1
+                ElAssign {
+                    name: "c".into(),
+                    value: ANum(1.0),
+                },
+                // c = 2
+                ElAssign {
+                    name: "c".into(),
+                    value: ANum(2.0),
+                },
+                // c = 3
+                ElAssign {
+                    name: "c".into(),
+                    value: ANum(3.0),
+                },
+                // d = c
+                ElAssign {
+                    name: "d".into(),
+                    value: AId("c".into()),
+                },
             ]),
             (
                 vec![
@@ -931,11 +951,30 @@ mod tests {
                         name: "a".into(),
                         value: Expression::Number(2.0),
                     },
+                    Assignment {
+                        id: 2,
+                        name: "c".into(),
+                        value: Expression::Number(1.0),
+                    },
+                    Assignment {
+                        id: 3,
+                        name: "c".into(),
+                        value: Expression::Number(2.0),
+                    },
+                    Assignment {
+                        id: 4,
+                        name: "c".into(),
+                        value: Expression::Number(3.0),
+                    },
                 ],
                 vec![
                     Some(Ok(0)),
                     Some(Ok(1)),
                     Some(Err("'a' defined multiple times".into())),
+                    Some(Ok(2)),
+                    Some(Ok(3)),
+                    Some(Ok(4)),
+                    Some(Err("'c' defined multiple times".into())),
                 ],
             ),
         );

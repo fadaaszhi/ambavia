@@ -508,9 +508,9 @@ impl OpName {
                             .collect::<Vec<_>>()
                             .join(", "),
                         if let Some(last) = last {
-                            &format!(" and {last}")
+                            format!(" and {last}")
                         } else {
-                            ""
+                            String::new()
                         }
                     )
                 })

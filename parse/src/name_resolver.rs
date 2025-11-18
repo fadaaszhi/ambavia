@@ -186,12 +186,56 @@ impl<'a> Scope<'a> {
     }
 }
 
+#[derive(Debug, Default)]
+struct CycleDetector<'a> {
+    stack: Vec<&'a str>,
+    // We use a counter per name instead of something simpler like `seen: HashSet<&str>`
+    // so that we can still allow examples like `c = b; b = a; a = c with b = 3` to work
+    // (see name_resolver::tests::funny_not_circular_reversed)
+    // TODO is there a cleaner way to allow that test to pass?
+    counts: HashMap<&'a str, usize>,
+}
+
+impl<'a> CycleDetector<'a> {
+    fn push(&mut self, name: &'a str) -> Result<(), String> {
+        let count = self.counts.entry(name).or_insert(0);
+        if *count == 2 {
+            let start = self.stack.iter().rposition(|&n| n == name).unwrap();
+            let mut names = self.stack[start..].to_vec();
+            names.sort();
+            return Err(match names[..] {
+                [] => unreachable!(),
+                [a] => format!("'{a}' can't be defined in terms of itself"),
+                [ref first @ .., last] => {
+                    format!(
+                        "{} and '{last}' can't be defined in terms of each other",
+                        first
+                            .iter()
+                            .map(|n| format!("'{n}'"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                }
+            });
+        }
+        *count += 1;
+        self.stack.push(name);
+        Ok(())
+    }
+
+    fn pop(&mut self) {
+        let name = self.stack.pop().unwrap();
+        *self.counts.get_mut(name).unwrap() -= 1;
+    }
+}
+
 struct Resolver<'a> {
     scopes: Vec<Scope<'a>>,
     definitions: HashMap<&'a str, Result<&'a ExpressionListEntry, String>>,
     dependencies_being_tracked: Option<Dependencies<'a>>,
     assignments: Vec<Vec<Assignment>>,
     id_counter: usize,
+    cycle_detector: CycleDetector<'a>,
 }
 
 #[derive(Debug, Copy, Clone, From, Into)]
@@ -222,6 +266,7 @@ impl<'a> Resolver<'a> {
             dependencies_being_tracked: None,
             assignments: vec![vec![]],
             id_counter: 0,
+            cycle_detector: CycleDetector::default(),
         }
     }
 
@@ -337,7 +382,9 @@ impl<'a> Resolver<'a> {
             _ => unreachable!(),
         };
 
+        self.cycle_detector.push(name)?;
         let (value, deps) = self.resolve_expression_with_dependencies(expr, None);
+        self.cycle_detector.pop();
         let level = deps
             .values()
             .filter_map(|x| match x {
@@ -437,9 +484,12 @@ impl<'a> Resolver<'a> {
             ));
         }
 
-        self.resolve_dynamic(body, zip(parameters, args), |name| {
+        self.cycle_detector.push(callee)?;
+        let value = self.resolve_dynamic(body, zip(parameters, args), |name| {
             format!("cannot use '{name}' for multiple parameters of this function")
-        })
+        });
+        self.cycle_detector.pop();
+        value
     }
 
     fn resolve_expression(&mut self, e: &'a ast::Expression) -> Result<Expression, String> {
@@ -586,14 +636,21 @@ pub fn resolve_names(
             assert_eq!(resolver.assignments.len(), 1);
             assert_eq!(resolver.scopes.len(), 1);
             assert_eq!(resolver.scopes[0].dynamic, HashMap::new());
+            assert_eq!(resolver.cycle_detector.stack, Vec::<&str>::new());
+            assert!(resolver.cycle_detector.counts.values().all(|&c| c == 0));
 
             match e.borrow() {
                 ExpressionListEntry::Assignment { name, value } => {
                     if let Some((id, _deps)) = resolver.scopes[0].computed.get(name.as_str()) {
                         Some(id.clone())
                     } else {
+                        resolver
+                            .cycle_detector
+                            .push(name)
+                            .expect("can't have a cycle before you even begin");
                         let (value, deps) =
                             resolver.resolve_expression_with_dependencies(value, None);
+                        resolver.cycle_detector.pop();
                         let level = deps.level();
                         assert_eq!(level, 0);
                         let id = value.map(|value| resolver.push_assignment(name, level, value));
@@ -777,10 +834,6 @@ mod tests {
 
     #[test]
     fn circular_error() {
-        if true {
-            return;
-        }
-        (|| panic!("this currrently fails by stack overflow"))();
         assert_eq!(
             resolve_names_ti(&[
                 ElAssign {
@@ -801,6 +854,168 @@ mod tests {
                     Some(Err(
                         "'a' and 'b' can't be defined in terms of each other".into()
                     )),
+                ],
+            ),
+        );
+    }
+
+    #[test]
+    fn circular_substitution_error() {
+        assert_eq!(
+            resolve_names_ti(&[
+                // a = 1
+                ElAssign {
+                    name: "a".into(),
+                    value: ANum(1.0)
+                },
+                // b = b + a with a = a + 1
+                ElAssign {
+                    name: "b".into(),
+                    value: AWith {
+                        body: bx(AOp {
+                            operation: OpName::Add,
+                            args: vec![AId("a".into()), AId("b".into())]
+                        }),
+                        substitutions: vec![(
+                            "a".into(),
+                            AOp {
+                                operation: OpName::Add,
+                                args: vec![AId("a".into()), ANum(1.0)]
+                            }
+                        )]
+                    }
+                },
+            ]),
+            (
+                vec![
+                    // a = 1
+                    Assignment {
+                        id: 0,
+                        name: "a".into(),
+                        value: Expression::Number(1.0)
+                    },
+                    // with a = a + 1
+                    Assignment {
+                        id: 1,
+                        name: "a".into(),
+                        value: Expression::Op {
+                            operation: OpName::Add,
+                            args: vec![Expression::Identifier(0), Expression::Number(1.0)]
+                        }
+                    },
+                    // with a = a + 1
+                    Assignment {
+                        id: 2,
+                        name: "a".into(),
+                        value: Expression::Op {
+                            operation: OpName::Add,
+                            args: vec![Expression::Identifier(1), Expression::Number(1.0)]
+                        }
+                    },
+                ],
+                vec![
+                    Some(Ok(0)),
+                    // error message will probably have to change when freevars are supported
+                    // "we only support implicit equations of x and y"
+                    Some(Err("'b' can't be defined in terms of itself".into())),
+                ],
+            ),
+        );
+    }
+
+    #[test]
+    fn circular_function_error() {
+        assert_eq!(
+            resolve_names_ti(&[
+                // f(x) = g(x)
+                ElFunction {
+                    name: "f".into(),
+                    parameters: vec!["x".into()],
+                    body: ACallMul {
+                        callee: "g".into(),
+                        args: vec![AId("x".into())]
+                    },
+                },
+                // g(x) = a
+                ElFunction {
+                    name: "g".into(),
+                    parameters: vec!["x".into()],
+                    body: AId("a".into()),
+                },
+                // // b = a
+                ElAssign {
+                    name: "b".into(),
+                    value: AId("a".into()),
+                },
+                // a = f(3)
+                ElAssign {
+                    name: "a".into(),
+                    value: ACallMul {
+                        callee: "f".into(),
+                        args: vec![ANum(3.0)]
+                    },
+                },
+                // // h() = i()
+                ElFunction {
+                    name: "h".into(),
+                    parameters: vec![],
+                    body: ACallMul {
+                        callee: "i".into(),
+                        args: vec![]
+                    },
+                },
+                // // i() = h()
+                ElFunction {
+                    name: "i".into(),
+                    parameters: vec![],
+                    body: ACallMul {
+                        callee: "h".into(),
+                        args: vec![]
+                    },
+                },
+                // // h()
+                ElExpr(ACall {
+                    callee: "h".into(),
+                    args: vec![]
+                })
+            ]),
+            (
+                vec![
+                    Assignment {
+                        id: 0,
+                        name: "x".into(),
+                        value: Expression::Number(3.0)
+                    },
+                    Assignment {
+                        id: 1,
+                        name: "x".into(),
+                        value: Expression::Identifier(0)
+                    },
+                    Assignment {
+                        id: 2,
+                        name: "x".into(),
+                        value: Expression::Number(3.0)
+                    },
+                    Assignment {
+                        id: 3,
+                        name: "x".into(),
+                        value: Expression::Identifier(2)
+                    },
+                ],
+                vec![
+                    None,
+                    None,
+                    Some(Err(
+                        "'a', 'f' and 'g' can't be defined in terms of each other".into()
+                    )),
+                    Some(Err(
+                        "'a', 'f' and 'g' can't be defined in terms of each other".into()
+                    )),
+                    None,
+                    None,
+                    Some(Err(
+                        "'h' and 'i' can't be defined in terms of each other".into()
+                    ))
                 ],
             ),
         );
@@ -863,6 +1078,67 @@ mod tests {
                     },
                 ],
                 vec![Some(Ok(2)), Some(Ok(3)), Some(Ok(4))],
+            ),
+        );
+    }
+
+    #[test]
+    fn funny_not_circular_reversed() {
+        assert_eq!(
+            resolve_names_ti(&[
+                // c = b
+                ElAssign {
+                    name: "c".into(),
+                    value: AId("b".into()),
+                },
+                // b = a
+                ElAssign {
+                    name: "b".into(),
+                    value: AId("a".into()),
+                },
+                // a = c with b = 3
+                ElAssign {
+                    name: "a".into(),
+                    value: AWith {
+                        body: bx(AId("c".into())),
+                        substitutions: vec![("b".into(), ANum(3.0))]
+                    },
+                },
+            ]),
+            (
+                vec![
+                    // with b = 3
+                    Assignment {
+                        id: 0,
+                        name: "b".into(),
+                        value: Expression::Number(3.0)
+                    },
+                    // c = b
+                    Assignment {
+                        id: 1,
+                        name: "c".into(),
+                        value: Expression::Identifier(0)
+                    },
+                    // a = c with b = 3
+                    Assignment {
+                        id: 2,
+                        name: "a".into(),
+                        value: Expression::Identifier(1)
+                    },
+                    // b = a
+                    Assignment {
+                        id: 3,
+                        name: "b".into(),
+                        value: Expression::Identifier(2)
+                    },
+                    // c = b
+                    Assignment {
+                        id: 4,
+                        name: "c".into(),
+                        value: Expression::Identifier(3)
+                    },
+                ],
+                vec![Some(Ok(4)), Some(Ok(3)), Some(Ok(2))],
             ),
         );
     }

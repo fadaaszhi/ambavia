@@ -191,10 +191,15 @@ impl<'a> Dependencies<'a> {
     fn extend(&mut self, other: &Self) {
         for (name, kind) in other.iter() {
             if let Some(existing) = self.get(name) {
-                assert_eq!(existing, kind);
+                if !existing.is_lexical() && kind.is_lexical() {
+                    continue;
+                }
+                if !existing.is_lexical() || kind.is_lexical() {
+                    assert_eq!(existing, kind);
+                }
             }
+            self.insert(name, *kind);
         }
-        self.0.extend(other.iter());
     }
 }
 
@@ -2813,13 +2818,19 @@ mod tests {
     fn function_transitive_dependency() {
         assert_eq!(
             resolve_names_ti(&[
-                // f(a) = c + a
+                // f(a) = a + c + a
                 ElFunction {
                     name: "f".into(),
                     parameters: vec!["a".into()],
                     body: AOp {
                         operation: OpName::Add,
-                        args: vec![AId("c".into()), AId("a".into())]
+                        args: vec![
+                            AOp {
+                                operation: OpName::Add,
+                                args: vec![AId("a".into()), AId("c".into())]
+                            },
+                            AId("a".into())
+                        ]
                     }
                 },
                 // a = 5
@@ -2864,7 +2875,16 @@ mod tests {
                         name: "<anonymous>".into(),
                         value: Expression::Op {
                             operation: OpName::Add,
-                            args: vec![Expression::Identifier(1), Expression::Identifier(2)]
+                            args: vec![
+                                Expression::Op {
+                                    operation: OpName::Add,
+                                    args: vec![
+                                        Expression::Identifier(2),
+                                        Expression::Identifier(1)
+                                    ]
+                                },
+                                Expression::Identifier(2)
+                            ]
                         }
                     },
                 ],

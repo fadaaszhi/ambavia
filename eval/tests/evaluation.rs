@@ -101,16 +101,12 @@ fn assert_expression_eq<'a>(source: &str, value: Value) {
     println!("Expression: {source}");
     let tree = parse_latex(source).unwrap();
     let entry = parse_expression_list_entry(&tree).unwrap();
-    let (assignments, ei_to_nr) = resolve_names([entry].as_slice().as_ref(), false);
-    let index = ei_to_nr.first().unwrap().clone().unwrap().unwrap();
-    let (assignments, nr_to_tc) = type_check(assignments.as_slice().as_ref());
-    println!(
-        "Type checked: {:#?}",
-        <_ as AsRef<[_]>>::as_ref(&assignments)
-    );
-    let index = nr_to_tc[index].clone().unwrap();
-    let ty = assignments[index].value.ty;
-    let (instructions, vars) = compile_assignments(&assignments);
+    let (assignments, ei_to_id) = resolve_names([entry].as_slice().as_ref(), false);
+    let id = ei_to_id.first().unwrap().clone().unwrap().unwrap();
+    let (assignments, types) = type_check(&assignments);
+    println!("Type checked: {assignments:#?}",);
+    let ty = types[&id].clone().unwrap();
+    let (instructions, id_to_vi) = compile_assignments(&assignments);
 
     println!("Compiled instructions:");
     let width = (instructions.len() - 1).to_string().len();
@@ -118,24 +114,24 @@ fn assert_expression_eq<'a>(source: &str, value: Value) {
         println!("  {i:width$} {instruction:?}");
     }
 
-    let index = vars[index];
+    let v = id_to_vi[&id];
 
     let mut vm = Vm::with_program(instructions);
     vm.run(false);
     assert_eq!(
         match ty {
-            Type::Number => Value::Number(vm.vars[index].clone().number()),
+            Type::Number => Value::Number(vm.vars[v].clone().number()),
             Type::NumberList => {
-                let l = vm.vars[index].clone().list();
+                let l = vm.vars[v].clone().list();
                 let list = l.borrow().clone();
                 Value::NumberList(list)
             }
             Type::Point => Value::Point(
-                vm.vars[index].clone().number(),
-                vm.vars[index + 1].clone().number()
+                vm.vars[v].clone().number(),
+                vm.vars[v + 1.into()].clone().number()
             ),
             Type::PointList | Type::Polygon => {
-                let a = vm.vars[index].clone().list();
+                let a = vm.vars[v].clone().list();
                 let list = a
                     .borrow()
                     .chunks(2)
@@ -148,7 +144,7 @@ fn assert_expression_eq<'a>(source: &str, value: Value) {
                 })(list)
             }
             Type::PolygonList => {
-                let a = vm.vars[index].clone().polygon_list();
+                let a = vm.vars[v].clone().polygon_list();
                 let list = a
                     .borrow()
                     .iter()
@@ -178,10 +174,11 @@ fn assert_type_error(source: &str, error: &str) {
     println!("expression: {source}");
     let tree = parse_latex(source).unwrap();
     let entry = parse_expression_list_entry(&tree).unwrap();
-    let (assignments, ei_to_nr) = resolve_names([entry].as_slice().as_ref(), false);
-    let index = ei_to_nr.first().unwrap().clone().unwrap().unwrap();
-    let errors = type_check(assignments.as_slice().as_ref()).1;
-    assert_eq!(errors[index], Err(error.into()));
+
+    let (assignments, ei_to_id) = resolve_names([entry].as_slice().as_ref(), false);
+    let id = ei_to_id.first().unwrap().clone().unwrap().unwrap();
+    let types = type_check(&assignments).1;
+    assert_eq!(types[&id], Err(error.into()));
 }
 
 const NAN: f64 = f64::NAN;

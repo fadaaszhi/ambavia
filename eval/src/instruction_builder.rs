@@ -1,6 +1,11 @@
 use std::{collections::HashMap, iter::zip};
 
-use crate::vm::Instruction::{self, *};
+use parse::name_resolver::Id;
+
+use crate::vm::{
+    Instruction::{self, *},
+    VarIndex,
+};
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum BaseType {
@@ -120,7 +125,7 @@ pub struct InstructionBuilder {
     value_counter: usize,
     stack: Vec<Value>,
     var_counter: usize,
-    vars: HashMap<usize, (Option<Type>, usize)>,
+    vars: HashMap<Id, (Option<Type>, VarIndex)>,
 }
 
 impl InstructionBuilder {
@@ -271,14 +276,14 @@ impl InstructionBuilder {
         }(self.position_from_top(list)));
     }
 
-    pub fn store(&mut self, name: usize, v: Value) {
+    pub fn store(&mut self, name: Id, v: Value) {
         let ty = v.ty;
         self.assert_pop(v, ty);
         let index = if let Some((var_ty, index)) = self.vars.get_mut(&name) {
             *var_ty = Some(ty);
             *index
         } else {
-            let index = self.var_counter;
+            let index = VarIndex(self.var_counter);
             self.var_counter += 2;
             self.vars.insert(name, (Some(ty), index));
             index
@@ -290,12 +295,12 @@ impl InstructionBuilder {
         }(index));
     }
 
-    pub fn load(&mut self, name: usize) -> Value {
+    pub fn load(&mut self, name: Id) -> Value {
         let (ty, index) = self
             .vars
             .get(&name)
-            .unwrap_or_else(|| panic!("{name} was never stored to"));
-        let ty = ty.unwrap_or_else(|| panic!("{name} was stored to but later undefined"));
+            .unwrap_or_else(|| panic!("{name:?} was never stored to"));
+        let ty = ty.unwrap_or_else(|| panic!("{name:?} was stored to but later undefined"));
         self.instructions.push(match ty.size() {
             1 => Load,
             2 => Load2,
@@ -304,14 +309,14 @@ impl InstructionBuilder {
         self.create_and_push_value(ty)
     }
 
-    pub fn load_store(&mut self, name: usize, v: Value) -> Value {
+    pub fn load_store(&mut self, name: Id, v: Value) -> Value {
         let store_ty = v.ty;
         self.assert_pop(v, store_ty);
         let (ty, index) = self
             .vars
             .get_mut(&name)
-            .unwrap_or_else(|| panic!("{name} was never stored to"));
-        let load_ty = ty.unwrap_or_else(|| panic!("{name} was stored to but later undefined"));
+            .unwrap_or_else(|| panic!("{name:?} was never stored to"));
+        let load_ty = ty.unwrap_or_else(|| panic!("{name:?} was stored to but later undefined"));
         *ty = Some(store_ty);
         self.instructions
             .push(match (load_ty.size(), store_ty.size()) {
@@ -324,26 +329,26 @@ impl InstructionBuilder {
         self.create_and_push_value(load_ty)
     }
 
-    pub fn undefine(&mut self, name: usize) {
+    pub fn undefine(&mut self, name: Id) {
         let (ty, _) = self
             .vars
             .get_mut(&name)
-            .unwrap_or_else(|| panic!("{name} was never stored to"));
+            .unwrap_or_else(|| panic!("{name:?} was never stored to"));
         if ty.is_none() {
-            panic!("{name} was stored to but later undefined");
+            panic!("{name:?} was stored to but later undefined");
         }
         *ty = None;
     }
 
     #[cfg(test)]
-    fn defined_vars_and_types(&self) -> HashMap<usize, (Type, usize)> {
+    fn defined_vars_and_types(&self) -> HashMap<Id, (Type, VarIndex)> {
         self.vars
             .iter()
             .filter_map(|(k, (t, i))| t.map(|t| (*k, (t, *i))))
             .collect()
     }
 
-    pub fn defined_vars(&self) -> HashMap<usize, usize> {
+    pub fn defined_vars(&self) -> HashMap<Id, VarIndex> {
         self.vars
             .iter()
             .filter_map(|(k, (t, i))| t.map(|_| (*k, *i)))
@@ -834,21 +839,24 @@ mod tests {
     fn load_store() {
         let mut ib = InstructionBuilder::default();
         let a = ib.load_const(5.0);
-        ib.store(0, a);
+        ib.store(Id(0), a);
         assert_eq!(
             ib.defined_vars_and_types(),
-            HashMap::from([(0, (Type::Number, 0))])
+            HashMap::from([(Id(0), (Type::Number, VarIndex(0)))])
         );
         let b = ib.load_const(1.0);
         let c = ib.load_const(2.0);
         let d = ib.instr2(Point, b, c);
-        ib.store(1, d);
+        ib.store(Id(1), d);
         assert_eq!(
             ib.defined_vars_and_types(),
-            HashMap::from([(0, (Type::Number, 0)), (1, (Type::Point, 2))])
+            HashMap::from([
+                (Id(0), (Type::Number, VarIndex(0))),
+                (Id(1), (Type::Point, VarIndex(2)))
+            ])
         );
         assert_eq!(ib.stack, []);
-        let a = ib.load(0);
+        let a = ib.load(Id(0));
         assert_eq!(
             a,
             Value {
@@ -857,7 +865,7 @@ mod tests {
                 ty: Type::Number
             }
         );
-        let d = ib.load(1);
+        let d = ib.load(Id(1));
         assert_eq!(
             d,
             Value {
@@ -866,36 +874,42 @@ mod tests {
                 ty: Type::Point
             }
         );
-        let old_a = ib.load_store(0, d);
+        let old_a = ib.load_store(Id(0), d);
         assert_eq!(
             ib.defined_vars_and_types(),
-            HashMap::from([(0, (Type::Point, 0)), (1, (Type::Point, 2))])
+            HashMap::from([
+                (Id(0), (Type::Point, VarIndex(0))),
+                (Id(1), (Type::Point, VarIndex(2)))
+            ])
         );
-        ib.undefine(0);
+        ib.undefine(Id(0));
         assert_eq!(
             ib.defined_vars_and_types(),
-            HashMap::from([(1, (Type::Point, 2))])
+            HashMap::from([(Id(1), (Type::Point, VarIndex(2)))])
         );
         assert_eq!(ib.stack, [a, old_a]);
         let l = ib.build_list(BaseType::Point, vec![]);
-        ib.store(0, l);
+        ib.store(Id(0), l);
         assert_eq!(
             ib.defined_vars_and_types(),
-            HashMap::from([(0, (Type::PointList, 0)), (1, (Type::Point, 2))])
+            HashMap::from([
+                (Id(0), (Type::PointList, VarIndex(0))),
+                (Id(1), (Type::Point, VarIndex(2)))
+            ])
         );
         assert_eq!(
             ib.finish(),
             [
                 LoadConst(5.0),
-                Store(0),
+                Store(VarIndex(0)),
                 LoadConst(1.0),
                 LoadConst(2.0),
-                Store2(2),
-                Load(0),
-                Load2(2),
-                Load1Store2(0),
+                Store2(VarIndex(2)),
+                Load(VarIndex(0)),
+                Load2(VarIndex(2)),
+                Load1Store2(VarIndex(0)),
                 BuildList(0),
-                Store(0),
+                Store(VarIndex(0)),
             ]
         );
     }
@@ -903,13 +917,13 @@ mod tests {
     #[test]
     fn error_load_store() {
         let mut ib = InstructionBuilder::default();
-        assert_panics(move || ib.load(0));
+        assert_panics(move || ib.load(Id(0)));
 
         let mut ib = InstructionBuilder::default();
         let a = ib.load_const(5.0);
-        ib.store(0, a);
-        ib.undefine(0);
-        assert_panics(move || ib.load(0));
+        ib.store(Id(0), a);
+        ib.undefine(Id(0));
+        assert_panics(move || ib.load(Id(0)));
     }
 
     #[test]

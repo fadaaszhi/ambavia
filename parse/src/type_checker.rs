@@ -1,11 +1,10 @@
-use std::{borrow::Borrow, collections::HashMap, mem};
+use std::{collections::HashMap, mem};
 
 use derive_more::{From, Into};
-use typed_index_collections::{TiSlice, TiVec, ti_vec};
 
 pub use crate::name_resolver::{ComparisonOperator, SumProdKind};
 use crate::{
-    name_resolver::{self as nr},
+    name_resolver::{self as nr, Id},
     op::{Op, SigSatisfies},
 };
 
@@ -119,7 +118,7 @@ fn te(ty: Type, e: Expression) -> TypedExpression {
 #[derive(Debug, PartialEq)]
 pub enum Expression {
     Number(f64),
-    Identifier(usize),
+    Identifier(Id),
     List(Vec<TypedExpression>),
     ListRange {
         before_ellipsis: Vec<TypedExpression>,
@@ -158,7 +157,7 @@ pub enum Expression {
 
 #[derive(Debug, PartialEq)]
 pub struct Assignment {
-    pub id: usize,
+    pub id: Id,
     pub value: TypedExpression,
 }
 
@@ -170,7 +169,7 @@ pub struct Body {
 
 #[derive(Default)]
 struct TypeChecker {
-    names: HashMap<usize, Result<(Type, usize), String>>,
+    computed_types: HashMap<Id, Result<Type, String>>,
     id_counter: usize,
 }
 fn binary(operation: Op, left: TypedExpression, right: TypedExpression) -> Expression {
@@ -185,28 +184,21 @@ fn builtin(name: Op, args: Vec<TypedExpression>) -> Expression {
         args,
     }
 }
-impl TypeChecker {
-    fn next_id(&mut self) -> usize {
-        let id = self.id_counter;
-        self.id_counter += 1;
-        id
-    }
 
-    fn look_up(&self, id: impl Borrow<usize>) -> Result<(Type, usize), String> {
-        self.names.get(id.borrow()).unwrap().clone()
+impl TypeChecker {
+    fn get_type(&self, id: Id) -> Result<Type, String> {
+        self.computed_types.get(&id).unwrap().clone()
     }
 
     fn create_assignment(&mut self, value: TypedExpression) -> Assignment {
-        Assignment {
-            id: self.next_id(),
-            value,
-        }
+        let id = Id(self.id_counter);
+        self.id_counter += 1;
+        Assignment { id, value }
     }
 
-    fn create_name_and_assignment(&mut self, id: usize, value: TypedExpression) -> Assignment {
-        let new_id = self.next_id();
-        self.names.insert(id, Ok((value.ty, new_id)));
-        Assignment { id: new_id, value }
+    fn insert_computed_type(&mut self, id: Id, ty: Result<Type, String>) {
+        let existing = self.computed_types.insert(id, ty);
+        assert_eq!(existing, None);
     }
 
     fn check_body(&mut self, body: &nr::Body) -> Result<Body, String> {
@@ -215,8 +207,9 @@ impl TypeChecker {
                 .assignments
                 .iter()
                 .map(|l| {
-                    let list = self.check_expression(&l.value)?;
-                    Ok(self.create_name_and_assignment(l.id, list))
+                    let (id, value) = (l.id, self.check_expression(&l.value)?);
+                    self.insert_computed_type(id, Ok(value.ty));
+                    Ok(Assignment { id, value })
                 })
                 .collect::<Result<_, String>>()?,
             value: Box::new(self.check_expression(&body.value)?),
@@ -238,8 +231,7 @@ impl TypeChecker {
         match e {
             nr::Expression::Number(x) => Ok(te(Type::Number, Expression::Number(*x))),
             nr::Expression::Identifier(id) => {
-                let (ty, id) = self.look_up(id)?;
-                Ok(te(ty, Expression::Identifier(id)))
+                Ok(te(self.get_type(*id)?, Expression::Identifier(*id)))
             }
             nr::Expression::List(list) => {
                 let list = self.check_expressions(list)?;
@@ -428,25 +420,27 @@ impl TypeChecker {
             nr::Expression::SumProd { .. } => todo!(),
             nr::Expression::For { body, lists } => {
                 let lists = lists
-                            .iter()
-                            .map(|l| {
-                                let list = self.check_expression(&l.value)?;
+                    .iter()
+                    .map(|l| {
+                        let list = self.check_expression(&l.value)?;
 
-                                if !list.ty.is_list() {
-                                    return Err(format!(
-                                        "a definition on the right-hand side of 'for' must be a list, but '{}' is {}",
-                                        l.name, list.ty
-                                    ));
-                                }
+                        if !list.ty.is_list() {
+                            return Err(
+                                // not just putting it all in the format macro because that caused rustfmt to fail
+                                "a definition on the right-hand side of 'for' must be a list, but "
+                                    .to_string()
+                                    + &format!("'{}' is {}", l.name, list.ty),
+                            );
+                        }
 
-                                let assignment = self.create_assignment(list);
-                                self.names.insert(
-                                    l.id,
-                                    Ok((Type::single(assignment.value.ty.base()), assignment.id)),
-                                );
-                                Ok(assignment)
-                            })
-                            .collect::<Result<_, String>>()?;
+                        self.insert_computed_type(l.id, Ok(Type::single(list.ty.base())));
+                        let assignment = Assignment {
+                            id: l.id,
+                            value: list,
+                        };
+                        Ok(assignment)
+                    })
+                    .collect::<Result<_, String>>()?;
 
                 let body = self.check_body(body)?;
 
@@ -704,34 +698,93 @@ impl TypeChecker {
 #[derive(Debug, PartialEq, Eq, Copy, Clone, From, Into, Hash)]
 pub struct AssignmentIndex(usize);
 
+fn update_max_id(id: Id, max: &mut Option<usize>) {
+    if let Some(max) = max {
+        *max = id.0.max(*max)
+    } else {
+        *max = Some(id.0)
+    }
+}
+
+fn find_max_id_in_expressions(expressions: &[nr::Expression], max: &mut Option<usize>) {
+    for expression in expressions {
+        find_max_id_in_expression(expression, max);
+    }
+}
+
+fn find_max_id_in_expression(expression: &nr::Expression, max: &mut Option<usize>) {
+    match expression {
+        nr::Expression::Number(_) => {}
+        nr::Expression::Identifier(id) => update_max_id(*id, max),
+        nr::Expression::List(list) => find_max_id_in_expressions(list, max),
+        nr::Expression::ListRange {
+            before_ellipsis,
+            after_ellipsis,
+        } => {
+            find_max_id_in_expressions(before_ellipsis, max);
+            find_max_id_in_expressions(after_ellipsis, max);
+        }
+        nr::Expression::Op { args, .. } => find_max_id_in_expressions(args, max),
+        nr::Expression::ChainedComparison { operands, .. } => {
+            find_max_id_in_expressions(operands, max)
+        }
+        nr::Expression::Piecewise {
+            test,
+            consequent,
+            alternate,
+        } => {
+            find_max_id_in_expression(test, max);
+            find_max_id_in_expression(consequent, max);
+            if let Some(a) = alternate {
+                find_max_id_in_expression(a, max);
+            }
+        }
+        nr::Expression::SumProd {
+            variable,
+            lower_bound,
+            upper_bound,
+            body,
+            ..
+        } => {
+            update_max_id(*variable, max);
+            find_max_id_in_expression(lower_bound, max);
+            find_max_id_in_expression(upper_bound, max);
+            find_max_id(&body.assignments, max);
+            find_max_id_in_expression(&body.value, max);
+        }
+        nr::Expression::For { body, lists } => {
+            find_max_id(lists, max);
+            find_max_id(&body.assignments, max);
+            find_max_id_in_expression(&body.value, max);
+        }
+    }
+}
+
+fn find_max_id(assignments: &[nr::Assignment], max: &mut Option<usize>) {
+    for a in assignments {
+        update_max_id(a.id, max);
+        find_max_id_in_expression(&a.value, max);
+    }
+}
+
 pub fn type_check(
-    assignments: &TiSlice<nr::AssignmentIndex, nr::Assignment>,
-) -> (
-    TiVec<AssignmentIndex, Assignment>,
-    TiVec<nr::AssignmentIndex, Result<AssignmentIndex, String>>,
-) {
+    assignments: &[nr::Assignment],
+) -> (Vec<Assignment>, HashMap<Id, Result<Type, String>>) {
     let mut tc = TypeChecker::default();
-    let mut result_assignments = ti_vec![];
-    let assignment_indices = assignments
-        .iter()
-        .map(|a| {
-            let checked = tc
-                .check_expression(&a.value)
-                .map(|te| tc.create_assignment(te));
-            tc.names.insert(
-                a.id,
-                checked
-                    .as_ref()
-                    .map(|c| (c.value.ty, c.id))
-                    .map_err(|e| e.clone()),
-            );
-            checked.map(|a| {
-                result_assignments.push(a);
-                result_assignments.last_key().unwrap()
-            })
-        })
-        .collect();
-    (result_assignments, assignment_indices)
+
+    let mut max_id = None;
+    find_max_id(assignments.as_ref(), &mut max_id);
+    tc.id_counter = max_id.unwrap_or(0);
+
+    let mut tc_assignments = vec![];
+    for a in assignments {
+        let checked = tc.check_expression(&a.value);
+        tc.insert_computed_type(a.id, checked.as_ref().map(|te| te.ty).map_err(Clone::clone));
+        if let Ok(value) = checked {
+            tc_assignments.push(Assignment { id: a.id, value });
+        }
+    }
+    (tc_assignments, tc.computed_types)
 }
 
 #[cfg(test)]
@@ -740,7 +793,7 @@ mod tests {
 
     use super::{
         Assignment as As,
-        Expression::{Identifier as Id, Number as Num},
+        Expression::{Identifier as Ident, Number as Num},
         nr::{
             Assignment as NAs,
             Expression::{Identifier as NId, Number as NNum, Op as NOp},
@@ -758,24 +811,17 @@ mod tests {
         te(Type::Point, e)
     }
 
-    fn type_check_ti(
-        assignments: &[nr::Assignment],
-    ) -> (Vec<Assignment>, Vec<Result<usize, String>>) {
-        let (a, b) = type_check(assignments.as_ref());
-        (a.into(), b.into_iter().map(|x| x.map(Into::into)).collect())
-    }
-
     #[test]
     fn shrimple() {
         assert_eq!(
-            type_check_ti(&[
+            type_check(&[
                 NAs {
-                    id: 0,
+                    id: Id(0),
                     name: "a".into(),
                     value: NNum(5.0)
                 },
                 NAs {
-                    id: 2,
+                    id: Id(2),
                     name: "b".into(),
                     value: NOp {
                         operation: OpName::Point,
@@ -783,28 +829,28 @@ mod tests {
                     }
                 },
                 NAs {
-                    id: 3,
+                    id: Id(3),
                     name: "c".into(),
                     value: NOp {
                         operation: OpName::Dot,
-                        args: vec![NId(2), NId(0)]
+                        args: vec![NId(Id(2)), NId(Id(0))]
                     }
                 },
                 NAs {
-                    id: 88,
+                    id: Id(88),
                     name: "d".into(),
                     value: NOp {
                         operation: OpName::Add,
-                        args: vec![NId(2), NId(0)]
+                        args: vec![NId(Id(2)), NId(Id(0))]
                     }
                 },
                 NAs {
-                    id: 89,
+                    id: Id(89),
                     name: "e".into(),
-                    value: NId(88)
+                    value: NId(Id(88))
                 },
                 NAs {
-                    id: 999,
+                    id: Id(999),
                     name: "f".into(),
                     value: NNum(9.0)
                 }
@@ -812,30 +858,34 @@ mod tests {
             (
                 vec![
                     As {
-                        id: 0,
+                        id: Id(0),
                         value: num(Num(5.0))
                     },
                     As {
-                        id: 1,
+                        id: Id(2),
                         value: pt(binary(Op::Point, num(Num(3.0)), num(Num(2.0))))
                     },
                     As {
-                        id: 2,
-                        value: pt(binary(Op::MulNumberPoint, num(Id(0)), pt(Id(1))))
+                        id: Id(3),
+                        value: pt(binary(
+                            Op::MulNumberPoint,
+                            num(Ident(Id(0))),
+                            pt(Ident(Id(2)))
+                        ))
                     },
                     As {
-                        id: 3,
+                        id: Id(999),
                         value: num(Num(9.0))
                     }
                 ],
-                vec![
-                    Ok(0),
-                    Ok(1),
-                    Ok(2),
-                    Err("cannot Add a point and a number".into()),
-                    Err("cannot Add a point and a number".into()),
-                    Ok(3)
-                ]
+                HashMap::from([
+                    (Id(0), Ok(Type::Number)),
+                    (Id(2), Ok(Type::Point)),
+                    (Id(3), Ok(Type::Point)),
+                    (Id(88), Err("cannot Add a point and a number".into())),
+                    (Id(89), Err("cannot Add a point and a number".into())),
+                    (Id(999), Ok(Type::Number)),
+                ])
             )
         );
     }

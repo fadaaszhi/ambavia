@@ -22,7 +22,9 @@ pub enum Font {
     MathItalic,
     Size1Regular,
     Size2Regular,
+    #[allow(dead_code)]
     Size3Regular,
+    #[allow(dead_code)]
     Size4Regular,
 }
 

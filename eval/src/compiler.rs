@@ -1,14 +1,17 @@
-use std::iter::zip;
-
-use typed_index_collections::{TiSlice, TiVec};
+use std::{collections::HashMap, iter::zip};
 
 use crate::{
     instruction_builder::{BaseType as IbBaseType, InstructionBuilder, Value},
-    vm::Instruction::{self, *},
+    vm::{
+        Instruction::{self, *},
+        VarIndex,
+    },
 };
-use parse::type_checker::{
-    Assignment, AssignmentIndex, Body, ComparisonOperator, Expression, Type as TcType,
-    TypedExpression,
+use parse::{
+    name_resolver::Id,
+    type_checker::{
+        Assignment, Body, ComparisonOperator, Expression, Type as TcType, TypedExpression,
+    },
 };
 
 fn tc_list_to_ib_base(ty: TcType) -> IbBaseType {
@@ -317,7 +320,7 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
                         Op::IndexPolygonList => builder.instr2(IndexPolygonList, arg(), arg()),
                         Op::NegNumber => builder.instr1(Neg, arg()),
                         Op::NegPoint => builder.instr1(Neg2, arg()),
-                        Op::Fac => builder.instr1(todo!("factorial"), arg()),
+                        Op::Fac => builder.instr1((|| todo!("factorial"))(), arg()),
                         Op::Sqrt => builder.instr1(Sqrt, arg()),
                         Op::Mag => builder.instr1(Hypot, arg()),
                         Op::PointX => builder.instr1(PointX, arg()),
@@ -384,8 +387,8 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
 }
 
 pub fn compile_assignments(
-    assignments: &TiSlice<AssignmentIndex, Assignment>,
-) -> (Vec<Instruction>, TiVec<AssignmentIndex, usize>) {
+    assignments: &[Assignment],
+) -> (Vec<Instruction>, HashMap<Id, VarIndex>) {
     let mut builder = InstructionBuilder::default();
 
     for Assignment { id, value, .. } in assignments {
@@ -395,13 +398,7 @@ pub fn compile_assignments(
 
     let vars = builder.defined_vars();
     let program = builder.finish();
-    (
-        program,
-        assignments
-            .iter()
-            .map(|a| *vars.get(&a.id).unwrap())
-            .collect(),
-    )
+    (program, vars)
 }
 
 #[cfg(test)]
@@ -409,7 +406,7 @@ mod tests {
     use super::*;
     use Expression::{Identifier as TId, Number as TNum, Op as TOp};
     use InstructionBuilder as Ib;
-    use parse::op::Op;
+    use parse::{name_resolver::Id, op::Op};
     use pretty_assertions::assert_eq;
 
     fn num(e: Expression) -> TypedExpression {
@@ -448,7 +445,7 @@ mod tests {
         assert_eq!(b.finish(), [LoadConst(5.0), LoadConst(3.0)]);
     }
 
-    fn create_empty_variable(builder: &mut InstructionBuilder, name: usize, ty: TcType) {
+    fn create_empty_variable(builder: &mut InstructionBuilder, name: Id, ty: TcType) {
         let v = match ty {
             TcType::Number => builder.load_const(0.0),
             TcType::NumberList => builder.build_list(IbBaseType::Number, vec![]),
@@ -472,32 +469,32 @@ mod tests {
     #[test]
     fn identifiers() {
         let mut b = Ib::default();
-        create_empty_variable(&mut b, 0, TcType::Number);
-        compile_expression(&num(TId(0)), &mut b);
-        create_empty_variable(&mut b, 1, TcType::Point);
-        compile_expression(&pt(TId(1)), &mut b);
-        create_empty_variable(&mut b, 2, TcType::PointList);
-        compile_expression(&pt_list(TId(2)), &mut b);
-        create_empty_variable(&mut b, 3, TcType::NumberList);
-        compile_expression(&num_list(TId(3)), &mut b);
-        compile_expression(&pt(TId(1)), &mut b);
+        create_empty_variable(&mut b, Id(0), TcType::Number);
+        compile_expression(&num(TId(Id(0))), &mut b);
+        create_empty_variable(&mut b, Id(1), TcType::Point);
+        compile_expression(&pt(TId(Id(1))), &mut b);
+        create_empty_variable(&mut b, Id(2), TcType::PointList);
+        compile_expression(&pt_list(TId(Id(2))), &mut b);
+        create_empty_variable(&mut b, Id(3), TcType::NumberList);
+        compile_expression(&num_list(TId(Id(3))), &mut b);
+        compile_expression(&pt(TId(Id(1))), &mut b);
         assert_eq!(
             b.finish(),
             [
                 LoadConst(0.0),
-                Store(0),
-                Load(0),
+                Store(VarIndex(0)),
+                Load(VarIndex(0)),
                 LoadConst(0.0),
                 LoadConst(0.0),
-                Store2(2),
-                Load2(2),
+                Store2(VarIndex(2)),
+                Load2(VarIndex(2)),
                 BuildList(0),
-                Store(4),
-                Load(4),
+                Store(VarIndex(4)),
+                Load(VarIndex(4)),
                 BuildList(0),
-                Store(6),
-                Load(6),
-                Load2(2)
+                Store(VarIndex(6)),
+                Load(VarIndex(6)),
+                Load2(VarIndex(2))
             ]
         );
     }
@@ -506,12 +503,12 @@ mod tests {
     fn bop() {
         let make_vars_and_builder = || {
             let mut b = Ib::default();
-            create_empty_variable(&mut b, 0, TcType::Number);
-            create_empty_variable(&mut b, 1, TcType::Point);
+            create_empty_variable(&mut b, Id(0), TcType::Number);
+            create_empty_variable(&mut b, Id(1), TcType::Point);
             b
         };
-        let number = || num(TId(0));
-        let point = || pt(TId(1));
+        let number = || num(TId(Id(0)));
+        let point = || pt(TId(Id(1)));
 
         let mut b = make_vars_and_builder();
 
@@ -522,7 +519,7 @@ mod tests {
             }),
             &mut b,
         );
-        assert_eq!(b.finish()[5..], [Load(0), Load(0), Add]);
+        assert_eq!(b.finish()[5..], [Load(VarIndex(0)), Load(VarIndex(0)), Add]);
 
         let mut b = make_vars_and_builder();
         compile_expression(
@@ -532,7 +529,10 @@ mod tests {
             }),
             &mut b,
         );
-        assert_eq!(b.finish()[5..], [Load2(2), Load2(2), Add2]);
+        assert_eq!(
+            b.finish()[5..],
+            [Load2(VarIndex(2)), Load2(VarIndex(2)), Add2]
+        );
 
         let mut b = make_vars_and_builder();
         compile_expression(
@@ -542,7 +542,10 @@ mod tests {
             }),
             &mut b,
         );
-        assert_eq!(b.finish()[5..], [Load(0), Load2(2), Mul1_2]);
+        assert_eq!(
+            b.finish()[5..],
+            [Load(VarIndex(0)), Load2(VarIndex(2)), Mul1_2]
+        );
 
         let mut b = make_vars_and_builder();
         compile_expression(
@@ -552,7 +555,10 @@ mod tests {
             }),
             &mut b,
         );
-        assert_eq!(b.finish()[5..], [Load2(2), Load(0), Div2_1]);
+        assert_eq!(
+            b.finish()[5..],
+            [Load2(VarIndex(2)), Load(VarIndex(0)), Div2_1]
+        );
 
         let mut b = make_vars_and_builder();
         compile_expression(
@@ -562,7 +568,7 @@ mod tests {
             }),
             &mut b,
         );
-        assert_eq!(b.finish()[5..], [Load(0), Load(0), Pow]);
+        assert_eq!(b.finish()[5..], [Load(VarIndex(0)), Load(VarIndex(0)), Pow]);
 
         let mut b = make_vars_and_builder();
         compile_expression(
@@ -572,6 +578,9 @@ mod tests {
             }),
             &mut b,
         );
-        assert_eq!(b.finish()[5..], [Load2(2), Load2(2), Dot]);
+        assert_eq!(
+            b.finish()[5..],
+            [Load2(VarIndex(2)), Load2(VarIndex(2)), Dot]
+        );
     }
 }

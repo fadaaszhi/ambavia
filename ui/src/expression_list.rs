@@ -923,22 +923,21 @@ impl ExpressionList {
                         ei_to_oi.push(i);
                     }
 
-                    let (assignments, ei_to_nr) = resolve_names(list.as_slice(), false);
-                    let (assignments, nr_to_tc) = type_check(&assignments);
-                    let (program, vars) = compile_assignments(&assignments);
+                    let (assignments, ei_to_id) = resolve_names(list.as_slice(), false);
+                    let (assignments, types) = type_check(&assignments);
+                    let (program, var_indices) = compile_assignments(&assignments);
                     let mut vm = Vm::with_program(program);
                     vm.run(false);
 
-                    for (ei, nr) in ei_to_nr.into_iter_enumerated() {
+                    for (ei, id) in ei_to_id.into_iter_enumerated() {
                         let i = ei_to_oi[ei];
                         let output = &mut self.expressions[i].output;
 
                         if matches!(output, Output::None) {
-                            *output = match nr {
-                                Some(Ok(nr)) => match nr_to_tc[nr].clone() {
-                                    Ok(tc) => {
-                                        let ty = assignments[tc].value.ty;
-                                        let v = vars[tc];
+                            *output = match id {
+                                Some(Ok(id)) => match &types[&id] {
+                                    Ok(ty) => {
+                                        let v = var_indices[&id];
                                         let mut nodes = vec![C('=')];
 
                                         let color = colors[i.0 % colors.len()];
@@ -986,7 +985,7 @@ impl ExpressionList {
                                             }
                                             Type::Point => {
                                                 let x = vm.vars[v].clone().number();
-                                                let y = vm.vars[v + 1].clone().number();
+                                                let y = vm.vars[v + 1.into()].clone().number();
                                                 draw_point(x, y);
                                                 point(&mut nodes, x, y);
                                             }
@@ -1165,7 +1164,7 @@ impl ExpressionList {
                 .map(|x| (x.clamp(0.0, 1.0) * 65535.0).round())
                 .as_u16vec2();
 
-            indices.push((vertices.len() as u32 + 0));
+            indices.push(vertices.len() as u32);
             indices.push(vertices.len() as u32 + 1);
             indices.push(vertices.len() as u32 + 2);
             indices.push(vertices.len() as u32 + 3);

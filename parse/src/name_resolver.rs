@@ -18,7 +18,7 @@ use crate::{
 #[derive(Debug, PartialEq)]
 pub enum Expression {
     Number(f64),
-    Identifier(usize),
+    Identifier(Id),
     List(Vec<Expression>),
     ListRange {
         before_ellipsis: Vec<Expression>,
@@ -39,7 +39,7 @@ pub enum Expression {
     },
     SumProd {
         kind: SumProdKind,
-        variable: usize,
+        variable: Id,
         lower_bound: Box<Expression>,
         upper_bound: Box<Expression>,
         body: Body,
@@ -108,7 +108,9 @@ impl OpName {
     }
 }
 
-type Id = usize;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Id(pub usize);
+
 type Level = usize;
 
 #[derive(Debug, PartialEq)]
@@ -312,7 +314,7 @@ impl<'a> Resolver<'a> {
     }
 
     fn create_assignment(&mut self, name: &str, value: Expression) -> Assignment {
-        let id = self.id_counter;
+        let id = Id(self.id_counter);
         self.id_counter += 1;
         Assignment {
             id,
@@ -718,18 +720,15 @@ impl<'a> Resolver<'a> {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Copy, Clone, From, Into, Hash)]
-pub struct AssignmentIndex(usize);
-
-pub type ExpressionToAssignment = TiVec<ExpressionIndex, Option<Result<AssignmentIndex, String>>>;
+pub type ExpressionIndexToId = TiVec<ExpressionIndex, Option<Result<Id, String>>>;
 
 pub fn resolve_names(
     list: &ExpressionList<impl Borrow<ExpressionListEntry>>,
     use_v1_9_scoping_rules: bool,
-) -> (TiVec<AssignmentIndex, Assignment>, ExpressionToAssignment) {
+) -> (Vec<Assignment>, ExpressionIndexToId) {
     let mut resolver = Resolver::new(list, use_v1_9_scoping_rules);
 
-    let assignment_ids = list
+    let ei_to_id = list
         .iter()
         .map(|e| {
             // When we start resolving a new expression, there shouldn't be any
@@ -773,22 +772,11 @@ pub fn resolve_names(
                 ),
             }
         })
-        .collect::<TiVec<ExpressionIndex, _>>();
-
-    let assignments: TiVec<AssignmentIndex, Assignment> =
-        resolver.assignments.pop().unwrap().into();
-    assert!(resolver.assignments.is_empty());
-
-    let id_to_index_map = assignments
-        .iter_enumerated()
-        .map(|(i, a)| (a.id, i))
-        .collect::<HashMap<_, _>>();
-    let assignment_indices = assignment_ids
-        .into_iter()
-        .map(|id| id.map(|id| id.map(|id| id_to_index_map[&id])))
         .collect();
 
-    (assignments, assignment_indices)
+    let assignments = resolver.assignments.pop().unwrap();
+    assert!(resolver.assignments.is_empty());
+    (assignments, ei_to_id)
 }
 
 #[cfg(test)]
@@ -820,26 +808,16 @@ mod tests {
 
     fn resolve_names_ti(
         list: &[ExpressionListEntry],
-    ) -> (Vec<Assignment>, Vec<Option<Result<usize, String>>>) {
+    ) -> (Vec<Assignment>, Vec<Option<Result<Id, String>>>) {
         let (a, b) = resolve_names(list.as_ref(), false);
-        (
-            a.into(),
-            b.into_iter()
-                .map(|x| x.map(|x| x.map(Into::into)))
-                .collect(),
-        )
+        (a, b.into())
     }
 
     fn resolve_names_ti_v1_9(
         list: &[ExpressionListEntry],
-    ) -> (Vec<Assignment>, Vec<Option<Result<usize, String>>>) {
+    ) -> (Vec<Assignment>, Vec<Option<Result<Id, String>>>) {
         let (a, b) = resolve_names(list.as_ref(), true);
-        (
-            a.into(),
-            b.into_iter()
-                .map(|x| x.map(|x| x.map(Into::into)))
-                .collect(),
-        )
+        (a, b.into())
     }
 
     #[test]
@@ -855,12 +833,12 @@ mod tests {
             (
                 vec![
                     Assignment {
-                        id: 0,
+                        id: Id(0),
                         name: "<anonymous>".into(),
                         value: Expression::Number(5.0),
                     },
                     Assignment {
-                        id: 1,
+                        id: Id(1),
                         name: "<anonymous>".into(),
                         value: Expression::Op {
                             operation: OpName::Add,
@@ -868,7 +846,7 @@ mod tests {
                         },
                     },
                 ],
-                vec![Some(Ok(0)), Some(Ok(1))],
+                vec![Some(Ok(Id(0))), Some(Ok(Id(1)))],
             ),
         );
     }
@@ -889,17 +867,17 @@ mod tests {
             (
                 vec![
                     Assignment {
-                        id: 0,
+                        id: Id(0),
                         name: "c".into(),
                         value: Expression::Number(1.0),
                     },
                     Assignment {
-                        id: 1,
+                        id: Id(1),
                         name: "b".into(),
-                        value: Expression::Identifier(0),
+                        value: Expression::Identifier(Id(0)),
                     },
                 ],
-                vec![Some(Ok(0)), Some(Ok(1))],
+                vec![Some(Ok(Id(0))), Some(Ok(Id(1)))],
             ),
         );
     }
@@ -947,38 +925,38 @@ mod tests {
             (
                 vec![
                     Assignment {
-                        id: 0,
+                        id: Id(0),
                         name: "a".into(),
                         value: Expression::Number(1.0),
                     },
                     Assignment {
-                        id: 1,
+                        id: Id(1),
                         name: "a".into(),
                         value: Expression::Number(2.0),
                     },
                     Assignment {
-                        id: 2,
+                        id: Id(2),
                         name: "c".into(),
                         value: Expression::Number(1.0),
                     },
                     Assignment {
-                        id: 3,
+                        id: Id(3),
                         name: "c".into(),
                         value: Expression::Number(2.0),
                     },
                     Assignment {
-                        id: 4,
+                        id: Id(4),
                         name: "c".into(),
                         value: Expression::Number(3.0),
                     },
                 ],
                 vec![
-                    Some(Ok(0)),
-                    Some(Ok(1)),
+                    Some(Ok(Id(0))),
+                    Some(Ok(Id(1))),
                     Some(Err("'a' defined multiple times".into())),
-                    Some(Ok(2)),
-                    Some(Ok(3)),
-                    Some(Ok(4)),
+                    Some(Ok(Id(2))),
+                    Some(Ok(Id(3))),
+                    Some(Ok(Id(4))),
                     Some(Err("'c' defined multiple times".into())),
                 ],
             ),
@@ -1043,31 +1021,31 @@ mod tests {
                 vec![
                     // a = 1
                     Assignment {
-                        id: 0,
+                        id: Id(0),
                         name: "a".into(),
                         value: Expression::Number(1.0)
                     },
                     // with a = a + 1
                     Assignment {
-                        id: 1,
+                        id: Id(1),
                         name: "a".into(),
                         value: Expression::Op {
                             operation: OpName::Add,
-                            args: vec![Expression::Identifier(0), Expression::Number(1.0)]
+                            args: vec![Expression::Identifier(Id(0)), Expression::Number(1.0)]
                         }
                     },
                     // with a = a + 1
                     Assignment {
-                        id: 2,
+                        id: Id(2),
                         name: "a".into(),
                         value: Expression::Op {
                             operation: OpName::Add,
-                            args: vec![Expression::Identifier(1), Expression::Number(1.0)]
+                            args: vec![Expression::Identifier(Id(1)), Expression::Number(1.0)]
                         }
                     },
                 ],
                 vec![
-                    Some(Ok(0)),
+                    Some(Ok(Id(0))),
                     // error message will probably have to change when freevars are supported
                     // "we only support implicit equations of x and y"
                     Some(Err("'b' can't be defined in terms of itself".into())),
@@ -1135,24 +1113,24 @@ mod tests {
             (
                 vec![
                     Assignment {
-                        id: 0,
+                        id: Id(0),
                         name: "x".into(),
                         value: Expression::Number(3.0)
                     },
                     Assignment {
-                        id: 1,
+                        id: Id(1),
                         name: "x".into(),
-                        value: Expression::Identifier(0)
+                        value: Expression::Identifier(Id(0))
                     },
                     Assignment {
-                        id: 2,
+                        id: Id(2),
                         name: "x".into(),
                         value: Expression::Number(3.0)
                     },
                     Assignment {
-                        id: 3,
+                        id: Id(3),
                         name: "x".into(),
-                        value: Expression::Identifier(2)
+                        value: Expression::Identifier(Id(2))
                     },
                 ],
                 vec![
@@ -1201,36 +1179,36 @@ mod tests {
                 vec![
                     // with b = 3
                     Assignment {
-                        id: 0,
+                        id: Id(0),
                         name: "b".into(),
                         value: Expression::Number(3.0)
                     },
                     // c = b
                     Assignment {
-                        id: 1,
+                        id: Id(1),
                         name: "c".into(),
-                        value: Expression::Identifier(0)
+                        value: Expression::Identifier(Id(0))
                     },
                     // a = c with b = 3
                     Assignment {
-                        id: 2,
+                        id: Id(2),
                         name: "a".into(),
-                        value: Expression::Identifier(1)
+                        value: Expression::Identifier(Id(1))
                     },
                     // b = a
                     Assignment {
-                        id: 3,
+                        id: Id(3),
                         name: "b".into(),
-                        value: Expression::Identifier(2)
+                        value: Expression::Identifier(Id(2))
                     },
                     // c = b
                     Assignment {
-                        id: 4,
+                        id: Id(4),
                         name: "c".into(),
-                        value: Expression::Identifier(3)
+                        value: Expression::Identifier(Id(3))
                     },
                 ],
-                vec![Some(Ok(2)), Some(Ok(3)), Some(Ok(4))],
+                vec![Some(Ok(Id(2))), Some(Ok(Id(3))), Some(Ok(Id(4)))],
             ),
         );
     }
@@ -1262,36 +1240,36 @@ mod tests {
                 vec![
                     // with b = 3
                     Assignment {
-                        id: 0,
+                        id: Id(0),
                         name: "b".into(),
                         value: Expression::Number(3.0)
                     },
                     // c = b
                     Assignment {
-                        id: 1,
+                        id: Id(1),
                         name: "c".into(),
-                        value: Expression::Identifier(0)
+                        value: Expression::Identifier(Id(0))
                     },
                     // a = c with b = 3
                     Assignment {
-                        id: 2,
+                        id: Id(2),
                         name: "a".into(),
-                        value: Expression::Identifier(1)
+                        value: Expression::Identifier(Id(1))
                     },
                     // b = a
                     Assignment {
-                        id: 3,
+                        id: Id(3),
                         name: "b".into(),
-                        value: Expression::Identifier(2)
+                        value: Expression::Identifier(Id(2))
                     },
                     // c = b
                     Assignment {
-                        id: 4,
+                        id: Id(4),
                         name: "c".into(),
-                        value: Expression::Identifier(3)
+                        value: Expression::Identifier(Id(3))
                     },
                 ],
-                vec![Some(Ok(4)), Some(Ok(3)), Some(Ok(2))],
+                vec![Some(Ok(Id(4))), Some(Ok(Id(3))), Some(Ok(Id(2)))],
             ),
         );
     }
@@ -1338,96 +1316,96 @@ mod tests {
                 vec![
                     // c = 1
                     Assignment {
-                        id: 0,
+                        id: Id(0),
                         name: "c".into(),
                         value: Expression::Number(1.0),
                     },
                     // b = c
                     Assignment {
-                        id: 1,
+                        id: Id(1),
                         name: "b".into(),
-                        value: Expression::Identifier(0),
+                        value: Expression::Identifier(Id(0)),
                     },
                     // with c = 2
                     Assignment {
-                        id: 2,
+                        id: Id(2),
                         name: "c".into(),
                         value: Expression::Number(2.0),
                     },
                     // b = c
                     Assignment {
-                        id: 3,
+                        id: Id(3),
                         name: "b".into(),
-                        value: Expression::Identifier(2),
+                        value: Expression::Identifier(Id(2)),
                     },
                     // a = b
                     Assignment {
-                        id: 4,
+                        id: Id(4),
                         name: "a".into(),
-                        value: Expression::Identifier(3),
+                        value: Expression::Identifier(Id(3)),
                     },
                     // with b = 3
                     Assignment {
-                        id: 5,
+                        id: Id(5),
                         name: "b".into(),
                         value: Expression::Number(3.0),
                     },
                     // with c = 2
                     Assignment {
-                        id: 6,
+                        id: Id(6),
                         name: "c".into(),
                         value: Expression::Number(2.0),
                     },
                     // a = b
                     Assignment {
-                        id: 7,
+                        id: Id(7),
                         name: "a".into(),
-                        value: Expression::Identifier(5),
+                        value: Expression::Identifier(Id(5)),
                     },
                     // a
                     Assignment {
-                        id: 8,
+                        id: Id(8),
                         name: "<anonymous>".into(),
-                        value: Expression::Identifier(7),
+                        value: Expression::Identifier(Id(7)),
                     },
                     // with c = 4
                     Assignment {
-                        id: 9,
+                        id: Id(9),
                         name: "c".into(),
                         value: Expression::Number(4.0),
                     },
                     // b = c
                     Assignment {
-                        id: 10,
+                        id: Id(10),
                         name: "b".into(),
-                        value: Expression::Identifier(9),
+                        value: Expression::Identifier(Id(9)),
                     },
                     // b
                     Assignment {
-                        id: 11,
+                        id: Id(11),
                         name: "<anonymous>".into(),
-                        value: Expression::Identifier(10),
+                        value: Expression::Identifier(Id(10)),
                     },
                     // with c = 5
                     Assignment {
-                        id: 12,
+                        id: Id(12),
                         name: "c".into(),
                         value: Expression::Number(5.0),
                     },
                     // a
                     Assignment {
-                        id: 13,
+                        id: Id(13),
                         name: "<anonymous>".into(),
-                        value: Expression::Identifier(4),
+                        value: Expression::Identifier(Id(4)),
                     },
                 ],
                 vec![
-                    Some(Ok(0)),
-                    Some(Ok(1)),
-                    Some(Ok(4)),
-                    Some(Ok(8)),
-                    Some(Ok(11)),
-                    Some(Ok(13)),
+                    Some(Ok(Id(0))),
+                    Some(Ok(Id(1))),
+                    Some(Ok(Id(4))),
+                    Some(Ok(Id(8))),
+                    Some(Ok(Id(11))),
+                    Some(Ok(Id(13))),
                 ],
             ),
         );
@@ -1463,13 +1441,13 @@ mod tests {
             ]),
             (
                 vec![Assignment {
-                    id: 0,
+                    id: Id(0),
                     name: "b".into(),
                     value: Expression::Number(1.0),
                 }],
                 vec![
                     Some(Err("'a' is not defined".into())),
-                    Some(Ok(0)),
+                    Some(Ok(Id(0))),
                     Some(Err("variable 'b' can't be used as a function".into())),
                     None,
                     Some(Err("'c' is a function, try using parentheses".into())),
@@ -1506,25 +1484,25 @@ mod tests {
             (
                 vec![
                     Assignment {
-                        id: 0,
+                        id: Id(0),
                         name: "a".into(),
                         value: Expression::Number(1.0),
                     },
                     Assignment {
-                        id: 1,
+                        id: Id(1),
                         name: "<anonymous>".into(),
                         value: Expression::Op {
                             operation: OpName::Mul,
-                            args: vec![Expression::Identifier(0), Expression::Number(2.0)]
+                            args: vec![Expression::Identifier(Id(0)), Expression::Number(2.0)]
                         },
                     },
                     Assignment {
-                        id: 2,
+                        id: Id(2),
                         name: "<anonymous>".into(),
                         value: Expression::Op {
                             operation: OpName::Mul,
                             args: vec![
-                                Expression::Identifier(0),
+                                Expression::Identifier(Id(0)),
                                 Expression::Op {
                                     operation: OpName::Point,
                                     args: vec![Expression::Number(3.0), Expression::Number(4.0)],
@@ -1534,9 +1512,9 @@ mod tests {
                     },
                 ],
                 vec![
-                    Some(Ok(0)),
-                    Some(Ok(1)),
-                    Some(Ok(2)),
+                    Some(Ok(Id(0))),
+                    Some(Ok(Id(1))),
+                    Some(Ok(Id(2))),
                     Some(Err("points may only have 2 coordinates".into())),
                 ],
             ),
@@ -1591,89 +1569,89 @@ mod tests {
                 vec![
                     // a3 = 5
                     Assignment {
-                        id: 0,
+                        id: Id(0),
                         name: "a3".into(),
                         value: Expression::Number(5.0),
                     },
                     // c = a3
                     Assignment {
-                        id: 1,
+                        id: Id(1),
                         name: "c".into(),
-                        value: Expression::Identifier(0),
+                        value: Expression::Identifier(Id(0)),
                     },
                     // with a1 = 6
                     Assignment {
-                        id: 2,
+                        id: Id(2),
                         name: "a1".into(),
                         value: Expression::Number(6.0),
                     },
                     // with a2 = 7
                     Assignment {
-                        id: 3,
+                        id: Id(3),
                         name: "a2".into(),
                         value: Expression::Number(7.0),
                     },
                     // a1 = 1
                     Assignment {
-                        id: 4,
+                        id: Id(4),
                         name: "a1".into(),
                         value: Expression::Number(1.0),
                     },
                     // a2 = 2
                     Assignment {
-                        id: 5,
+                        id: Id(5),
                         name: "a2".into(),
                         value: Expression::Number(2.0),
                     },
                     // a3 = 3
                     Assignment {
-                        id: 6,
+                        id: Id(6),
                         name: "a3".into(),
                         value: Expression::Number(3.0),
                     },
                     // a4 = 4
                     Assignment {
-                        id: 7,
+                        id: Id(7),
                         name: "a4".into(),
                         value: Expression::Number(4.0),
                     },
                     // b = a2
                     Assignment {
-                        id: 8,
+                        id: Id(8),
                         name: "b".into(),
-                        value: Expression::Identifier(5),
+                        value: Expression::Identifier(Id(5)),
                     },
                     // c = a3
                     Assignment {
-                        id: 9,
+                        id: Id(9),
                         name: "c".into(),
-                        value: Expression::Identifier(6),
+                        value: Expression::Identifier(Id(6)),
                     },
                     // d = a4
                     Assignment {
-                        id: 10,
+                        id: Id(10),
                         name: "d".into(),
-                        value: Expression::Identifier(7),
+                        value: Expression::Identifier(Id(7)),
                     },
                     // [a1, b, c, d]
                     Assignment {
-                        id: 11,
+                        id: Id(11),
                         name: "<anonymous>".into(),
                         value: Expression::List(vec![
-                            Expression::Identifier(4),
-                            Expression::Identifier(8),
-                            Expression::Identifier(9),
-                            Expression::Identifier(10),
+                            Expression::Identifier(Id(4)),
+                            Expression::Identifier(Id(8)),
+                            Expression::Identifier(Id(9)),
+                            Expression::Identifier(Id(10)),
                         ]),
                     },
                 ],
                 vec![
                     None,
                     Some(Err("'a2' is not defined".into())),
-                    Some(Ok(1)),
-                    Some(Ok(0)),
+                    Some(Ok(Id(1))),
+                    Some(Ok(Id(0))),
                     Some(Err("'a4' is not defined".into())),
-                    Some(Ok(11)),
+                    Some(Ok(Id(11))),
                 ],
             )
         );
@@ -1728,83 +1706,83 @@ mod tests {
                 vec![
                     // a3 = 5
                     Assignment {
-                        id: 0,
+                        id: Id(0),
                         name: "a3".into(),
                         value: Expression::Number(5.0),
                     },
                     // c = a3
                     Assignment {
-                        id: 1,
+                        id: Id(1),
                         name: "c".into(),
-                        value: Expression::Identifier(0),
+                        value: Expression::Identifier(Id(0)),
                     },
                     // with a1 = 6
                     Assignment {
-                        id: 2,
+                        id: Id(2),
                         name: "a1".into(),
                         value: Expression::Number(6.0),
                     },
                     // with a2 = 7
                     Assignment {
-                        id: 3,
+                        id: Id(3),
                         name: "a2".into(),
                         value: Expression::Number(7.0),
                     },
                     // a1 = 1
                     Assignment {
-                        id: 4,
+                        id: Id(4),
                         name: "a1".into(),
                         value: Expression::Number(1.0),
                     },
                     // a2 = 2
                     Assignment {
-                        id: 5,
+                        id: Id(5),
                         name: "a2".into(),
                         value: Expression::Number(2.0),
                     },
                     // a3 = 3
                     Assignment {
-                        id: 6,
+                        id: Id(6),
                         name: "a3".into(),
                         value: Expression::Number(3.0),
                     },
                     // a4 = 4
                     Assignment {
-                        id: 7,
+                        id: Id(7),
                         name: "a4".into(),
                         value: Expression::Number(4.0),
                     },
                     // b = a2
                     Assignment {
-                        id: 8,
+                        id: Id(8),
                         name: "b".into(),
-                        value: Expression::Identifier(3),
+                        value: Expression::Identifier(Id(3)),
                     },
                     // d = a4
                     Assignment {
-                        id: 9,
+                        id: Id(9),
                         name: "d".into(),
-                        value: Expression::Identifier(7),
+                        value: Expression::Identifier(Id(7)),
                     },
                     // [a1, b, c, d]
                     Assignment {
-                        id: 10,
+                        id: Id(10),
                         name: "<anonymous>".into(),
                         value: Expression::List(vec![
-                            Expression::Identifier(4),
-                            Expression::Identifier(8),
-                            Expression::Identifier(1),
-                            Expression::Identifier(9),
+                            Expression::Identifier(Id(4)),
+                            Expression::Identifier(Id(8)),
+                            Expression::Identifier(Id(1)),
+                            Expression::Identifier(Id(9)),
                         ]),
                     },
                 ],
                 vec![
                     None,
                     Some(Err("'a2' is not defined".into())),
-                    Some(Ok(1)),
-                    Some(Ok(0)),
+                    Some(Ok(Id(1))),
+                    Some(Ok(Id(0))),
                     Some(Err("'a4' is not defined".into())),
-                    Some(Ok(10)),
+                    Some(Ok(Id(10))),
                 ],
             )
         );
@@ -1838,27 +1816,34 @@ mod tests {
                 vec![
                     // a = 1
                     Assignment {
-                        id: 0,
+                        id: Id(0),
                         name: "a".into(),
                         value: Expression::Number(1.0)
                     },
                     // b = a
                     Assignment {
-                        id: 1,
+                        id: Id(1),
                         name: "b".into(),
-                        value: Expression::Identifier(0)
+                        value: Expression::Identifier(Id(0))
                     },
                     // f(1)
                     Assignment {
-                        id: 2,
+                        id: Id(2),
                         name: "<anonymous>".into(),
                         value: Expression::Op {
                             operation: OpName::Add,
-                            args: vec![Expression::Identifier(1), Expression::Identifier(1)]
+                            args: vec![
+                                Expression::Identifier(Id(1)),
+                                Expression::Identifier(Id(1))
+                            ]
                         }
                     },
                 ],
-                vec![None, Some(Err("'a' is not defined".into())), Some(Ok(2))]
+                vec![
+                    None,
+                    Some(Err("'a' is not defined".into())),
+                    Some(Ok(Id(2)))
+                ]
             )
         );
     }
@@ -1897,33 +1882,40 @@ mod tests {
                 vec![
                     // with a = 2
                     Assignment {
-                        id: 0,
+                        id: Id(0),
                         name: "a".into(),
                         value: Expression::Number(2.0)
                     },
                     // b = a
                     Assignment {
-                        id: 1,
+                        id: Id(1),
                         name: "b".into(),
-                        value: Expression::Identifier(0)
+                        value: Expression::Identifier(Id(0))
                     },
                     // a = 1
                     Assignment {
-                        id: 2,
+                        id: Id(2),
                         name: "a".into(),
                         value: Expression::Number(1.0)
                     },
                     // b + f(1) with a = 2
                     Assignment {
-                        id: 3,
+                        id: Id(3),
                         name: "<anonymous>".into(),
                         value: Expression::Op {
                             operation: OpName::Add,
-                            args: vec![Expression::Identifier(1), Expression::Identifier(1)]
+                            args: vec![
+                                Expression::Identifier(Id(1)),
+                                Expression::Identifier(Id(1))
+                            ]
                         }
                     },
                 ],
-                vec![None, Some(Err("'a' is not defined".into())), Some(Ok(3))]
+                vec![
+                    None,
+                    Some(Err("'a' is not defined".into())),
+                    Some(Ok(Id(3)))
+                ]
             )
         );
     }
@@ -1977,31 +1969,31 @@ mod tests {
                 vec![
                     // a = 2
                     Assignment {
-                        id: 0,
+                        id: Id(0),
                         name: "a".into(),
                         value: Expression::Number(2.0)
                     },
                     // b = a
                     Assignment {
-                        id: 1,
+                        id: Id(1),
                         name: "b".into(),
-                        value: Expression::Identifier(0)
+                        value: Expression::Identifier(Id(0))
                     },
                     // a = 1
                     Assignment {
-                        id: 2,
+                        id: Id(2),
                         name: "a".into(),
                         value: Expression::Number(1.0)
                     },
                     // b = a
                     Assignment {
-                        id: 3,
+                        id: Id(3),
                         name: "b".into(),
-                        value: Expression::Identifier(2)
+                        value: Expression::Identifier(Id(2))
                     },
                     // g(2) = b + f(1) + b
                     Assignment {
-                        id: 4,
+                        id: Id(4),
                         name: "<anonymous>".into(),
                         value: Expression::Op {
                             operation: OpName::Add,
@@ -2009,17 +2001,17 @@ mod tests {
                                 Expression::Op {
                                     operation: OpName::Add,
                                     args: vec![
-                                        Expression::Identifier(1),
+                                        Expression::Identifier(Id(1)),
                                         Expression::Op {
                                             operation: OpName::Add,
                                             args: vec![
-                                                Expression::Identifier(3),
-                                                Expression::Identifier(3)
+                                                Expression::Identifier(Id(3)),
+                                                Expression::Identifier(Id(3))
                                             ]
                                         }
                                     ]
                                 },
-                                Expression::Identifier(1)
+                                Expression::Identifier(Id(1))
                             ]
                         }
                     },
@@ -2028,7 +2020,7 @@ mod tests {
                     None,
                     Some(Err("'a' is not defined".into())),
                     None,
-                    Some(Ok(4))
+                    Some(Ok(Id(4)))
                 ]
             )
         );
@@ -2054,30 +2046,30 @@ mod tests {
                 vec![
                     // b = 2
                     Assignment {
-                        id: 0,
+                        id: Id(0),
                         name: "b".into(),
                         value: Expression::Number(2.0)
                     },
                     // a = 1
                     Assignment {
-                        id: 1,
+                        id: Id(1),
                         name: "a".into(),
                         value: Expression::Number(1.0)
                     },
                     // c = 3
                     Assignment {
-                        id: 2,
+                        id: Id(2),
                         name: "c".into(),
                         value: Expression::Number(3.0)
                     },
                     // a
                     Assignment {
-                        id: 3,
+                        id: Id(3),
                         name: "<anonymous>".into(),
-                        value: Expression::Identifier(1)
+                        value: Expression::Identifier(Id(1))
                     }
                 ],
-                vec![Some(Ok(1)), Some(Ok(3))]
+                vec![Some(Ok(Id(1))), Some(Ok(Id(3)))]
             ),
         );
     }
@@ -2131,66 +2123,66 @@ mod tests {
                 vec![
                     // c = [2]
                     Assignment {
-                        id: 0,
+                        id: Id(0),
                         name: "c".into(),
                         value: Expression::List(vec![Expression::Number(2.0)]),
                     },
                     // k = 3
                     Assignment {
-                        id: 4,
+                        id: Id(4),
                         name: "k".into(),
                         value: Expression::Number(3.0),
                     },
                     // p for j=c, i=[1]
                     Assignment {
-                        id: 6,
+                        id: Id(6),
                         name: "<anonymous>".into(),
                         value: Expression::For {
                             body: Body {
                                 assignments: vec![
                                     // q = jj
                                     Assignment {
-                                        id: 3,
+                                        id: Id(3),
                                         name: "q".into(),
                                         value: Expression::Op {
                                             operation: OpName::Mul,
                                             args: vec![
-                                                Expression::Identifier(1),
-                                                Expression::Identifier(1)
+                                                Expression::Identifier(Id(1)),
+                                                Expression::Identifier(Id(1))
                                             ]
                                         },
                                     },
                                     // p = (q,i+k)
                                     Assignment {
-                                        id: 5,
+                                        id: Id(5),
                                         name: "p".into(),
                                         value: Expression::Op {
                                             operation: OpName::Point,
                                             args: vec![
-                                                Expression::Identifier(3),
+                                                Expression::Identifier(Id(3)),
                                                 Expression::Op {
                                                     operation: OpName::Add,
                                                     args: vec![
-                                                        Expression::Identifier(2),
-                                                        Expression::Identifier(4)
+                                                        Expression::Identifier(Id(2)),
+                                                        Expression::Identifier(Id(4))
                                                     ]
                                                 }
                                             ],
                                         },
                                     },
                                 ],
-                                value: bx(Expression::Identifier(5)),
+                                value: bx(Expression::Identifier(Id(5))),
                             },
                             lists: vec![
                                 // j=c
                                 Assignment {
-                                    id: 1,
+                                    id: Id(1),
                                     name: "j".into(),
-                                    value: Expression::Identifier(0)
+                                    value: Expression::Identifier(Id(0))
                                 },
                                 // i=[1]
                                 Assignment {
-                                    id: 2,
+                                    id: Id(2),
                                     name: "i".into(),
                                     value: Expression::List(vec![Expression::Number(1.0)])
                                 },
@@ -2199,11 +2191,11 @@ mod tests {
                     },
                 ],
                 vec![
-                    Some(Ok(2)),
+                    Some(Ok(Id(6))),
                     Some(Err("'j' is not defined".into())),
-                    Some(Ok(0)),
+                    Some(Ok(Id(0))),
                     Some(Err("'j' is not defined".into())),
-                    Some(Ok(1)),
+                    Some(Ok(Id(4))),
                 ],
             ),
         );
@@ -2303,31 +2295,31 @@ mod tests {
                 vec![
                     // C = B for i=[1...5]
                     Assignment {
-                        id: 3,
+                        id: Id(3),
                         name: "C".into(),
                         value: Expression::For {
                             body: Body {
                                 assignments: vec![
                                     // B = i^2
                                     Assignment {
-                                        id: 2,
+                                        id: Id(2),
                                         name: "B".into(),
                                         value: Expression::Op {
                                             operation: OpName::Pow,
                                             args: vec![
-                                                Expression::Identifier(1),
+                                                Expression::Identifier(Id(1)),
                                                 Expression::Number(2.0)
                                             ]
                                         },
                                     },
                                 ],
                                 // B
-                                value: bx(Expression::Identifier(2)),
+                                value: bx(Expression::Identifier(Id(2))),
                             },
                             lists: vec![
                                 // i=[1...5]
                                 Assignment {
-                                    id: 1,
+                                    id: Id(1),
                                     name: "i".into(),
                                     value: Expression::ListRange {
                                         before_ellipsis: vec![Expression::Number(1.0)],
@@ -2339,45 +2331,45 @@ mod tests {
                     },
                     // A = 5
                     Assignment {
-                        id: 6,
+                        id: Id(6),
                         name: "A".into(),
                         value: Expression::Number(5.0),
                     },
                     // E = C[i] + D[i] for j=[1...4]
                     Assignment {
-                        id: 9,
+                        id: Id(9),
                         name: "E".into(),
                         value: Expression::For {
                             body: Body {
                                 assignments: vec![
                                     // D = B + A + F for i=[1...3]
                                     Assignment {
-                                        id: 8,
+                                        id: Id(8),
                                         name: "D".into(),
                                         value: Expression::For {
                                             body: Body {
                                                 assignments: vec![
                                                     // B = i^2
                                                     Assignment {
-                                                        id: 5,
+                                                        id: Id(5),
                                                         name: "B".into(),
                                                         value: Expression::Op {
                                                             operation: OpName::Pow,
                                                             args: vec![
-                                                                Expression::Identifier(4),
+                                                                Expression::Identifier(Id(4)),
                                                                 Expression::Number(2.0)
                                                             ]
                                                         },
                                                     },
                                                     // F = i + j
                                                     Assignment {
-                                                        id: 7,
+                                                        id: Id(7),
                                                         name: "F".into(),
                                                         value: Expression::Op {
                                                             operation: OpName::Add,
                                                             args: vec![
-                                                                Expression::Identifier(4),
-                                                                Expression::Identifier(0)
+                                                                Expression::Identifier(Id(4)),
+                                                                Expression::Identifier(Id(0))
                                                             ],
                                                         },
                                                     },
@@ -2389,18 +2381,18 @@ mod tests {
                                                         Expression::Op {
                                                             operation: OpName::Add,
                                                             args: vec![
-                                                                Expression::Identifier(5),
-                                                                Expression::Identifier(6)
+                                                                Expression::Identifier(Id(5)),
+                                                                Expression::Identifier(Id(6))
                                                             ],
                                                         },
-                                                        Expression::Identifier(7)
+                                                        Expression::Identifier(Id(7))
                                                     ]
                                                 }),
                                             },
                                             lists: vec![
                                                 // i=[1...3]
                                                 Assignment {
-                                                    id: 4,
+                                                    id: Id(4),
                                                     name: "i".into(),
                                                     value: Expression::ListRange {
                                                         before_ellipsis: vec![Expression::Number(
@@ -2421,11 +2413,11 @@ mod tests {
                                     args: vec![
                                         Expression::Op {
                                             operation: OpName::Total,
-                                            args: vec![Expression::Identifier(3)]
+                                            args: vec![Expression::Identifier(Id(3))]
                                         },
                                         Expression::Op {
                                             operation: OpName::Total,
-                                            args: vec![Expression::Identifier(8)]
+                                            args: vec![Expression::Identifier(Id(8))]
                                         }
                                     ]
                                 }),
@@ -2433,7 +2425,7 @@ mod tests {
                             lists: vec![
                                 // j=[1...4]
                                 Assignment {
-                                    id: 0,
+                                    id: Id(0),
                                     name: "j".into(),
                                     value: Expression::ListRange {
                                         before_ellipsis: vec![Expression::Number(1.0)],
@@ -2445,12 +2437,12 @@ mod tests {
                     },
                 ],
                 vec![
-                    Some(Ok(2)),
-                    Some(Ok(0)),
+                    Some(Ok(Id(9))),
+                    Some(Ok(Id(3))),
                     Some(Err("'j' is not defined".into())),
                     Some(Err("'i' is not defined".into())),
                     Some(Err("'i' is not defined".into())),
-                    Some(Ok(1)),
+                    Some(Ok(Id(6))),
                 ],
             ),
         );
@@ -2475,14 +2467,14 @@ mod tests {
             (
                 vec![
                     Assignment {
-                        id: 0,
+                        id: Id(0),
                         name: "a".into(),
                         value: Expression::Number(1.0),
                     },
                     Assignment {
-                        id: 1,
+                        id: Id(1),
                         name: "b".into(),
-                        value: Expression::Identifier(0),
+                        value: Expression::Identifier(Id(0)),
                     },
                 ],
                 vec![
@@ -2510,7 +2502,7 @@ mod tests {
             ]),
             (
                 vec![Assignment {
-                    id: 0,
+                    id: Id(0),
                     name: "b".into(),
                     value: Expression::Number(1.0)
                 }],
@@ -2551,48 +2543,53 @@ mod tests {
                 vec![
                     // a = 1
                     Assignment {
-                        id: 0,
+                        id: Id(0),
                         name: "a".into(),
                         value: Expression::Number(1.0),
                     },
                     // b = a
                     Assignment {
-                        id: 1,
+                        id: Id(1),
                         name: "b".into(),
-                        value: Expression::Identifier(0),
+                        value: Expression::Identifier(Id(0)),
                     },
                     // c = b
                     Assignment {
-                        id: 2,
+                        id: Id(2),
                         name: "c".into(),
-                        value: Expression::Identifier(1),
+                        value: Expression::Identifier(Id(1)),
                     },
                     // with a = 5
                     Assignment {
-                        id: 3,
+                        id: Id(3),
                         name: "a".into(),
                         value: Expression::Number(5.0),
                     },
                     // b = a
                     Assignment {
-                        id: 4,
+                        id: Id(4),
                         name: "b".into(),
-                        value: Expression::Identifier(3),
+                        value: Expression::Identifier(Id(3)),
                     },
                     // c = b
                     Assignment {
-                        id: 5,
+                        id: Id(5),
                         name: "c".into(),
-                        value: Expression::Identifier(4),
+                        value: Expression::Identifier(Id(4)),
                     },
                     // c with a = 5
                     Assignment {
-                        id: 6,
+                        id: Id(6),
                         name: "<anonymous>".into(),
-                        value: Expression::Identifier(5),
+                        value: Expression::Identifier(Id(5)),
                     },
                 ],
-                vec![Some(Ok(0)), Some(Ok(1)), Some(Ok(2)), Some(Ok(6)),],
+                vec![
+                    Some(Ok(Id(0))),
+                    Some(Ok(Id(1))),
+                    Some(Ok(Id(2))),
+                    Some(Ok(Id(6))),
+                ],
             ),
         );
     }
@@ -2631,27 +2628,33 @@ mod tests {
             (
                 vec![
                     Assignment {
-                        id: 0,
+                        id: Id(0),
                         name: "b".into(),
                         value: Expression::Number(1.0)
                     },
                     Assignment {
-                        id: 1,
+                        id: Id(1),
                         name: "<anonymous>".into(),
-                        value: Expression::Identifier(0)
+                        value: Expression::Identifier(Id(0))
                     },
                     Assignment {
-                        id: 2,
+                        id: Id(2),
                         name: "c".into(),
                         value: Expression::Number(1.0)
                     },
                     Assignment {
-                        id: 3,
+                        id: Id(3),
                         name: "<anonymous>".into(),
-                        value: Expression::Identifier(2)
+                        value: Expression::Identifier(Id(2))
                     }
                 ],
-                vec![None, Some(Ok(0)), Some(Ok(1)), Some(Ok(2)), Some(Ok(3))],
+                vec![
+                    None,
+                    Some(Ok(Id(0))),
+                    Some(Ok(Id(1))),
+                    Some(Ok(Id(2))),
+                    Some(Ok(Id(3)))
+                ],
             ),
         );
     }
@@ -2676,24 +2679,24 @@ mod tests {
                 vec![
                     // with b = 2
                     Assignment {
-                        id: 0,
+                        id: Id(0),
                         name: "b".into(),
                         value: Expression::Number(2.0),
                     },
                     // with b = b
                     Assignment {
-                        id: 1,
+                        id: Id(1),
                         name: "b".into(),
-                        value: Expression::Identifier(0),
+                        value: Expression::Identifier(Id(0)),
                     },
                     // a = (1 with b = b) with b = 2
                     Assignment {
-                        id: 2,
+                        id: Id(2),
                         name: "a".into(),
                         value: Expression::Number(1.0),
                     }
                 ],
-                vec![Some(Ok(2))],
+                vec![Some(Ok(Id(2)))],
             ),
         );
     }
@@ -2726,27 +2729,30 @@ mod tests {
                 vec![
                     // b = 1
                     Assignment {
-                        id: 0,
+                        id: Id(0),
                         name: "b".into(),
                         value: Expression::Number(1.0),
                     },
                     // with b = 2
                     Assignment {
-                        id: 1,
+                        id: Id(1),
                         name: "b".into(),
                         value: Expression::Number(2.0),
                     },
                     // a = b + (b with b = 2)
                     Assignment {
-                        id: 2,
+                        id: Id(2),
                         name: "a".into(),
                         value: Expression::Op {
                             operation: OpName::Add,
-                            args: vec![Expression::Identifier(0), Expression::Identifier(1)]
+                            args: vec![
+                                Expression::Identifier(Id(0)),
+                                Expression::Identifier(Id(1))
+                            ]
                         },
                     }
                 ],
-                vec![Some(Ok(0)), Some(Ok(2))],
+                vec![Some(Ok(Id(0))), Some(Ok(Id(2)))],
             ),
         );
     }
@@ -2779,27 +2785,27 @@ mod tests {
                 vec![
                     // b = 1
                     Assignment {
-                        id: 0,
+                        id: Id(0),
                         name: "b".into(),
                         value: Expression::Number(1.0),
                     },
                     // a = b + (b for b = [])
                     Assignment {
-                        id: 2,
+                        id: Id(2),
                         name: "a".into(),
                         value: Expression::Op {
                             operation: OpName::Add,
                             args: vec![
-                                Expression::Identifier(0),
+                                Expression::Identifier(Id(0)),
                                 Expression::For {
                                     body: Body {
                                         assignments: vec![],
-                                        value: bx(Expression::Identifier(1)),
+                                        value: bx(Expression::Identifier(Id(1))),
                                     },
                                     lists: vec![
                                         // b = []
                                         Assignment {
-                                            id: 1,
+                                            id: Id(1),
                                             name: "b".into(),
                                             value: Expression::List(vec![]),
                                         },
@@ -2809,7 +2815,7 @@ mod tests {
                         },
                     }
                 ],
-                vec![Some(Ok(0)), Some(Ok(1))],
+                vec![Some(Ok(Id(0))), Some(Ok(Id(2)))],
             ),
         );
     }
@@ -2853,25 +2859,25 @@ mod tests {
                 vec![
                     // a = 5
                     Assignment {
-                        id: 0,
+                        id: Id(0),
                         name: "a".into(),
                         value: Expression::Number(5.0)
                     },
                     // c = a
                     Assignment {
-                        id: 1,
+                        id: Id(1),
                         name: "c".into(),
-                        value: Expression::Identifier(0)
+                        value: Expression::Identifier(Id(0))
                     },
                     // a = 3
                     Assignment {
-                        id: 2,
+                        id: Id(2),
                         name: "a".into(),
                         value: Expression::Number(3.0)
                     },
                     // f(3) = c + a
                     Assignment {
-                        id: 3,
+                        id: Id(3),
                         name: "<anonymous>".into(),
                         value: Expression::Op {
                             operation: OpName::Add,
@@ -2879,16 +2885,16 @@ mod tests {
                                 Expression::Op {
                                     operation: OpName::Add,
                                     args: vec![
-                                        Expression::Identifier(2),
-                                        Expression::Identifier(1)
+                                        Expression::Identifier(Id(2)),
+                                        Expression::Identifier(Id(1))
                                     ]
                                 },
-                                Expression::Identifier(2)
+                                Expression::Identifier(Id(2))
                             ]
                         }
                     },
                 ],
-                vec![None, Some(Ok(0)), Some(Ok(1)), Some(Ok(3))]
+                vec![None, Some(Ok(Id(0))), Some(Ok(Id(1))), Some(Ok(Id(3)))]
             )
         );
     }

@@ -893,6 +893,7 @@ pub enum Interactiveness {
     /// The user can highlight text in the field and copy it
     Select,
     /// The user can't interact with the field in any way
+    #[allow(dead_code)]
     None,
 }
 

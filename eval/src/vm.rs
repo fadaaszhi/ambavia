@@ -6,8 +6,10 @@ use std::{
     rc::Rc,
 };
 
+use derive_more::{Add, From, Into};
 use ordered_float::OrderedFloat;
 use strum::{Display, EnumCount, EnumDiscriminants, FromRepr};
+use typed_index_collections::{TiSlice, TiVec, ti_vec};
 
 #[derive(Debug, Clone, Copy, PartialEq, EnumCount, EnumDiscriminants)]
 #[strum_discriminants(derive(FromRepr, Display))]
@@ -17,14 +19,14 @@ pub enum Instruction {
     Unreachable,
 
     LoadConst(f64),
-    Load(usize),
-    Load2(usize),
-    Store(usize),
-    Store2(usize),
-    LoadStore(usize),
-    Load1Store2(usize),
-    Load2Store1(usize),
-    Load2Store2(usize),
+    Load(VarIndex),
+    Load2(VarIndex),
+    Store(VarIndex),
+    Store2(VarIndex),
+    LoadStore(VarIndex),
+    Load1Store2(VarIndex),
+    Load2Store1(VarIndex),
+    Load2Store2(VarIndex),
     Copy(usize),
     Swap(usize),
     Swap2(usize),
@@ -241,13 +243,16 @@ fn sort_perm(list: &[f64]) -> Vec<usize> {
     indices
 }
 
+#[derive(Debug, Copy, Clone, From, Into, PartialEq, Add)]
+pub struct VarIndex(pub usize);
+
 #[derive(Debug, Default)]
 pub struct Vm<'a> {
     pub program: Vec<Instruction>,
     pub pc: usize,
     pub stack: Vec<Value>,
-    pub vars: Vec<Value>,
-    pub names: Option<&'a [String]>,
+    pub vars: TiVec<VarIndex, Value>,
+    pub names: Option<&'a TiSlice<VarIndex, String>>,
 }
 
 pub const UNINITIALIZED: f64 = -9.405704329145218e-291;
@@ -257,20 +262,20 @@ impl<'a> Vm<'a> {
         let n_vars = program
             .iter()
             .map(|i| match i {
-                Instruction::Load(j) | Instruction::Store(j) => j + 1,
-                Instruction::Load2(j) | Instruction::Store2(j) => j + 2,
+                Instruction::Load(j) | Instruction::Store(j) => j.0 + 1,
+                Instruction::Load2(j) | Instruction::Store2(j) => j.0 + 2,
                 _ => 0,
             })
             .max()
             .unwrap_or(0);
         Vm {
             program,
-            vars: vec![Value::Number(UNINITIALIZED); n_vars],
+            vars: ti_vec![Value::Number(UNINITIALIZED); n_vars],
             ..Default::default()
         }
     }
 
-    pub fn set_names(&mut self, names: &'a [String]) {
+    pub fn set_names(&mut self, names: &'a TiSlice<VarIndex, String>) {
         self.names = Some(names);
     }
 
@@ -286,16 +291,16 @@ impl<'a> Vm<'a> {
         self.stack[self.stack.len() - index].clone()
     }
 
-    fn name(&self, index: usize) -> Option<&str> {
+    fn name(&self, index: VarIndex) -> Option<&str> {
         self.names.as_ref().map(|n| n[index].as_ref())
     }
 
-    fn load(&self, index: usize) -> Value {
+    fn load(&self, index: VarIndex) -> Value {
         let value = self.vars[index].clone();
 
         if matches!(value, Value::Number(UNINITIALIZED)) {
             let mut msg: String = "".into();
-            write!(msg, "variable is uninitialized: {index}").unwrap();
+            write!(msg, "variable is uninitialized: {index:?}").unwrap();
 
             if let Some(name) = self.name(index) {
                 write!(msg, " ({name})").unwrap();
@@ -358,28 +363,28 @@ impl<'a> Vm<'a> {
                 }
                 Instruction::Load2(index) => {
                     self.push(self.load(index));
-                    self.push(self.load(index + 1));
+                    self.push(self.load(index + 1.into()));
                 }
                 Instruction::Store(index) => self.vars[index] = self.pop(),
                 Instruction::Store2(index) => {
-                    self.vars[index + 1] = self.pop();
+                    self.vars[index + 1.into()] = self.pop();
                     self.vars[index] = self.pop();
                 }
                 Instruction::LoadStore(index) => {
                     std::mem::swap(&mut self.vars[index], self.stack.last_mut().unwrap());
                 }
                 Instruction::Load1Store2(index) => {
-                    self.vars[index + 1] = self.pop();
+                    self.vars[index + 1.into()] = self.pop();
                     std::mem::swap(&mut self.vars[index], self.stack.last_mut().unwrap());
                 }
                 Instruction::Load2Store1(index) => {
                     std::mem::swap(&mut self.vars[index], self.stack.last_mut().unwrap());
-                    self.push(self.vars[index + 1].clone());
+                    self.push(self.vars[index + 1.into()].clone());
                 }
                 Instruction::Load2Store2(index) => {
                     let len = self.stack.len();
                     std::mem::swap(&mut self.vars[index], &mut self.stack[len - 2]);
-                    std::mem::swap(&mut self.vars[index + 1], &mut self.stack[len - 1]);
+                    std::mem::swap(&mut self.vars[index + 1.into()], &mut self.stack[len - 1]);
                 }
                 Instruction::Copy(index) => {
                     self.push(self.stack[self.stack.len() - index].clone());

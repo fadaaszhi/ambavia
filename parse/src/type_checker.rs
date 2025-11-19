@@ -774,7 +774,7 @@ pub fn type_check(
 
     let mut max_id = None;
     find_max_id(assignments.as_ref(), &mut max_id);
-    tc.id_counter = max_id.unwrap_or(0);
+    tc.id_counter = max_id.map_or(0, |max_id| max_id + 1);
 
     let mut tc_assignments = vec![];
     for a in assignments {

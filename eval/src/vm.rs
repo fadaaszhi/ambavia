@@ -9,7 +9,7 @@ use std::{
 use derive_more::{Add, From, Into};
 use ordered_float::OrderedFloat;
 use strum::{Display, EnumCount, EnumDiscriminants, FromRepr};
-use typed_index_collections::{TiSlice, TiVec, ti_vec};
+use typed_index_collections::{TiSlice, TiVec};
 
 #[derive(Debug, Clone, Copy, PartialEq, EnumCount, EnumDiscriminants)]
 #[strum_discriminants(derive(FromRepr, Display))]
@@ -245,20 +245,21 @@ fn sort_perm(list: &[f64]) -> Vec<usize> {
 
 #[derive(Debug, Copy, Clone, From, Into, PartialEq, Add)]
 pub struct VarIndex(pub usize);
+pub type Vars = TiVec<VarIndex, Value>;
 
-#[derive(Debug, Default)]
-pub struct Vm<'a> {
-    pub program: Vec<Instruction>,
+#[derive(Debug, Default, Clone)]
+pub struct Vm<'a, 'i> {
+    pub program: &'i [Instruction],
     pub pc: usize,
     pub stack: Vec<Value>,
-    pub vars: TiVec<VarIndex, Value>,
+    pub vars: Vars,
     pub names: Option<&'a TiSlice<VarIndex, String>>,
 }
 
 pub const UNINITIALIZED: f64 = -9.405704329145218e-291;
 
-impl<'a> Vm<'a> {
-    pub fn with_program(program: Vec<Instruction>) -> Vm<'a> {
+impl<'a, 'i> Vm<'a, 'i> {
+    pub fn new(program: &'i [Instruction], mut vars: Vars) -> Vm<'a, 'i> {
         let n_vars = program
             .iter()
             .map(|i| match i {
@@ -268,9 +269,12 @@ impl<'a> Vm<'a> {
             })
             .max()
             .unwrap_or(0);
+        if vars.len() < n_vars {
+            vars.resize(n_vars, Value::Number(UNINITIALIZED));
+        }
         Vm {
             program,
-            vars: ti_vec![Value::Number(UNINITIALIZED); n_vars],
+            vars,
             ..Default::default()
         }
     }
@@ -319,6 +323,8 @@ impl<'a> Vm<'a> {
             .position(|i| matches!(i, Instruction::Start))
         {
             self.pc = start + 1;
+        } else {
+            self.pc = 0;
         }
 
         const COUNT_INSTRUCTIONS: bool = false;

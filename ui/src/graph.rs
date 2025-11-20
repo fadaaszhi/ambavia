@@ -1,4 +1,8 @@
+mod sample;
+
+use eval::vm::{self, Instruction, VarIndex, Vm};
 use glam::{DVec2, Vec2, dvec2, uvec2};
+use parse::analyze_expression_list::PlotKind;
 use winit::{
     event::{ElementState, MouseButton},
     window::CursorIcon,
@@ -7,6 +11,7 @@ use winit::{
 use crate::{
     Bounds, Context, Event, Response,
     expression_list::ExpressionId,
+    graph::sample::sample_function,
     utility::{flip_y, snap},
 };
 
@@ -31,6 +36,12 @@ pub enum GeometryKind {
         p: DVec2,
         draggable: Option<ExpressionId>,
     },
+    Plot {
+        kind: PlotKind,
+        input: Option<VarIndex>,
+        output: VarIndex,
+        instructions: Vec<Instruction>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -45,6 +56,7 @@ pub struct GraphPaper {
     dragging: Option<Option<ExpressionId>>,
     hovered_point: Option<ExpressionId>,
     geometry: Vec<Geometry>,
+    vm_vars: vm::Vars,
 
     graph_texture: wgpu::Texture,
     depth_texture: wgpu::Texture,
@@ -351,6 +363,7 @@ impl GraphPaper {
             dragging: None,
             hovered_point: None,
             geometry: vec![],
+            vm_vars: Default::default(),
 
             graph_texture,
             depth_texture,
@@ -365,8 +378,9 @@ impl GraphPaper {
         }
     }
 
-    pub fn set_geometry(&mut self, geometry: Vec<Geometry>) {
+    pub fn set_geometry(&mut self, geometry: Vec<Geometry>, vm_vars: vm::Vars) {
         self.geometry = geometry;
+        self.vm_vars = vm_vars;
     }
 
     pub fn update(
@@ -559,7 +573,7 @@ impl GraphPaper {
         );
     }
 
-    fn generate_geometry(&self, ctx: &Context, bounds: Bounds) -> (Vec<Shape>, Vec<Vertex>) {
+    fn generate_geometry(&mut self, ctx: &Context, bounds: Bounds) -> (Vec<Shape>, Vec<Vertex>) {
         let mut shapes = vec![];
         let mut vertices = vec![];
         let vp = &self.viewport;
@@ -628,6 +642,102 @@ impl GraphPaper {
 
         for Geometry { width, color, kind } in &self.geometry {
             match kind {
+                GeometryKind::Plot {
+                    kind,
+                    input,
+                    output,
+                    instructions,
+                } => {
+                    let shape = shapes.len() as u32;
+                    shapes.push(Shape::line(*color, ctx.scale_factor as f32 * width));
+
+                    let mut vm = Vm::new(instructions, std::mem::take(&mut self.vm_vars));
+
+                    let n_uniform_samples = match kind {
+                        // Desmos seems to do 4 per physical pixel
+                        PlotKind::Normal => (physical.size.x * 4.0) as usize,
+                        PlotKind::Inverse => (physical.size.y * 4.0) as usize,
+                        // Desmos seems to do 2000
+                        PlotKind::Parametric => 2000,
+                    };
+
+                    let pixels_per_math = vp.width / physical.size.x;
+
+                    let buffer = 0.5 * ctx.scale_factor * *width as f64 * pixels_per_math;
+                    let vp_min = vp.center - vp_size * 0.5 - buffer;
+                    let vp_max = vp.center + vp_size * 0.5 + buffer;
+                    let tolerance = 1.0 * pixels_per_math;
+
+                    let run = |vm: &mut Vm, input_index: &Option<VarIndex>, input_value: f64| {
+                        // Sometimes the input is optimized out of the program (e.g., f(x)=2)
+                        // so we need to check if it actually exists first
+                        if let Some(index) = input_index
+                            && let Some(input) = vm.vars.get_mut(*index)
+                        {
+                            *input = vm::Value::Number(input_value);
+                        }
+                        vm.run(false);
+                    };
+
+                    let points = match kind {
+                        PlotKind::Normal => {
+                            let f = |x: f64| {
+                                run(&mut vm, input, x);
+                                let y = vm.vars[*output].clone().number();
+                                dvec2(x, y)
+                            };
+                            sample_function(
+                                f,
+                                vp_min.x,
+                                vp_max.x,
+                                vp_min,
+                                vp_max,
+                                tolerance,
+                                n_uniform_samples,
+                            )
+                        }
+                        PlotKind::Inverse => {
+                            let f = |y: f64| {
+                                run(&mut vm, input, y);
+                                let x = vm.vars[*output].clone().number();
+                                dvec2(x, y)
+                            };
+                            sample_function(
+                                f,
+                                vp_min.y,
+                                vp_max.y,
+                                vp_min,
+                                vp_max,
+                                tolerance,
+                                n_uniform_samples,
+                            )
+                        }
+                        PlotKind::Parametric => {
+                            let f = |t: f64| {
+                                run(&mut vm, input, t);
+                                let x = vm.vars[*output].clone().number();
+                                let y = vm.vars[*output + 1.into()].clone().number();
+                                dvec2(x, y)
+                            };
+                            sample_function(
+                                f,
+                                0.0,
+                                1.0,
+                                vp_min,
+                                vp_max,
+                                tolerance,
+                                n_uniform_samples,
+                            )
+                        }
+                    };
+
+                    for p in points {
+                        let p = to_physical(p).as_vec2();
+                        vertices.push(Vertex::new(p, shape));
+                    }
+
+                    self.vm_vars = vm.vars;
+                }
                 GeometryKind::Line(points) => {
                     let shape = shapes.len() as u32;
                     shapes.push(Shape::line(*color, ctx.scale_factor as f32 * width));

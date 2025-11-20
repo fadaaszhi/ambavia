@@ -16,7 +16,7 @@ pub enum BaseType {
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
-enum Type {
+pub enum Type {
     Number,
     NumberList,
     Point,
@@ -329,6 +329,16 @@ impl InstructionBuilder {
         self.create_and_push_value(load_ty)
     }
 
+    pub fn define(&mut self, name: Id, ty: Type) {
+        if let Some((var_ty, _)) = self.vars.get_mut(&name) {
+            *var_ty = Some(ty);
+        } else {
+            let index = VarIndex(self.var_counter);
+            self.var_counter += 2;
+            self.vars.insert(name, (Some(ty), index));
+        }
+    }
+
     pub fn undefine(&mut self, name: Id) {
         let (ty, _) = self
             .vars
@@ -459,6 +469,19 @@ impl InstructionBuilder {
 
         s.index = self.stack.len();
         self.stack.push(s.clone_private());
+    }
+
+    pub fn clear_instructions(&mut self) -> Vec<Instruction> {
+        for instruction in &self.instructions {
+            match instruction {
+                Jump(i) | JumpIfFalse(i) => {
+                    assert!(*i <= self.instructions.len(), "unset jump label")
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(self.stack, []);
+        std::mem::take(&mut self.instructions)
     }
 
     pub fn finish(self) -> Vec<Instruction> {

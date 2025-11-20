@@ -1,7 +1,7 @@
 use std::{collections::HashMap, iter::zip};
 
 use crate::{
-    instruction_builder::{BaseType as IbBaseType, InstructionBuilder, Value},
+    instruction_builder::{BaseType as IbBaseType, InstructionBuilder, Type as IbType, Value},
     vm::{
         Instruction::{self, *},
         VarIndex,
@@ -54,7 +54,7 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
             vectors,
             body,
         } => {
-            for Assignment { id, value } in scalars {
+            for Assignment { id, value, .. } in scalars {
                 let value = compile_expression(value, builder);
                 builder.store(*id, value);
             }
@@ -386,19 +386,42 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
     }
 }
 
-pub fn compile_assignments(
-    assignments: &[Assignment],
-) -> (Vec<Instruction>, HashMap<Id, VarIndex>) {
+pub fn compile_assignments<
+    'a,
+    I: IntoIterator<Item = Id>,
+    A: IntoIterator<Item = &'a Assignment>,
+>(
+    constants: impl IntoIterator<Item = &'a Assignment>,
+    functions: impl IntoIterator<Item = (I, A)>,
+) -> (
+    Vec<Instruction>,
+    Vec<Vec<Instruction>>,
+    HashMap<Id, VarIndex>,
+) {
     let mut builder = InstructionBuilder::default();
 
-    for Assignment { id, value, .. } in assignments {
+    for Assignment { id, value, .. } in constants {
         let value = compile_expression(value, &mut builder);
         builder.store(*id, value);
     }
 
+    let constants_program = builder.clear_instructions();
+
+    let mut function_programs = vec![];
+
+    for (parameters, assignments) in functions {
+        for id in parameters {
+            builder.define(id, IbType::Number);
+        }
+        for Assignment { id, value, .. } in assignments {
+            let value = compile_expression(value, &mut builder);
+            builder.store(*id, value);
+        }
+        function_programs.push(builder.clear_instructions());
+    }
+
     let vars = builder.defined_vars();
-    let program = builder.finish();
-    (program, vars)
+    (constants_program, function_programs, vars)
 }
 
 #[cfg(test)]

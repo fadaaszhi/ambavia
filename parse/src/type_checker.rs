@@ -1,4 +1,4 @@
-use std::{collections::HashMap, mem};
+use std::{collections::HashMap, mem, ops::ControlFlow};
 
 use derive_more::{From, Into};
 
@@ -144,7 +144,7 @@ pub enum Expression {
     },
     SumProd {
         kind: SumProdKind,
-        variable: usize,
+        variable: Id,
         lower_bound: Box<TypedExpression>,
         upper_bound: Box<TypedExpression>,
         body: Body,
@@ -158,6 +158,7 @@ pub enum Expression {
 #[derive(Debug, PartialEq)]
 pub struct Assignment {
     pub id: Id,
+    pub name: String,
     pub value: TypedExpression,
 }
 
@@ -178,10 +179,83 @@ fn binary(operation: Op, left: TypedExpression, right: TypedExpression) -> Expre
         args: vec![left, right],
     }
 }
-fn builtin(name: Op, args: Vec<TypedExpression>) -> Expression {
-    Expression::Op {
-        operation: name,
-        args,
+
+pub fn walk_assignment_ids<B>(
+    assignment: &Assignment,
+    f: &mut impl FnMut(Id) -> ControlFlow<B>,
+) -> ControlFlow<B> {
+    f(assignment.id)?;
+    assignment.value.walk_ids(f)
+}
+
+pub fn walk_assignments_ids<B>(
+    assignments: &[Assignment],
+    f: &mut impl FnMut(Id) -> ControlFlow<B>,
+) -> ControlFlow<B> {
+    assignments
+        .iter()
+        .try_for_each(|a| walk_assignment_ids(a, f))
+}
+
+impl TypedExpression {
+    pub fn walk_ids<B>(&self, f: &mut impl FnMut(Id) -> ControlFlow<B>) -> ControlFlow<B> {
+        fn w<B>(
+            es: &[TypedExpression],
+            f: &mut impl FnMut(Id) -> ControlFlow<B>,
+        ) -> ControlFlow<B> {
+            es.iter().try_for_each(|e| e.walk_ids(f))
+        }
+        match &self.e {
+            Expression::Number(_) => {}
+            Expression::Identifier(id) => f(*id)?,
+            Expression::List(list) => w(list, f)?,
+            Expression::ListRange {
+                before_ellipsis,
+                after_ellipsis,
+            } => {
+                w(before_ellipsis, f)?;
+                w(after_ellipsis, f)?;
+            }
+            Expression::Broadcast {
+                scalars,
+                vectors,
+                body,
+            } => {
+                walk_assignments_ids(scalars, f)?;
+                walk_assignments_ids(vectors, f)?;
+                body.walk_ids(f)?;
+            }
+            Expression::Op { args, .. } => w(args, f)?,
+            Expression::ChainedComparison { operands, .. } => w(operands, f)?,
+            Expression::Piecewise {
+                test,
+                consequent,
+                alternate,
+            } => {
+                test.walk_ids(f)?;
+                consequent.walk_ids(f)?;
+                alternate.walk_ids(f)?;
+            }
+            Expression::SumProd {
+                variable,
+                lower_bound,
+                upper_bound,
+                body,
+                ..
+            } => {
+                f(*variable)?;
+                lower_bound.walk_ids(f)?;
+                upper_bound.walk_ids(f)?;
+                walk_assignments_ids(&body.assignments, f)?;
+                body.value.walk_ids(f)?;
+            }
+            Expression::For { body, lists } => {
+                walk_assignments_ids(lists, f)?;
+                walk_assignments_ids(&body.assignments, f)?;
+                body.value.walk_ids(f)?;
+            }
+        }
+        ControlFlow::Continue(())
     }
 }
 
@@ -193,7 +267,11 @@ impl TypeChecker {
     fn create_assignment(&mut self, value: TypedExpression) -> Assignment {
         let id = Id(self.id_counter);
         self.id_counter += 1;
-        Assignment { id, value }
+        Assignment {
+            id,
+            name: "<anonymous>".to_string(),
+            value,
+        }
     }
 
     fn insert_computed_type(&mut self, id: Id, ty: Result<Type, String>) {
@@ -207,9 +285,10 @@ impl TypeChecker {
                 .assignments
                 .iter()
                 .map(|l| {
-                    let (id, value) = (l.id, self.check_expression(&l.value)?);
+                    let (id, name, value) =
+                        (l.id, l.name.clone(), self.check_expression(&l.value)?);
                     self.insert_computed_type(id, Ok(value.ty));
-                    Ok(Assignment { id, value })
+                    Ok(Assignment { id, name, value })
                 })
                 .collect::<Result<_, String>>()?,
             value: Box::new(self.check_expression(&body.value)?),
@@ -352,10 +431,10 @@ impl TypeChecker {
                         ),
                         B::Polygon => te(
                             Type::Polygon,
-                            builtin(
-                                Op::Polygon,
-                                vec![te(Type::PointList, Expression::List(vec![]))],
-                            ),
+                            Expression::Op {
+                                operation: Op::Polygon,
+                                args: vec![te(Type::PointList, Expression::List(vec![]))],
+                            },
                         ),
                         B::Bool => te(
                             Type::Bool,
@@ -436,6 +515,7 @@ impl TypeChecker {
                         self.insert_computed_type(l.id, Ok(Type::single(list.ty.base())));
                         let assignment = Assignment {
                             id: l.id,
+                            name: l.name.clone(),
                             value: list,
                         };
                         Ok(assignment)
@@ -769,11 +849,16 @@ fn find_max_id(assignments: &[nr::Assignment], max: &mut Option<usize>) {
 
 pub fn type_check(
     assignments: &[nr::Assignment],
+    freevars: &HashMap<String, Id>,
 ) -> (Vec<Assignment>, HashMap<Id, Result<Type, String>>) {
     let mut tc = TypeChecker::default();
 
     let mut max_id = None;
-    find_max_id(assignments.as_ref(), &mut max_id);
+    for &id in freevars.values() {
+        update_max_id(id, &mut max_id);
+        tc.insert_computed_type(id, Ok(Type::Number));
+    }
+    find_max_id(assignments, &mut max_id);
     tc.id_counter = max_id.map_or(0, |max_id| max_id + 1);
 
     let mut tc_assignments = vec![];
@@ -781,7 +866,11 @@ pub fn type_check(
         let checked = tc.check_expression(&a.value);
         tc.insert_computed_type(a.id, checked.as_ref().map(|te| te.ty).map_err(Clone::clone));
         if let Ok(value) = checked {
-            tc_assignments.push(Assignment { id: a.id, value });
+            tc_assignments.push(Assignment {
+                id: a.id,
+                name: a.name.clone(),
+                value,
+            });
         }
     }
     (tc_assignments, tc.computed_types)
@@ -814,59 +903,65 @@ mod tests {
     #[test]
     fn shrimple() {
         assert_eq!(
-            type_check(&[
-                NAs {
-                    id: Id(0),
-                    name: "a".into(),
-                    value: NNum(5.0)
-                },
-                NAs {
-                    id: Id(2),
-                    name: "b".into(),
-                    value: NOp {
-                        operation: OpName::Point,
-                        args: vec![NNum(3.0), NNum(2.0)]
+            type_check(
+                &[
+                    NAs {
+                        id: Id(0),
+                        name: "a".into(),
+                        value: NNum(5.0)
+                    },
+                    NAs {
+                        id: Id(2),
+                        name: "b".into(),
+                        value: NOp {
+                            operation: OpName::Point,
+                            args: vec![NNum(3.0), NNum(2.0)]
+                        }
+                    },
+                    NAs {
+                        id: Id(3),
+                        name: "c".into(),
+                        value: NOp {
+                            operation: OpName::Dot,
+                            args: vec![NId(Id(2)), NId(Id(0))]
+                        }
+                    },
+                    NAs {
+                        id: Id(88),
+                        name: "d".into(),
+                        value: NOp {
+                            operation: OpName::Add,
+                            args: vec![NId(Id(2)), NId(Id(0))]
+                        }
+                    },
+                    NAs {
+                        id: Id(89),
+                        name: "e".into(),
+                        value: NId(Id(88))
+                    },
+                    NAs {
+                        id: Id(999),
+                        name: "f".into(),
+                        value: NNum(9.0)
                     }
-                },
-                NAs {
-                    id: Id(3),
-                    name: "c".into(),
-                    value: NOp {
-                        operation: OpName::Dot,
-                        args: vec![NId(Id(2)), NId(Id(0))]
-                    }
-                },
-                NAs {
-                    id: Id(88),
-                    name: "d".into(),
-                    value: NOp {
-                        operation: OpName::Add,
-                        args: vec![NId(Id(2)), NId(Id(0))]
-                    }
-                },
-                NAs {
-                    id: Id(89),
-                    name: "e".into(),
-                    value: NId(Id(88))
-                },
-                NAs {
-                    id: Id(999),
-                    name: "f".into(),
-                    value: NNum(9.0)
-                }
-            ]),
+                ],
+                &HashMap::from([])
+            ),
             (
                 vec![
                     As {
                         id: Id(0),
+                        name: "a".into(),
                         value: num(Num(5.0))
                     },
                     As {
                         id: Id(2),
+                        name: "b".into(),
                         value: pt(binary(Op::Point, num(Num(3.0)), num(Num(2.0))))
                     },
                     As {
                         id: Id(3),
+                        name: "c".into(),
                         value: pt(binary(
                             Op::MulNumberPoint,
                             num(Ident(Id(0))),
@@ -875,6 +970,7 @@ mod tests {
                     },
                     As {
                         id: Id(999),
+                        name: "f".into(),
                         value: num(Num(9.0))
                     }
                 ],

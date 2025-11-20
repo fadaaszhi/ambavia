@@ -300,10 +300,10 @@ impl MainThing {
                 self.expression_list.point_dragged(i, p);
             }
 
-            let (r_expression_list, points) = self.expression_list.update(ctx, event, left);
+            let (r_expression_list, geometry) = self.expression_list.update(ctx, event, left);
 
-            if let Some(points) = points {
-                self.graph_paper.set_geometry(points);
+            if let Some((geometry, vm_vars)) = geometry {
+                self.graph_paper.set_geometry(geometry, vm_vars);
             }
 
             r_graph.or(r_expression_list)

@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 derive_more = { workspace = true }
-
+bitflags = "2.10.0"
 logos = "0.15.0"
 typed-index-collections = { workspace = true }
 

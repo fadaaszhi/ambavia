@@ -4,6 +4,7 @@ use std::{
     collections::HashMap,
     iter::zip,
     ops::{Deref, DerefMut},
+    sync::OnceLock,
 };
 
 use derive_more::{From, Into};
@@ -152,7 +153,7 @@ impl Dependency {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct Dependencies<'a>(HashMap<&'a str, Dependency>);
 
 impl<'a> Deref for Dependencies<'a> {
@@ -268,17 +269,17 @@ struct Resolver<'a> {
     definitions: HashMap<&'a str, Result<&'a ExpressionListEntry, String>>,
     dependencies_being_tracked: Option<Dependencies<'a>>,
     assignments: Vec<Vec<Assignment>>,
+    freevars: HashMap<&'a str, Id>,
     id_counter: usize,
     cycle_detector: CycleDetector<'a>,
 }
 
-#[derive(Debug, Copy, Clone, From, Into)]
+#[derive(Debug, Copy, Clone, From, Into, PartialEq, Eq, Hash)]
 pub struct ExpressionIndex(usize);
-type ExpressionList<E> = TiSlice<ExpressionIndex, E>;
 
 impl<'a> Resolver<'a> {
     fn new(
-        list: &'a ExpressionList<impl Borrow<ExpressionListEntry>>,
+        list: &'a TiSlice<ExpressionIndex, impl Borrow<ExpressionListEntry>>,
         use_v1_9_scoping_rules: bool,
     ) -> Self {
         let mut definitions = HashMap::new();
@@ -286,7 +287,9 @@ impl<'a> Resolver<'a> {
         for entry in list {
             match entry.borrow() {
                 ExpressionListEntry::Assignment { name, .. }
-                | ExpressionListEntry::FunctionDeclaration { name, .. } => {
+                | ExpressionListEntry::FunctionDeclaration { name, .. }
+                    if name != "x" && name != "y" =>
+                {
                     if let Some(result) = definitions.get_mut(name.as_str()) {
                         *result = Err(format!("'{name}' defined multiple times"));
                     } else {
@@ -308,16 +311,28 @@ impl<'a> Resolver<'a> {
             definitions,
             dependencies_being_tracked: None,
             assignments: vec![vec![]],
+            freevars: HashMap::new(),
             id_counter: 0,
             cycle_detector: CycleDetector::default(),
         }
     }
 
-    fn create_assignment(&mut self, name: &str, value: Expression) -> Assignment {
+    fn next_id(&mut self) -> Id {
         let id = Id(self.id_counter);
         self.id_counter += 1;
+        id
+    }
+
+    fn create_new_freevar(&mut self, name: &'a str) -> Id {
+        let id = self.next_id();
+        let existing = self.freevars.insert(name, id);
+        assert_eq!(existing, None);
+        id
+    }
+
+    fn create_assignment(&mut self, name: &str, value: Expression) -> Assignment {
         Assignment {
-            id,
+            id: self.next_id(),
             name: name.to_string(),
             value,
         }
@@ -344,14 +359,11 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Same as [`Resolver::resolve_expression`] but additionally tracks the
-    /// dependencies used and optionally uses a substitution scope while resolving
-    /// the expression.
-    fn resolve_expression_with_dependencies(
+    fn resolve_with_dependencies<T>(
         &mut self,
-        expression: &'a ast::Expression,
+        f: impl FnOnce(&mut Self) -> T,
         substitutions: Option<(ScopeKind, HashMap<&'a str, SubstitutionInfo>)>,
-    ) -> (Result<Expression, String>, Dependencies<'a>) {
+    ) -> (T, Dependencies<'a>) {
         let using_scope = substitutions.is_some();
         if let Some((kind, substitutions)) = substitutions {
             self.scopes.push(Scope {
@@ -363,7 +375,7 @@ impl<'a> Resolver<'a> {
 
         // Track an empty set of dependencies
         let mut original = self.dependencies_being_tracked.replace(Default::default());
-        let resolved_expression = self.resolve_expression(expression);
+        let value = f(self);
         let mut dependencies = self.dependencies_being_tracked.take().unwrap();
 
         if using_scope {
@@ -387,7 +399,18 @@ impl<'a> Resolver<'a> {
         }
         self.dependencies_being_tracked = original;
 
-        (resolved_expression, dependencies)
+        (value, dependencies)
+    }
+
+    /// Same as [`Resolver::resolve_expression`] but additionally tracks the
+    /// dependencies used and optionally uses a substitution scope while resolving
+    /// the expression.
+    fn resolve_expression_with_dependencies(
+        &mut self,
+        expression: &'a ast::Expression,
+        substitutions: Option<(ScopeKind, HashMap<&'a str, SubstitutionInfo>)>,
+    ) -> (Result<Expression, String>, Dependencies<'a>) {
+        self.resolve_with_dependencies(|this| this.resolve_expression(expression), substitutions)
     }
 
     /// Finds the most recent substitution for a variable if it exists, with the
@@ -430,6 +453,9 @@ impl<'a> Resolver<'a> {
             return Ok(i.id);
         }
 
+        // It wasn't available as a substitution so that means we'll depend on it as a computed variable
+        self.push_dependency(name, Dependency::Computed);
+
         // Check scopes to see if it's already available without having to compute it again
         for scope in self.scopes.iter().rev() {
             if let Some((id, deps)) = scope.computed.get(name) {
@@ -454,34 +480,41 @@ impl<'a> Resolver<'a> {
                     if let Some(d) = &mut self.dependencies_being_tracked {
                         d.extend(deps);
                     }
-                    self.push_dependency(name, Dependency::Computed);
                     return id;
                 }
             }
         }
 
-        self.push_dependency(name, Dependency::Computed);
-        let Some(entry) = self.definitions.get(name) else {
-            return Err(format!("'{name}' is not defined"));
-        };
-        let expr = match entry.as_ref()? {
-            ExpressionListEntry::Assignment { value, .. } => value,
-            ExpressionListEntry::FunctionDeclaration { .. } => {
-                return Err(format!("'{name}' is a function, try using parentheses"));
-            }
-            _ => unreachable!(),
+        // It hasn't been computed before so we'll have to compute it again
+        let (id, deps) = if let Some(entry) = self.definitions.get(name) {
+            let expr = match entry.as_ref()? {
+                ExpressionListEntry::Assignment { value, .. } => value,
+                ExpressionListEntry::FunctionDeclaration { .. } => {
+                    return Err(format!("'{name}' is a function, try using parentheses"));
+                }
+                _ => unreachable!(),
+            };
+
+            self.cycle_detector.push(name)?;
+            self.line_count += 1;
+            let (value, deps) = self.resolve_expression_with_dependencies(expr, None);
+            self.line_count -= 1;
+            self.cycle_detector.pop();
+            let level = deps.level();
+            let id = value.map(|value| self.push_assignment(name, level, value));
+            (id, deps)
+        } else {
+            (Ok(self.create_new_freevar(name)), Dependencies::default())
         };
 
-        self.cycle_detector.push(name)?;
-        self.line_count += 1;
-        let (value, deps) = self.resolve_expression_with_dependencies(expr, None);
-        self.line_count -= 1;
-        self.cycle_detector.pop();
-        let level = deps.level();
-        let id = value.map(|value| self.push_assignment(name, level, value));
-        self.scopes[deps.scope_index()]
+        let _existing = self.scopes[deps.scope_index()]
             .computed
             .insert(name, (id.clone(), deps));
+        // TODO this assert doesn't work because of our hacky cycle detector requiring two counts
+        // assert_eq!(
+        //     existing, None,
+        //     "if it already existed then why did we just bother computing it again?"
+        // );
 
         id
     }
@@ -720,15 +753,56 @@ impl<'a> Resolver<'a> {
     }
 }
 
-pub type ExpressionIndexToId = TiVec<ExpressionIndex, Option<Result<Id, String>>>;
+bitflags::bitflags! {
+    #[derive(Debug, PartialEq)]
+    pub struct PlotKinds: u8 {
+        /// `y = f(x)`
+        const NORMAL = 1 << 0;
+        /// `x = f(y)`
+        const INVERSE = 1 << 1;
+        /// `(x(t), y(t))`
+        const PARAMETRIC = 1 << 2;
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum ExpressionResult {
+    None,
+    Err(String),
+    Value(Id),
+    Plot {
+        allowed_kinds: PlotKinds,
+        value: Id,
+        parameter: Option<Id>,
+    },
+}
+
+fn undefined_vars_error(names: &[&str]) -> ExpressionResult {
+    ExpressionResult::Err(match names {
+        [] => unreachable!(),
+        [a] => format!("'{a}' is not defined"),
+        [first @ .., last] => format!(
+            "{} and '{last}' are not defined",
+            first
+                .iter()
+                .map(|n| format!("'{n}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    })
+}
 
 pub fn resolve_names(
-    list: &ExpressionList<impl Borrow<ExpressionListEntry>>,
+    list: &TiSlice<ExpressionIndex, impl Borrow<ExpressionListEntry>>,
     use_v1_9_scoping_rules: bool,
-) -> (Vec<Assignment>, ExpressionIndexToId) {
+) -> (
+    Vec<Assignment>,
+    TiVec<ExpressionIndex, ExpressionResult>,
+    HashMap<String, Id>,
+) {
     let mut resolver = Resolver::new(list, use_v1_9_scoping_rules);
 
-    let ei_to_id = list
+    let results = list
         .iter()
         .map(|e| {
             // When we start resolving a new expression, there shouldn't be any
@@ -742,8 +816,10 @@ pub fn resolve_names(
 
             match e.borrow() {
                 ExpressionListEntry::Assignment { name, value } => {
-                    if let Some((id, _deps)) = resolver.scopes[0].computed.get(name.as_str()) {
-                        Some(id.clone())
+                    let (id, deps) = if !resolver.freevars.contains_key(name.as_str())
+                        && let Some((id, deps)) = resolver.scopes[0].computed.get(name.as_str())
+                    {
+                        (id.clone(), deps.clone())
                     } else {
                         resolver
                             .cycle_detector
@@ -755,28 +831,174 @@ pub fn resolve_names(
                         let level = deps.level();
                         assert_eq!(level, 0);
                         let id = value.map(|value| resolver.push_assignment(name, level, value));
-                        if resolver.definitions.get(name.as_str()).unwrap().is_ok() {
-                            resolver.scopes[0].computed.insert(name, (id.clone(), deps));
+                        if let Some(Ok(_)) = resolver.definitions.get(name.as_str()) {
+                            resolver.scopes[0]
+                                .computed
+                                .insert(name, (id.clone(), deps.clone()));
                         }
-                        Some(id)
+                        (id, deps)
+                    };
+                    let mut freevars = deps
+                        .keys()
+                        .cloned()
+                        .filter(|name| resolver.freevars.contains_key(name))
+                        .collect::<Vec<_>>();
+                    freevars.sort();
+                    match id {
+                        Ok(id) => {
+                            if name == "x" && freevars.len() <= 1 && freevars != ["x"]
+                                || name != "y" && freevars == ["y"]
+                            {
+                                ExpressionResult::Plot {
+                                    allowed_kinds: if freevars == ["y"] {
+                                        PlotKinds::INVERSE
+                                    } else {
+                                        PlotKinds::INVERSE | PlotKinds::PARAMETRIC
+                                    },
+                                    value: id,
+                                    parameter: freevars.first().map(|v| resolver.freevars[v]),
+                                }
+                            } else if freevars.len() == 1 && freevars != [name]
+                                || name == "y" && freevars.is_empty()
+                            {
+                                ExpressionResult::Plot {
+                                    allowed_kinds: if freevars == ["x"] {
+                                        PlotKinds::NORMAL
+                                    } else {
+                                        PlotKinds::NORMAL | PlotKinds::PARAMETRIC
+                                    },
+                                    value: id,
+                                    parameter: freevars.first().map(|v| resolver.freevars[v]),
+                                }
+                            } else if freevars.is_empty() {
+                                ExpressionResult::Value(id)
+                            } else {
+                                undefined_vars_error(&freevars)
+                            }
+                        }
+                        Err(e) => ExpressionResult::Err(e),
                     }
                 }
-                ExpressionListEntry::FunctionDeclaration { .. } => None,
-                ExpressionListEntry::Relation(..) => {
-                    Some(Err("todo: relations are not supported yet".into()))
+                ExpressionListEntry::FunctionDeclaration {
+                    name,
+                    parameters,
+                    body,
+                    ..
+                } => {
+                    if let [parameter] = parameters.as_slice() {
+                        let arg = "<anonymous function argument>";
+                        let (value, deps) = resolver.resolve_with_dependencies(
+                            |resolver| {
+                                static ARG: OnceLock<ast::Expression> = OnceLock::new();
+                                resolver.cycle_detector.push(name).unwrap();
+                                resolver.line_count += 1;
+                                let kind = if resolver.use_v1_9_scoping_rules {
+                                    ScopeKind::Dynamic
+                                } else {
+                                    ScopeKind::Lexical {
+                                        line_count: resolver.line_count,
+                                    }
+                                };
+                                let value = resolver.resolve_substitutions(
+                                    body,
+                                    kind,
+                                    zip(
+                                        parameters,
+                                        [ARG.get_or_init(|| {
+                                            ast::Expression::Identifier(arg.into())
+                                        })],
+                                    ),
+                                    |name| {
+                                        // rustfmt failed to format otherwise
+                                        format!("cannot use '{name}'")
+                                            + " for multiple parameters of this function"
+                                    },
+                                );
+                                resolver.line_count -= 1;
+                                resolver.cycle_detector.pop();
+                                value
+                            },
+                            None,
+                        );
+                        let level = deps.level();
+                        assert_eq!(level, 0);
+                        let id = value.map(|value| {
+                            resolver.push_assignment("<anonymous function plot>", level, value)
+                        });
+                        let mut freevars = deps
+                            .keys()
+                            .cloned()
+                            .filter(|name| resolver.freevars.contains_key(name))
+                            .collect::<Vec<_>>();
+                        freevars.sort();
+
+                        match id {
+                            Ok(id) => match freevars[..] {
+                                [] | [_] => ExpressionResult::Plot {
+                                    allowed_kinds: if parameter == "y" || name == "x" {
+                                        PlotKinds::INVERSE
+                                    } else {
+                                        PlotKinds::NORMAL
+                                    },
+                                    value: id,
+                                    parameter: freevars.first().map(|v| resolver.freevars[v]),
+                                },
+                                _ => undefined_vars_error(&freevars),
+                            },
+                            Err(e) => ExpressionResult::Err(e),
+                        }
+                    } else {
+                        ExpressionResult::None
+                    }
                 }
-                ExpressionListEntry::Expression(expression) => Some(
-                    resolver
-                        .resolve_expression(expression)
-                        .map(|value| resolver.push_assignment("<anonymous>", 0, value)),
-                ),
+                ExpressionListEntry::Relation(..) => {
+                    ExpressionResult::Err("todo: relations are not supported yet".into())
+                }
+                ExpressionListEntry::Expression(value) => {
+                    let (value, deps) = resolver.resolve_expression_with_dependencies(value, None);
+                    let level = deps.level();
+                    assert_eq!(level, 0);
+                    let id =
+                        value.map(|value| resolver.push_assignment("<anonymous>", level, value));
+                    let mut freevars = deps
+                        .keys()
+                        .cloned()
+                        .filter(|name| resolver.freevars.contains_key(name))
+                        .collect::<Vec<_>>();
+                    freevars.sort();
+                    match id {
+                        Ok(id) => match freevars[..] {
+                            [] => ExpressionResult::Value(id),
+                            ["x"] => ExpressionResult::Plot {
+                                allowed_kinds: PlotKinds::NORMAL,
+                                value: id,
+                                parameter: Some(resolver.freevars["x"]),
+                            },
+                            [v] if v != "y" => ExpressionResult::Plot {
+                                allowed_kinds: PlotKinds::PARAMETRIC,
+                                value: id,
+                                parameter: Some(resolver.freevars[v]),
+                            },
+                            ["y"] => ExpressionResult::Err(
+                                "try adding 'x=' to the beginning of this equation".into(),
+                            ),
+                            _ => undefined_vars_error(&freevars),
+                        },
+                        Err(e) => ExpressionResult::Err(e),
+                    }
+                }
             }
         })
         .collect();
 
     let assignments = resolver.assignments.pop().unwrap();
     assert!(resolver.assignments.is_empty());
-    (assignments, ei_to_id)
+    let freevars = resolver
+        .freevars
+        .iter()
+        .map(|(&k, &v)| (k.into(), v))
+        .collect();
+    (assignments, results, freevars)
 }
 
 #[cfg(test)]
@@ -808,16 +1030,16 @@ mod tests {
 
     fn resolve_names_ti(
         list: &[ExpressionListEntry],
-    ) -> (Vec<Assignment>, Vec<Option<Result<Id, String>>>) {
-        let (a, b) = resolve_names(list.as_ref(), false);
-        (a, b.into())
+    ) -> (Vec<Assignment>, Vec<ExpressionResult>, HashMap<String, Id>) {
+        let (a, b, c) = resolve_names(list.as_ref(), false);
+        (a, b.into(), c)
     }
 
     fn resolve_names_ti_v1_9(
         list: &[ExpressionListEntry],
-    ) -> (Vec<Assignment>, Vec<Option<Result<Id, String>>>) {
-        let (a, b) = resolve_names(list.as_ref(), true);
-        (a, b.into())
+    ) -> (Vec<Assignment>, Vec<ExpressionResult>, HashMap<String, Id>) {
+        let (a, b, c) = resolve_names(list.as_ref(), true);
+        (a, b.into(), c)
     }
 
     #[test]
@@ -846,7 +1068,11 @@ mod tests {
                         },
                     },
                 ],
-                vec![Some(Ok(Id(0))), Some(Ok(Id(1)))],
+                vec![
+                    ExpressionResult::Value(Id(0)),
+                    ExpressionResult::Value(Id(1))
+                ],
+                HashMap::from([]),
             ),
         );
     }
@@ -877,7 +1103,11 @@ mod tests {
                         value: Expression::Identifier(Id(0)),
                     },
                 ],
-                vec![Some(Ok(Id(0))), Some(Ok(Id(1)))],
+                vec![
+                    ExpressionResult::Value(Id(0)),
+                    ExpressionResult::Value(Id(1))
+                ],
+                HashMap::from([]),
             ),
         );
     }
@@ -951,14 +1181,15 @@ mod tests {
                     },
                 ],
                 vec![
-                    Some(Ok(Id(0))),
-                    Some(Ok(Id(1))),
-                    Some(Err("'a' defined multiple times".into())),
-                    Some(Ok(Id(2))),
-                    Some(Ok(Id(3))),
-                    Some(Ok(Id(4))),
-                    Some(Err("'c' defined multiple times".into())),
+                    ExpressionResult::Value(Id(0)),
+                    ExpressionResult::Value(Id(1)),
+                    ExpressionResult::Err("'a' defined multiple times".into()),
+                    ExpressionResult::Value(Id(2)),
+                    ExpressionResult::Value(Id(3)),
+                    ExpressionResult::Value(Id(4)),
+                    ExpressionResult::Err("'c' defined multiple times".into()),
                 ],
+                HashMap::from([]),
             ),
         );
     }
@@ -979,13 +1210,14 @@ mod tests {
             (
                 vec![],
                 vec![
-                    Some(Err(
+                    ExpressionResult::Err(
                         "'a' and 'b' can't be defined in terms of each other".into()
-                    )),
-                    Some(Err(
+                    ),
+                    ExpressionResult::Err(
                         "'a' and 'b' can't be defined in terms of each other".into()
-                    )),
+                    ),
                 ],
+                HashMap::from([]),
             ),
         );
     }
@@ -1045,11 +1277,10 @@ mod tests {
                     },
                 ],
                 vec![
-                    Some(Ok(Id(0))),
-                    // error message will probably have to change when freevars are supported
-                    // "we only support implicit equations of x and y"
-                    Some(Err("'b' can't be defined in terms of itself".into())),
+                    ExpressionResult::Value(Id(0)),
+                    ExpressionResult::Err("'b' can't be defined in terms of itself".into()),
                 ],
+                HashMap::from([]),
             ),
         );
     }
@@ -1073,7 +1304,7 @@ mod tests {
                     parameters: vec!["x".into()],
                     body: AId("a".into()),
                 },
-                // // b = a
+                // b = a
                 ElAssign {
                     name: "b".into(),
                     value: AId("a".into()),
@@ -1086,7 +1317,7 @@ mod tests {
                         args: vec![ANum(3.0)]
                     },
                 },
-                // // h() = i()
+                // h() = i()
                 ElFunction {
                     name: "h".into(),
                     parameters: vec![],
@@ -1095,7 +1326,7 @@ mod tests {
                         args: vec![]
                     },
                 },
-                // // i() = h()
+                // i() = h()
                 ElFunction {
                     name: "i".into(),
                     parameters: vec![],
@@ -1104,7 +1335,7 @@ mod tests {
                         args: vec![]
                     },
                 },
-                // // h()
+                // h()
                 ElExpr(ACall {
                     callee: "h".into(),
                     args: vec![]
@@ -1112,42 +1343,58 @@ mod tests {
             ]),
             (
                 vec![
-                    Assignment {
-                        id: Id(0),
-                        name: "x".into(),
-                        value: Expression::Number(3.0)
-                    },
+                    // freevar <anonymous function argument>: 0
+                    // x = <anonymous function argument>
                     Assignment {
                         id: Id(1),
                         name: "x".into(),
                         value: Expression::Identifier(Id(0))
                     },
+                    // x = x
                     Assignment {
                         id: Id(2),
                         name: "x".into(),
-                        value: Expression::Number(3.0)
+                        value: Expression::Identifier(Id(1))
                     },
+                    // x = 3
                     Assignment {
                         id: Id(3),
                         name: "x".into(),
-                        value: Expression::Identifier(Id(2))
+                        value: Expression::Number(3.0)
+                    },
+                    // x = x
+                    Assignment {
+                        id: Id(4),
+                        name: "x".into(),
+                        value: Expression::Identifier(Id(3))
+                    },
+                    // x = <anonymous function argument>
+                    Assignment {
+                        id: Id(5),
+                        name: "x".into(),
+                        value: Expression::Identifier(Id(0))
                     },
                 ],
                 vec![
-                    None,
-                    None,
-                    Some(Err(
+                    ExpressionResult::Err(
                         "'a', 'f' and 'g' can't be defined in terms of each other".into()
-                    )),
-                    Some(Err(
+                    ),
+                    ExpressionResult::Err(
                         "'a', 'f' and 'g' can't be defined in terms of each other".into()
-                    )),
-                    None,
-                    None,
-                    Some(Err(
+                    ),
+                    ExpressionResult::Err(
+                        "'a', 'f' and 'g' can't be defined in terms of each other".into()
+                    ),
+                    ExpressionResult::Err(
+                        "'a', 'f' and 'g' can't be defined in terms of each other".into()
+                    ),
+                    ExpressionResult::None,
+                    ExpressionResult::None,
+                    ExpressionResult::Err(
                         "'h' and 'i' can't be defined in terms of each other".into()
-                    ))
+                    ),
                 ],
+                HashMap::from([("<anonymous function argument>".into(), Id(0))]),
             ),
         );
     }
@@ -1208,7 +1455,12 @@ mod tests {
                         value: Expression::Identifier(Id(3))
                     },
                 ],
-                vec![Some(Ok(Id(2))), Some(Ok(Id(3))), Some(Ok(Id(4)))],
+                vec![
+                    ExpressionResult::Value(Id(2)),
+                    ExpressionResult::Value(Id(3)),
+                    ExpressionResult::Value(Id(4))
+                ],
+                HashMap::from([]),
             ),
         );
     }
@@ -1269,7 +1521,12 @@ mod tests {
                         value: Expression::Identifier(Id(3))
                     },
                 ],
-                vec![Some(Ok(Id(4))), Some(Ok(Id(3))), Some(Ok(Id(2)))],
+                vec![
+                    ExpressionResult::Value(Id(4)),
+                    ExpressionResult::Value(Id(3)),
+                    ExpressionResult::Value(Id(2))
+                ],
+                HashMap::from([]),
             ),
         );
     }
@@ -1400,13 +1657,14 @@ mod tests {
                     },
                 ],
                 vec![
-                    Some(Ok(Id(0))),
-                    Some(Ok(Id(1))),
-                    Some(Ok(Id(4))),
-                    Some(Ok(Id(8))),
-                    Some(Ok(Id(11))),
-                    Some(Ok(Id(13))),
+                    ExpressionResult::Value(Id(0)),
+                    ExpressionResult::Value(Id(1)),
+                    ExpressionResult::Value(Id(4)),
+                    ExpressionResult::Value(Id(8)),
+                    ExpressionResult::Value(Id(11)),
+                    ExpressionResult::Value(Id(13)),
                 ],
+                HashMap::from([]),
             ),
         );
     }
@@ -1440,18 +1698,22 @@ mod tests {
                 ElExpr(AId("c".into())),
             ]),
             (
-                vec![Assignment {
-                    id: Id(0),
-                    name: "b".into(),
-                    value: Expression::Number(1.0),
-                }],
                 vec![
-                    Some(Err("'a' is not defined".into())),
-                    Some(Ok(Id(0))),
-                    Some(Err("variable 'b' can't be used as a function".into())),
-                    None,
-                    Some(Err("'c' is a function, try using parentheses".into())),
+                    // freevar a: 0,
+                    Assignment {
+                        id: Id(1),
+                        name: "b".into(),
+                        value: Expression::Number(1.0),
+                    }
                 ],
+                vec![
+                    ExpressionResult::Err("variable 'a' can't be used as a function".into()),
+                    ExpressionResult::Value(Id(1)),
+                    ExpressionResult::Err("variable 'b' can't be used as a function".into()),
+                    ExpressionResult::None,
+                    ExpressionResult::Err("'c' is a function, try using parentheses".into()),
+                ],
+                HashMap::from([("a".into(), Id(0))]),
             ),
         );
     }
@@ -1512,11 +1774,12 @@ mod tests {
                     },
                 ],
                 vec![
-                    Some(Ok(Id(0))),
-                    Some(Ok(Id(1))),
-                    Some(Ok(Id(2))),
-                    Some(Err("points may only have 2 coordinates".into())),
+                    ExpressionResult::Value(Id(0)),
+                    ExpressionResult::Value(Id(1)),
+                    ExpressionResult::Value(Id(2)),
+                    ExpressionResult::Err("points may only have 2 coordinates".into()),
                 ],
+                HashMap::from([]),
             ),
         );
     }
@@ -1567,92 +1830,115 @@ mod tests {
             ]),
             (
                 vec![
+                    // freevar a2: 0
+                    // b = a2
+                    Assignment {
+                        id: Id(1),
+                        name: "b".into(),
+                        value: Expression::Identifier(Id(0)),
+                    },
                     // a3 = 5
                     Assignment {
-                        id: Id(0),
+                        id: Id(2),
                         name: "a3".into(),
                         value: Expression::Number(5.0),
                     },
                     // c = a3
                     Assignment {
-                        id: Id(1),
+                        id: Id(3),
                         name: "c".into(),
-                        value: Expression::Identifier(Id(0)),
+                        value: Expression::Identifier(Id(2)),
+                    },
+                    // freevar a4: 4
+                    // d = a4
+                    Assignment {
+                        id: Id(5),
+                        name: "d".into(),
+                        value: Expression::Identifier(Id(4)),
                     },
                     // with a1 = 6
                     Assignment {
-                        id: Id(2),
+                        id: Id(6),
                         name: "a1".into(),
                         value: Expression::Number(6.0),
                     },
                     // with a2 = 7
                     Assignment {
-                        id: Id(3),
+                        id: Id(7),
                         name: "a2".into(),
                         value: Expression::Number(7.0),
                     },
                     // a1 = 1
                     Assignment {
-                        id: Id(4),
+                        id: Id(8),
                         name: "a1".into(),
                         value: Expression::Number(1.0),
                     },
                     // a2 = 2
                     Assignment {
-                        id: Id(5),
+                        id: Id(9),
                         name: "a2".into(),
                         value: Expression::Number(2.0),
                     },
                     // a3 = 3
                     Assignment {
-                        id: Id(6),
+                        id: Id(10),
                         name: "a3".into(),
                         value: Expression::Number(3.0),
                     },
                     // a4 = 4
                     Assignment {
-                        id: Id(7),
+                        id: Id(11),
                         name: "a4".into(),
                         value: Expression::Number(4.0),
                     },
                     // b = a2
                     Assignment {
-                        id: Id(8),
+                        id: Id(12),
                         name: "b".into(),
-                        value: Expression::Identifier(Id(5)),
+                        value: Expression::Identifier(Id(9)),
                     },
                     // c = a3
                     Assignment {
-                        id: Id(9),
+                        id: Id(13),
                         name: "c".into(),
-                        value: Expression::Identifier(Id(6)),
+                        value: Expression::Identifier(Id(10)),
                     },
                     // d = a4
                     Assignment {
-                        id: Id(10),
+                        id: Id(14),
                         name: "d".into(),
-                        value: Expression::Identifier(Id(7)),
+                        value: Expression::Identifier(Id(11)),
                     },
                     // [a1, b, c, d]
                     Assignment {
-                        id: Id(11),
+                        id: Id(15),
                         name: "<anonymous>".into(),
                         value: Expression::List(vec![
-                            Expression::Identifier(Id(4)),
                             Expression::Identifier(Id(8)),
-                            Expression::Identifier(Id(9)),
-                            Expression::Identifier(Id(10)),
+                            Expression::Identifier(Id(12)),
+                            Expression::Identifier(Id(13)),
+                            Expression::Identifier(Id(14)),
                         ]),
                     },
                 ],
                 vec![
-                    None,
-                    Some(Err("'a2' is not defined".into())),
-                    Some(Ok(Id(1))),
-                    Some(Ok(Id(0))),
-                    Some(Err("'a4' is not defined".into())),
-                    Some(Ok(Id(11))),
+                    ExpressionResult::None,
+                    ExpressionResult::Plot {
+                        allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
+                        value: Id(1),
+                        parameter: Some(Id(0))
+                    },
+                    ExpressionResult::Value(Id(3)),
+                    ExpressionResult::Value(Id(2)),
+                    ExpressionResult::Plot {
+                        allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
+                        value: Id(5),
+                        parameter: Some(Id(4))
+                    },
+                    ExpressionResult::Value(Id(15)),
                 ],
+                HashMap::from([("a2".into(), Id(0)), ("a4".into(), Id(4))]),
             )
         );
     }
@@ -1704,86 +1990,109 @@ mod tests {
             ]),
             (
                 vec![
+                    // freevar a2: 0,
+                    // b = a2
+                    Assignment {
+                        id: Id(1),
+                        name: "b".into(),
+                        value: Expression::Identifier(Id(0)),
+                    },
                     // a3 = 5
                     Assignment {
-                        id: Id(0),
+                        id: Id(2),
                         name: "a3".into(),
                         value: Expression::Number(5.0),
                     },
                     // c = a3
                     Assignment {
-                        id: Id(1),
+                        id: Id(3),
                         name: "c".into(),
-                        value: Expression::Identifier(Id(0)),
+                        value: Expression::Identifier(Id(2)),
+                    },
+                    // freevar a4: 4
+                    // d = a4
+                    Assignment {
+                        id: Id(5),
+                        name: "d".into(),
+                        value: Expression::Identifier(Id(4)),
                     },
                     // with a1 = 6
                     Assignment {
-                        id: Id(2),
+                        id: Id(6),
                         name: "a1".into(),
                         value: Expression::Number(6.0),
                     },
                     // with a2 = 7
                     Assignment {
-                        id: Id(3),
+                        id: Id(7),
                         name: "a2".into(),
                         value: Expression::Number(7.0),
                     },
                     // a1 = 1
                     Assignment {
-                        id: Id(4),
+                        id: Id(8),
                         name: "a1".into(),
                         value: Expression::Number(1.0),
                     },
                     // a2 = 2
                     Assignment {
-                        id: Id(5),
+                        id: Id(9),
                         name: "a2".into(),
                         value: Expression::Number(2.0),
                     },
                     // a3 = 3
                     Assignment {
-                        id: Id(6),
+                        id: Id(10),
                         name: "a3".into(),
                         value: Expression::Number(3.0),
                     },
                     // a4 = 4
                     Assignment {
-                        id: Id(7),
+                        id: Id(11),
                         name: "a4".into(),
                         value: Expression::Number(4.0),
                     },
                     // b = a2
                     Assignment {
-                        id: Id(8),
+                        id: Id(12),
                         name: "b".into(),
-                        value: Expression::Identifier(Id(3)),
+                        value: Expression::Identifier(Id(7)),
                     },
                     // d = a4
                     Assignment {
-                        id: Id(9),
+                        id: Id(13),
                         name: "d".into(),
-                        value: Expression::Identifier(Id(7)),
+                        value: Expression::Identifier(Id(11)),
                     },
                     // [a1, b, c, d]
                     Assignment {
-                        id: Id(10),
+                        id: Id(14),
                         name: "<anonymous>".into(),
                         value: Expression::List(vec![
-                            Expression::Identifier(Id(4)),
                             Expression::Identifier(Id(8)),
-                            Expression::Identifier(Id(1)),
-                            Expression::Identifier(Id(9)),
+                            Expression::Identifier(Id(12)),
+                            Expression::Identifier(Id(3)),
+                            Expression::Identifier(Id(13)),
                         ]),
                     },
                 ],
                 vec![
-                    None,
-                    Some(Err("'a2' is not defined".into())),
-                    Some(Ok(Id(1))),
-                    Some(Ok(Id(0))),
-                    Some(Err("'a4' is not defined".into())),
-                    Some(Ok(Id(10))),
+                    ExpressionResult::None,
+                    ExpressionResult::Plot {
+                        allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
+                        value: Id(1),
+                        parameter: Some(Id(0))
+                    },
+                    ExpressionResult::Value(Id(3)),
+                    ExpressionResult::Value(Id(2)),
+                    ExpressionResult::Plot {
+                        allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
+                        value: Id(5),
+                        parameter: Some(Id(4))
+                    },
+                    ExpressionResult::Value(Id(14)),
                 ],
+                HashMap::from([("a2".into(), Id(0)), ("a4".into(), Id(4))]),
             )
         );
     }
@@ -1814,36 +2123,80 @@ mod tests {
             ]),
             (
                 vec![
+                    // freevar <anonymous function argument>: 0
+                    // a = <anonymous function argument>
+                    Assignment {
+                        id: Id(1),
+                        name: "a".into(),
+                        value: Expression::Identifier(Id(0)),
+                    },
+                    // b = a
+                    Assignment {
+                        id: Id(2),
+                        name: "b".into(),
+                        value: Expression::Identifier(Id(1)),
+                    },
+                    // f(<anonymous function argument>)
+                    Assignment {
+                        id: Id(3),
+                        name: "<anonymous function plot>".into(),
+                        value: Expression::Op {
+                            operation: OpName::Add,
+                            args: vec![
+                                Expression::Identifier(Id(2)),
+                                Expression::Identifier(Id(2))
+                            ]
+                        }
+                    },
+                    // freevar a: 4
+                    // b = a
+                    Assignment {
+                        id: Id(5),
+                        name: "b".into(),
+                        value: Expression::Identifier(Id(4)),
+                    },
                     // a = 1
                     Assignment {
-                        id: Id(0),
+                        id: Id(6),
                         name: "a".into(),
                         value: Expression::Number(1.0)
                     },
                     // b = a
                     Assignment {
-                        id: Id(1),
+                        id: Id(7),
                         name: "b".into(),
-                        value: Expression::Identifier(Id(0))
+                        value: Expression::Identifier(Id(6))
                     },
                     // f(1)
                     Assignment {
-                        id: Id(2),
+                        id: Id(8),
                         name: "<anonymous>".into(),
                         value: Expression::Op {
                             operation: OpName::Add,
                             args: vec![
-                                Expression::Identifier(Id(1)),
-                                Expression::Identifier(Id(1))
+                                Expression::Identifier(Id(7)),
+                                Expression::Identifier(Id(7))
                             ]
                         }
                     },
                 ],
                 vec![
-                    None,
-                    Some(Err("'a' is not defined".into())),
-                    Some(Ok(Id(2)))
-                ]
+                    ExpressionResult::Plot {
+                        allowed_kinds: PlotKinds::NORMAL,
+                        value: Id(3),
+                        parameter: Some(Id(0))
+                    },
+                    ExpressionResult::Plot {
+                        allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
+                        value: Id(5),
+                        parameter: Some(Id(4))
+                    },
+                    ExpressionResult::Value(Id(8))
+                ],
+                HashMap::from([
+                    ("<anonymous function argument>".into(), Id(0)),
+                    ("a".into(), Id(4))
+                ]),
             )
         );
     }
@@ -1880,42 +2233,79 @@ mod tests {
             ]),
             (
                 vec![
+                    // freevar <anonymous function argument>: 0
+                    // a = <anonymous function argument>
+                    Assignment {
+                        id: Id(1),
+                        name: "a".into(),
+                        value: Expression::Identifier(Id(0)),
+                    },
+                    // b = a
+                    Assignment {
+                        id: Id(2),
+                        name: "b".into(),
+                        value: Expression::Identifier(Id(1)),
+                    },
+                    // f(<anonymous function argument>)
+                    Assignment {
+                        id: Id(3),
+                        name: "<anonymous function plot>".into(),
+                        value: Expression::Identifier(Id(2)),
+                    },
+                    // freevar a: 4
+                    Assignment {
+                        id: Id(5),
+                        name: "b".into(),
+                        value: Expression::Identifier(Id(4)),
+                    },
                     // with a = 2
                     Assignment {
-                        id: Id(0),
+                        id: Id(6),
                         name: "a".into(),
                         value: Expression::Number(2.0)
                     },
                     // b = a
                     Assignment {
-                        id: Id(1),
+                        id: Id(7),
                         name: "b".into(),
-                        value: Expression::Identifier(Id(0))
+                        value: Expression::Identifier(Id(6))
                     },
                     // a = 1
                     Assignment {
-                        id: Id(2),
+                        id: Id(8),
                         name: "a".into(),
                         value: Expression::Number(1.0)
                     },
                     // b + f(1) with a = 2
                     Assignment {
-                        id: Id(3),
+                        id: Id(9),
                         name: "<anonymous>".into(),
                         value: Expression::Op {
                             operation: OpName::Add,
                             args: vec![
-                                Expression::Identifier(Id(1)),
-                                Expression::Identifier(Id(1))
+                                Expression::Identifier(Id(7)),
+                                Expression::Identifier(Id(7))
                             ]
                         }
                     },
                 ],
                 vec![
-                    None,
-                    Some(Err("'a' is not defined".into())),
-                    Some(Ok(Id(3)))
-                ]
+                    ExpressionResult::Plot {
+                        allowed_kinds: PlotKinds::NORMAL,
+                        value: Id(3),
+                        parameter: Some(Id(0))
+                    },
+                    ExpressionResult::Plot {
+                        allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
+                        value: Id(5),
+                        parameter: Some(Id(4))
+                    },
+                    ExpressionResult::Value(Id(9))
+                ],
+                HashMap::from([
+                    ("<anonymous function argument>".into(), Id(0)),
+                    ("a".into(), Id(4))
+                ]),
             )
         );
     }
@@ -1967,33 +2357,113 @@ mod tests {
             ]),
             (
                 vec![
-                    // a = 2
+                    // freevar <anonymous function argument>: 0
+                    // a = <anonymous function argument>
                     Assignment {
-                        id: Id(0),
+                        id: Id(1),
                         name: "a".into(),
-                        value: Expression::Number(2.0)
+                        value: Expression::Identifier(Id(0)),
                     },
                     // b = a
                     Assignment {
-                        id: Id(1),
+                        id: Id(2),
                         name: "b".into(),
-                        value: Expression::Identifier(Id(0))
+                        value: Expression::Identifier(Id(1)),
+                    },
+                    // f(<anonymous function argument>)
+                    Assignment {
+                        id: Id(3),
+                        name: "<anonymous function plot>".into(),
+                        value: Expression::Op {
+                            operation: OpName::Add,
+                            args: vec![
+                                Expression::Identifier(Id(2)),
+                                Expression::Identifier(Id(2))
+                            ]
+                        }
+                    },
+                    // freevar a: 4
+                    // b = a
+                    Assignment {
+                        id: Id(5),
+                        name: "b".into(),
+                        value: Expression::Identifier(Id(4)),
+                    },
+                    // a = <anonymous function argument>
+                    Assignment {
+                        id: Id(6),
+                        name: "a".into(),
+                        value: Expression::Identifier(Id(0)),
+                    },
+                    // b = a
+                    Assignment {
+                        id: Id(7),
+                        name: "b".into(),
+                        value: Expression::Identifier(Id(6)),
                     },
                     // a = 1
                     Assignment {
-                        id: Id(2),
+                        id: Id(8),
                         name: "a".into(),
                         value: Expression::Number(1.0)
                     },
                     // b = a
                     Assignment {
-                        id: Id(3),
+                        id: Id(9),
                         name: "b".into(),
-                        value: Expression::Identifier(Id(2))
+                        value: Expression::Identifier(Id(8)),
+                    },
+                    // g(<anonymous function argument>)
+                    Assignment {
+                        id: Id(10),
+                        name: "<anonymous function plot>".into(),
+                        value: Expression::Op {
+                            operation: OpName::Add,
+                            args: vec![
+                                Expression::Op {
+                                    operation: OpName::Add,
+                                    args: vec![
+                                        Expression::Identifier(Id(7)),
+                                        Expression::Op {
+                                            operation: OpName::Add,
+                                            args: vec![
+                                                Expression::Identifier(Id(9)),
+                                                Expression::Identifier(Id(9))
+                                            ]
+                                        }
+                                    ]
+                                },
+                                Expression::Identifier(Id(7)),
+                            ]
+                        },
+                    },
+                    // a = 2
+                    Assignment {
+                        id: Id(11),
+                        name: "a".into(),
+                        value: Expression::Number(2.0)
+                    },
+                    // b = a
+                    Assignment {
+                        id: Id(12),
+                        name: "b".into(),
+                        value: Expression::Identifier(Id(11))
+                    },
+                    // a = 1
+                    Assignment {
+                        id: Id(13),
+                        name: "a".into(),
+                        value: Expression::Number(1.0)
+                    },
+                    // b = a
+                    Assignment {
+                        id: Id(14),
+                        name: "b".into(),
+                        value: Expression::Identifier(Id(13))
                     },
                     // g(2) = b + f(1) + b
                     Assignment {
-                        id: Id(4),
+                        id: Id(15),
                         name: "<anonymous>".into(),
                         value: Expression::Op {
                             operation: OpName::Add,
@@ -2001,27 +2471,43 @@ mod tests {
                                 Expression::Op {
                                     operation: OpName::Add,
                                     args: vec![
-                                        Expression::Identifier(Id(1)),
+                                        Expression::Identifier(Id(12)),
                                         Expression::Op {
                                             operation: OpName::Add,
                                             args: vec![
-                                                Expression::Identifier(Id(3)),
-                                                Expression::Identifier(Id(3))
+                                                Expression::Identifier(Id(14)),
+                                                Expression::Identifier(Id(14))
                                             ]
                                         }
                                     ]
                                 },
-                                Expression::Identifier(Id(1))
+                                Expression::Identifier(Id(12))
                             ]
                         }
                     },
                 ],
                 vec![
-                    None,
-                    Some(Err("'a' is not defined".into())),
-                    None,
-                    Some(Ok(Id(4)))
-                ]
+                    ExpressionResult::Plot {
+                        allowed_kinds: PlotKinds::NORMAL,
+                        value: Id(3),
+                        parameter: Some(Id(0))
+                    },
+                    ExpressionResult::Plot {
+                        allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
+                        value: Id(5),
+                        parameter: Some(Id(4))
+                    },
+                    ExpressionResult::Plot {
+                        allowed_kinds: PlotKinds::NORMAL,
+                        value: Id(10),
+                        parameter: Some(Id(0))
+                    },
+                    ExpressionResult::Value(Id(15))
+                ],
+                HashMap::from([
+                    ("<anonymous function argument>".into(), Id(0)),
+                    ("a".into(), Id(4))
+                ]),
             )
         );
     }
@@ -2069,7 +2555,11 @@ mod tests {
                         value: Expression::Identifier(Id(1))
                     }
                 ],
-                vec![Some(Ok(Id(1))), Some(Ok(Id(3)))]
+                vec![
+                    ExpressionResult::Value(Id(1)),
+                    ExpressionResult::Value(Id(3))
+                ],
+                HashMap::from([]),
             ),
         );
     }
@@ -2189,14 +2679,51 @@ mod tests {
                             ],
                         },
                     },
+                    // freevar j: 7,
+                    // q = jj
+                    Assignment {
+                        id: Id(8),
+                        name: "q".into(),
+                        value: Expression::Op {
+                            operation: OpName::Mul,
+                            args: vec![
+                                Expression::Identifier(Id(7)),
+                                Expression::Identifier(Id(7))
+                            ]
+                        },
+                    },
+                    // freevar i: 9,
+                    // p = (q,i+k)
+                    Assignment {
+                        id: Id(10),
+                        name: "p".into(),
+                        value: Expression::Op {
+                            operation: OpName::Point,
+                            args: vec![
+                                Expression::Identifier(Id(8)),
+                                Expression::Op {
+                                    operation: OpName::Add,
+                                    args: vec![
+                                        Expression::Identifier(Id(9)),
+                                        Expression::Identifier(Id(4))
+                                    ]
+                                }
+                            ],
+                        },
+                    },
                 ],
                 vec![
-                    Some(Ok(Id(6))),
-                    Some(Err("'j' is not defined".into())),
-                    Some(Ok(Id(0))),
-                    Some(Err("'j' is not defined".into())),
-                    Some(Ok(Id(4))),
+                    ExpressionResult::Value(Id(6)),
+                    ExpressionResult::Err("'i' and 'j' are not defined".into()),
+                    ExpressionResult::Value(Id(0)),
+                    ExpressionResult::Plot {
+                        allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
+                        value: Id(8),
+                        parameter: Some(Id(7))
+                    },
+                    ExpressionResult::Value(Id(4)),
                 ],
+                HashMap::from([("j".into(), Id(7)), ("i".into(), Id(9))]),
             ),
         );
     }
@@ -2435,15 +2962,107 @@ mod tests {
                             ],
                         },
                     },
+                    // freevar j: 12
+                    // D = B + A + F for i=[1...3]
+                    Assignment {
+                        id: Id(14),
+                        name: "D".into(),
+                        value: Expression::For {
+                            body: Body {
+                                assignments: vec![
+                                    // B = i^2
+                                    Assignment {
+                                        id: Id(11),
+                                        name: "B".into(),
+                                        value: Expression::Op {
+                                            operation: OpName::Pow,
+                                            args: vec![
+                                                Expression::Identifier(Id(10)),
+                                                Expression::Number(2.0)
+                                            ]
+                                        },
+                                    },
+                                    // F = i + j
+                                    Assignment {
+                                        id: Id(13),
+                                        name: "F".into(),
+                                        value: Expression::Op {
+                                            operation: OpName::Add,
+                                            args: vec![
+                                                Expression::Identifier(Id(10)),
+                                                Expression::Identifier(Id(12))
+                                            ],
+                                        },
+                                    },
+                                ],
+                                // B + A + F
+                                value: bx(Expression::Op {
+                                    operation: OpName::Add,
+                                    args: vec![
+                                        Expression::Op {
+                                            operation: OpName::Add,
+                                            args: vec![
+                                                Expression::Identifier(Id(11)),
+                                                Expression::Identifier(Id(6))
+                                            ],
+                                        },
+                                        Expression::Identifier(Id(13))
+                                    ]
+                                }),
+                            },
+                            lists: vec![
+                                // i=[1...3]
+                                Assignment {
+                                    id: Id(10),
+                                    name: "i".into(),
+                                    value: Expression::ListRange {
+                                        before_ellipsis: vec![Expression::Number(1.0)],
+                                        after_ellipsis: vec![Expression::Number(3.0)],
+                                    },
+                                },
+                            ],
+                        },
+                    },
+                    // freevar i: 15
+                    // B = i^2
+                    Assignment {
+                        id: Id(16),
+                        name: "B".into(),
+                        value: Expression::Op {
+                            operation: OpName::Pow,
+                            args: vec![Expression::Identifier(Id(15)), Expression::Number(2.0)]
+                        },
+                    },
+                    // F = i + j
+                    Assignment {
+                        id: Id(17),
+                        name: "F".into(),
+                        value: Expression::Op {
+                            operation: OpName::Add,
+                            args: vec![
+                                Expression::Identifier(Id(15)),
+                                Expression::Identifier(Id(12))
+                            ],
+                        },
+                    },
                 ],
                 vec![
-                    Some(Ok(Id(9))),
-                    Some(Ok(Id(3))),
-                    Some(Err("'j' is not defined".into())),
-                    Some(Err("'i' is not defined".into())),
-                    Some(Err("'i' is not defined".into())),
-                    Some(Ok(Id(6))),
+                    ExpressionResult::Value(Id(9)),
+                    ExpressionResult::Value(Id(3)),
+                    ExpressionResult::Plot {
+                        allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
+                        value: Id(14),
+                        parameter: Some(Id(12))
+                    },
+                    ExpressionResult::Plot {
+                        allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
+                        value: Id(16),
+                        parameter: Some(Id(15))
+                    },
+                    ExpressionResult::Err("'i' and 'j' are not defined".into()),
+                    ExpressionResult::Value(Id(6)),
                 ],
+                HashMap::from([("j".into(), Id(12)), ("i".into(), Id(15))]),
             ),
         );
     }
@@ -2452,6 +3071,7 @@ mod tests {
     fn proper_cleanup() {
         assert_eq!(
             resolve_names_ti(&[
+                // b + c with a = 1
                 ElExpr(AWith {
                     body: bx(AOp {
                         operation: OpName::Add,
@@ -2459,6 +3079,7 @@ mod tests {
                     }),
                     substitutions: vec![("a".into(), ANum(1.0))],
                 }),
+                // b = a
                 ElAssign {
                     name: "b".into(),
                     value: AId("a".into())
@@ -2466,21 +3087,52 @@ mod tests {
             ]),
             (
                 vec![
+                    // with a = 1
                     Assignment {
                         id: Id(0),
                         name: "a".into(),
                         value: Expression::Number(1.0),
                     },
+                    // b = a
                     Assignment {
                         id: Id(1),
                         name: "b".into(),
                         value: Expression::Identifier(Id(0)),
                     },
+                    // freevar c: 2
+                    // b + c with a = 1
+                    Assignment {
+                        id: Id(3),
+                        name: "<anonymous>".into(),
+                        value: Expression::Op {
+                            operation: OpName::Add,
+                            args: vec![
+                                Expression::Identifier(Id(1)),
+                                Expression::Identifier(Id(2))
+                            ]
+                        },
+                    },
+                    // freevar a: 4
+                    // b = a
+                    Assignment {
+                        id: Id(5),
+                        name: "b".into(),
+                        value: Expression::Identifier(Id(4)),
+                    },
                 ],
                 vec![
-                    Some(Err("'c' is not defined".into())),
-                    Some(Err("'a' is not defined".into())),
+                    ExpressionResult::Plot {
+                        allowed_kinds: PlotKinds::PARAMETRIC,
+                        value: Id(3),
+                        parameter: Some(Id(2))
+                    },
+                    ExpressionResult::Plot {
+                        allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
+                        value: Id(5),
+                        parameter: Some(Id(4))
+                    },
                 ],
+                HashMap::from([("c".into(), Id(2)), ("a".into(), Id(4))]),
             ),
         );
     }
@@ -2501,15 +3153,40 @@ mod tests {
                 ElExpr(AId("a".into()))
             ]),
             (
-                vec![Assignment {
-                    id: Id(0),
-                    name: "b".into(),
-                    value: Expression::Number(1.0)
-                }],
                 vec![
-                    Some(Err("'c' is not defined".into())),
-                    Some(Err("'c' is not defined".into()))
-                ]
+                    // with b = 1
+                    Assignment {
+                        id: Id(0),
+                        name: "b".into(),
+                        value: Expression::Number(1.0)
+                    },
+                    // freevar c: 1
+                    // a = c with b = 1
+                    Assignment {
+                        id: Id(2),
+                        name: "a".into(),
+                        value: Expression::Identifier(Id(1))
+                    },
+                    // a
+                    Assignment {
+                        id: Id(3),
+                        name: "<anonymous>".into(),
+                        value: Expression::Identifier(Id(2))
+                    },
+                ],
+                vec![
+                    ExpressionResult::Plot {
+                        allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
+                        value: Id(2),
+                        parameter: Some(Id(1))
+                    },
+                    ExpressionResult::Plot {
+                        allowed_kinds: PlotKinds::PARAMETRIC,
+                        value: Id(3),
+                        parameter: Some(Id(1))
+                    },
+                ],
+                HashMap::from([("c".into(), Id(1))]),
             )
         );
     }
@@ -2585,11 +3262,12 @@ mod tests {
                     },
                 ],
                 vec![
-                    Some(Ok(Id(0))),
-                    Some(Ok(Id(1))),
-                    Some(Ok(Id(2))),
-                    Some(Ok(Id(6))),
+                    ExpressionResult::Value(Id(0)),
+                    ExpressionResult::Value(Id(1)),
+                    ExpressionResult::Value(Id(2)),
+                    ExpressionResult::Value(Id(6))
                 ],
+                HashMap::from([]),
             ),
         );
     }
@@ -2649,12 +3327,13 @@ mod tests {
                     }
                 ],
                 vec![
-                    None,
-                    Some(Ok(Id(0))),
-                    Some(Ok(Id(1))),
-                    Some(Ok(Id(2))),
-                    Some(Ok(Id(3)))
+                    ExpressionResult::None,
+                    ExpressionResult::Value(Id(0)),
+                    ExpressionResult::Value(Id(1)),
+                    ExpressionResult::Value(Id(2)),
+                    ExpressionResult::Value(Id(3))
                 ],
+                HashMap::from([]),
             ),
         );
     }
@@ -2696,7 +3375,8 @@ mod tests {
                         value: Expression::Number(1.0),
                     }
                 ],
-                vec![Some(Ok(Id(2)))],
+                vec![ExpressionResult::Value(Id(2))],
+                HashMap::from([]),
             ),
         );
     }
@@ -2752,7 +3432,11 @@ mod tests {
                         },
                     }
                 ],
-                vec![Some(Ok(Id(0))), Some(Ok(Id(2)))],
+                vec![
+                    ExpressionResult::Value(Id(0)),
+                    ExpressionResult::Value(Id(2))
+                ],
+                HashMap::from([]),
             ),
         );
     }
@@ -2815,7 +3499,11 @@ mod tests {
                         },
                     }
                 ],
-                vec![Some(Ok(Id(0))), Some(Ok(Id(2)))],
+                vec![
+                    ExpressionResult::Value(Id(0)),
+                    ExpressionResult::Value(Id(2))
+                ],
+                HashMap::from([]),
             ),
         );
     }
@@ -2857,27 +3545,52 @@ mod tests {
             ]),
             (
                 vec![
+                    // freevar <anonymous function argument>: 0
+                    // a = <anonymous function argument>
+                    Assignment {
+                        id: Id(1),
+                        name: "a".into(),
+                        value: Expression::Identifier(Id(0))
+                    },
                     // a = 5
                     Assignment {
-                        id: Id(0),
+                        id: Id(2),
                         name: "a".into(),
                         value: Expression::Number(5.0)
                     },
                     // c = a
                     Assignment {
-                        id: Id(1),
+                        id: Id(3),
                         name: "c".into(),
-                        value: Expression::Identifier(Id(0))
+                        value: Expression::Identifier(Id(2))
+                    },
+                    // f(<anonymous function argument>)
+                    Assignment {
+                        id: Id(4),
+                        name: "<anonymous function plot>".into(),
+                        value: Expression::Op {
+                            operation: OpName::Add,
+                            args: vec![
+                                Expression::Op {
+                                    operation: OpName::Add,
+                                    args: vec![
+                                        Expression::Identifier(Id(1)),
+                                        Expression::Identifier(Id(3))
+                                    ]
+                                },
+                                Expression::Identifier(Id(1))
+                            ]
+                        }
                     },
                     // a = 3
                     Assignment {
-                        id: Id(2),
+                        id: Id(5),
                         name: "a".into(),
                         value: Expression::Number(3.0)
                     },
-                    // f(3) = c + a
+                    // f(3) = a + c + a
                     Assignment {
-                        id: Id(3),
+                        id: Id(6),
                         name: "<anonymous>".into(),
                         value: Expression::Op {
                             operation: OpName::Add,
@@ -2885,16 +3598,26 @@ mod tests {
                                 Expression::Op {
                                     operation: OpName::Add,
                                     args: vec![
-                                        Expression::Identifier(Id(2)),
-                                        Expression::Identifier(Id(1))
+                                        Expression::Identifier(Id(5)),
+                                        Expression::Identifier(Id(3))
                                     ]
                                 },
-                                Expression::Identifier(Id(2))
+                                Expression::Identifier(Id(5))
                             ]
                         }
                     },
                 ],
-                vec![None, Some(Ok(Id(0))), Some(Ok(Id(1))), Some(Ok(Id(3)))]
+                vec![
+                    ExpressionResult::Plot {
+                        allowed_kinds: PlotKinds::NORMAL,
+                        value: Id(4),
+                        parameter: Some(Id(0))
+                    },
+                    ExpressionResult::Value(Id(2)),
+                    ExpressionResult::Value(Id(3)),
+                    ExpressionResult::Value(Id(6))
+                ],
+                HashMap::from([("<anonymous function argument>".into(), Id(0))]),
             )
         );
     }

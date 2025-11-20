@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use bytemuck::{Zeroable, offset_of};
 use derive_more::{Add, From, Into, Sub};
 use glam::{DVec2, U16Vec2, Vec2, dvec2, u16vec2, uvec2, vec2};
@@ -10,26 +12,35 @@ use winit::{
 use crate::{
     graph::{
         Geometry,
-        GeometryKind::{Line, Point},
+        GeometryKind::{Line, Plot, Point},
     },
     math_field::{Cursor, Interactiveness, MathField, Message, UserSelection},
     ui::{Bounds, Context, Event, QuadKind, Response},
     utility::{mix, unmix},
 };
-use eval::{compiler::compile_assignments, vm::Vm};
+use eval::{
+    compiler::compile_assignments,
+    vm::{self, Vm},
+};
 use parse::{
+    analyze_expression_list::{ExpressionResult, analyze_expression_list},
     ast_parser::parse_expression_list_entry,
     latex_parser::parse_latex,
     latex_tree,
-    name_resolver::{ExpressionIndex, resolve_names},
-    type_checker::{Type, type_check},
+    name_resolver::ExpressionIndex,
+    type_checker::Type,
 };
 
 #[derive(Default)]
-enum Output {
+struct Output {
+    ui: OutputUi,
+    data: OutputData,
+}
+
+#[derive(Default)]
+enum OutputUi {
     #[default]
     None,
-    Error(String),
     Slider {
         value: f64,
         min: f64,
@@ -37,16 +48,11 @@ enum Output {
         dragging: Option<f64>,
         hovered: bool,
     },
-    DraggablePoint(Geometry),
-    Value {
-        field: MathField,
-        points: Vec<Geometry>,
-    },
-    Polygon(Vec<Geometry>),
+    Field(MathField),
 }
 
-impl Output {
-    fn new_value(latex: &[latex_tree::Node], points: Vec<Geometry>) -> Output {
+impl OutputUi {
+    fn field_from_latex(latex: &[latex_tree::Node]) -> OutputUi {
         let mut field = MathField::from(latex);
         field.interactiveness = Interactiveness::Select;
         field.scale = 18.0;
@@ -54,20 +60,44 @@ impl Output {
         field.right_padding = 0.4;
         field.bottom_padding = 0.19;
         field.top_padding = 0.25;
-        Output::Value { field, points }
+        OutputUi::Field(field)
+    }
+}
+
+#[derive(Debug, Default)]
+enum OutputData {
+    #[default]
+    None,
+    Error(String),
+    DraggablePoint(Geometry),
+    Geometry(Vec<Geometry>),
+}
+
+impl Output {
+    const NONE: Output = Output {
+        ui: OutputUi::None,
+        data: OutputData::None,
+    };
+
+    fn new_error(error: String) -> Output {
+        Output {
+            ui: OutputUi::None,
+            data: OutputData::Error(error),
+        }
     }
 
     fn set_slider(&mut self, new_value: f64, new_min: f64, new_max: f64) {
-        if let Output::Slider {
+        self.data = OutputData::None;
+        if let OutputUi::Slider {
             value, min, max, ..
-        } = self
-            && *value == new_value
-            && *min == new_min
-            && *max == new_max
+        } = self.ui
+            && value == new_value
+            && min == new_min
+            && max == new_max
         {
             return;
         }
-        *self = Output::Slider {
+        self.ui = OutputUi::Slider {
             value: new_value,
             min: new_min,
             max: new_max,
@@ -87,11 +117,9 @@ impl Output {
         top_left: DVec2,
         width: f64,
     ) -> (Response, Option<f64>, Bounds) {
-        match self {
-            Output::None | Output::Error(_) | Output::DraggablePoint(_) | Output::Polygon(_) => {
-                (Response::default(), None, Bounds::default())
-            }
-            Output::Slider {
+        match &mut self.ui {
+            OutputUi::None => (Response::default(), None, Bounds::default()),
+            OutputUi::Slider {
                 value,
                 min,
                 max,
@@ -162,7 +190,7 @@ impl Output {
 
                 (response, new_value, bounds)
             }
-            Output::Value { field, .. } => {
+            OutputUi::Field(field) => {
                 let size = field.expression_size().map(|s| ctx.ceil(s));
                 let right = top_left.x + width - 0.5 * padding;
                 let left = (right - size.x).max(top_left.x + padding);
@@ -200,9 +228,9 @@ impl Output {
         width: f64,
         draw_quad: &mut impl FnMut(DVec2, DVec2, QuadKind),
     ) -> f64 {
-        match self {
-            Output::None | Output::Error(_) | Output::DraggablePoint(_) | Output::Polygon(_) => 0.0,
-            Output::Slider {
+        match &mut self.ui {
+            OutputUi::None => 0.0,
+            OutputUi::Slider {
                 value,
                 min,
                 max,
@@ -241,7 +269,7 @@ impl Output {
 
                 bounds.size.y
             }
-            Output::Value { field, .. } => {
+            OutputUi::Field(field) => {
                 let size = field.expression_size().map(|s| ctx.ceil(s));
                 let right = top_left.x + width - 0.5 * padding;
                 let left = (right - size.x).max(top_left.x + padding);
@@ -427,6 +455,7 @@ pub struct ExpressionList {
     scroll: f64,
     height: f64,
     expression_bottoms: TiVec<ExpressionId, f64>,
+    vm_vars: vm::Vars,
 
     pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
@@ -662,6 +691,7 @@ impl ExpressionList {
             scroll: 0.0,
             height: 0.0,
             expression_bottoms: ti_vec![],
+            vm_vars: Default::default(),
 
             pipeline,
             vertex_buffer,
@@ -719,10 +749,10 @@ impl ExpressionList {
         ctx: &Context,
         event: &Event,
         bounds: Bounds,
-    ) -> (Response, Option<Vec<Geometry>>) {
+    ) -> (Response, Option<(Vec<Geometry>, vm::Vars)>) {
         self.height = bounds.size.y;
         let mut response = Response::default();
-        let mut redraw_points = false;
+        let mut redraw_geometry = false;
 
         match event {
             Event::MouseWheel(delta)
@@ -808,7 +838,7 @@ impl ExpressionList {
                     .expressions
                     .iter_enumerated()
                     .find_map(|(i, e)| e.has_focus().then_some(i));
-                redraw_points |= self.expressions_changed || original_focus != new_focus;
+                redraw_geometry |= self.expressions_changed || original_focus != new_focus;
 
                 if let Some(i) = new_focus
                     && original_focus != new_focus
@@ -873,11 +903,11 @@ impl ExpressionList {
                         let ast = match &e.ast {
                             Some(Ok(ast)) => ast,
                             Some(Err(err)) => {
-                                e.output = Output::Error(format!("parse error: {err}"));
+                                e.output = Output::new_error(format!("parse error: {err}"));
                                 continue;
                             }
                             None => {
-                                e.output = Output::None;
+                                e.output = Output::NONE;
                                 continue;
                             }
                         };
@@ -905,117 +935,180 @@ impl ExpressionList {
                             {
                                 let mut latex = vec![C('=')];
                                 point(&mut latex, x, y);
-                                e.output = Output::DraggablePoint(Geometry {
-                                    width: 8.0,
-                                    color: colors[i.0 % colors.len()],
-                                    kind: Point {
-                                        p: dvec2(x, y),
-                                        draggable: Some(i),
-                                    },
-                                });
+                                e.output = Output {
+                                    ui: OutputUi::None,
+                                    data: OutputData::DraggablePoint(Geometry {
+                                        width: 8.0,
+                                        color: colors[i.0 % colors.len()],
+                                        kind: Point {
+                                            p: dvec2(x, y),
+                                            draggable: Some(i),
+                                        },
+                                    }),
+                                };
                             } else {
-                                e.output = Output::None;
+                                e.output = Output::NONE;
                             }
                         } else {
-                            e.output = Output::None;
+                            e.output = Output::NONE;
                         }
                         list.push(ast);
                         ei_to_oi.push(i);
                     }
 
-                    let (assignments, ei_to_id) = resolve_names(list.as_slice(), false);
-                    let (assignments, types) = type_check(&assignments);
-                    let (program, var_indices) = compile_assignments(&assignments);
-                    let mut vm = Vm::with_program(program);
+                    let analysis = analyze_expression_list(&list, false);
+
+                    let mut function_id_map = HashMap::new();
+                    let (program, mut functions, var_indices) = compile_assignments(
+                        analysis.constants.iter().map(|&i| &analysis.assignments[i]),
+                        analysis.results.iter_enumerated().filter_map(|(i, r)| {
+                            let ExpressionResult::Plot {
+                                parameter,
+                                assignments,
+                                ..
+                            } = r
+                            else {
+                                return None;
+                            };
+                            function_id_map.insert(i, function_id_map.len());
+                            Some((
+                                *parameter,
+                                assignments.iter().map(|&i| &analysis.assignments[i]),
+                            ))
+                        }),
+                    );
+                    let mut functions = function_id_map
+                        .into_iter()
+                        .map(|(id, i)| (id, std::mem::take(&mut functions[i])))
+                        .collect::<HashMap<_, _>>();
+                    let mut vm = Vm::new(&program, Default::default());
                     vm.run(false);
 
-                    for (ei, id) in ei_to_id.into_iter_enumerated() {
+                    for (ei, r) in analysis.results.into_iter_enumerated() {
                         let i = ei_to_oi[ei];
                         let output = &mut self.expressions[i].output;
 
-                        if matches!(output, Output::None) {
-                            *output = match id {
-                                Some(Ok(id)) => match &types[&id] {
-                                    Ok(ty) => {
-                                        let v = var_indices[&id];
-                                        let mut nodes = vec![C('=')];
+                        if let OutputData::Error(_) = output.data {
+                            continue;
+                        }
 
-                                        let color = colors[i.0 % colors.len()];
-                                        let mut geometry = vec![];
-                                        let mut draw_point = |x: f64, y: f64| {
+                        match r {
+                            ExpressionResult::None => *output = Output::NONE,
+                            ExpressionResult::Err(e) => {
+                                *output = Output::new_error(format!("analysis error: {e}"))
+                            }
+                            ExpressionResult::Value(id, ty)
+                            | ExpressionResult::Plot { value: id, ty, .. } => {
+                                let mut nodes = vec![C('=')];
+
+                                let color = colors[i.0 % colors.len()];
+                                let mut geometry = vec![];
+                                let mut draw_point = |x: f64, y: f64| {
+                                    geometry.push(Geometry {
+                                        width: 8.0,
+                                        color,
+                                        kind: Point {
+                                            p: dvec2(x, y),
+                                            draggable: None,
+                                        },
+                                    });
+                                };
+                                let list_limit = 10;
+
+                                if let ExpressionResult::Plot {
+                                    kind,
+                                    value,
+                                    parameter,
+                                    ..
+                                } = r
+                                {
+                                    output.data = OutputData::Geometry(vec![Geometry {
+                                        width: 2.5,
+                                        color,
+                                        kind: Plot {
+                                            kind,
+                                            input: parameter.map(|p| var_indices[&p]),
+                                            output: var_indices[&value],
+                                            instructions: functions.remove(&ei).unwrap(),
+                                        },
+                                    }]);
+                                }
+
+                                if !matches!(
+                                    r,
+                                    ExpressionResult::Plot {
+                                        parameter: Some(_),
+                                        ..
+                                    },
+                                ) {
+                                    let v = var_indices[&id];
+                                    match ty {
+                                        Type::Number => {
+                                            number(&mut nodes, vm.vars[v].clone().number())
+                                        }
+                                        Type::NumberList => {
+                                            let a = vm.vars[v].clone().list();
+                                            let mut list = vec![C('[')];
+                                            for (i, x) in a.borrow().as_slice().iter().enumerate() {
+                                                if i < list_limit {
+                                                    if i > 0 {
+                                                        list.push(C(','));
+                                                    }
+                                                    number(&mut list, *x);
+                                                } else {
+                                                    list.extend([C(','), C('.'), C('.'), C('.')]);
+                                                    break;
+                                                }
+                                            }
+                                            list.push(C(']'));
+                                            nodes.push(Node::DelimitedGroup(list));
+                                        }
+                                        Type::Point => {
+                                            let x = vm.vars[v].clone().number();
+                                            let y = vm.vars[v + 1.into()].clone().number();
+                                            draw_point(x, y);
+                                            point(&mut nodes, x, y);
+                                        }
+                                        Type::PointList => {
+                                            let a = vm.vars[v].clone().list();
+                                            let mut list = vec![C('[')];
+                                            for (i, p) in a.borrow().chunks(2).enumerate() {
+                                                if i < list_limit {
+                                                    if i > 0 {
+                                                        list.push(C(','));
+                                                    }
+                                                    point(&mut list, p[0], p[1]);
+                                                } else if i == list_limit {
+                                                    list.extend([C(','), C('.'), C('.'), C('.')]);
+                                                }
+                                                draw_point(p[0], p[1]);
+                                            }
+                                            list.push(C(']'));
+                                            nodes.push(Node::DelimitedGroup(list));
+                                        }
+                                        Type::Polygon => {
+                                            let a = vm.vars[v].clone().list();
+                                            let a = a.borrow();
                                             geometry.push(Geometry {
-                                                width: 8.0,
+                                                width: 2.5,
                                                 color,
-                                                kind: Point {
-                                                    p: dvec2(x, y),
-                                                    draggable: None,
-                                                },
+                                                kind: Line(
+                                                    a.chunks(2)
+                                                        .chain(a.chunks(2).take(if a.len() > 2 {
+                                                            1
+                                                        } else {
+                                                            0
+                                                        }))
+                                                        .map(|p| dvec2(p[0], p[1]))
+                                                        .collect(),
+                                                ),
                                             });
-                                        };
-                                        let list_limit = 10;
-                                        let mut is_polygon = false;
-
-                                        match ty {
-                                            Type::Number => {
-                                                number(&mut nodes, vm.vars[v].clone().number())
-                                            }
-                                            Type::NumberList => {
-                                                let a = vm.vars[v].clone().list();
-                                                let mut list = vec![C('[')];
-                                                for (i, x) in
-                                                    a.borrow().as_slice().iter().enumerate()
-                                                {
-                                                    if i < list_limit {
-                                                        if i > 0 {
-                                                            list.push(C(','));
-                                                        }
-                                                        number(&mut list, *x);
-                                                    } else {
-                                                        list.extend([
-                                                            C(','),
-                                                            C('.'),
-                                                            C('.'),
-                                                            C('.'),
-                                                        ]);
-                                                        break;
-                                                    }
-                                                }
-                                                list.push(C(']'));
-                                                nodes.push(Node::DelimitedGroup(list));
-                                            }
-                                            Type::Point => {
-                                                let x = vm.vars[v].clone().number();
-                                                let y = vm.vars[v + 1.into()].clone().number();
-                                                draw_point(x, y);
-                                                point(&mut nodes, x, y);
-                                            }
-                                            Type::PointList => {
-                                                let a = vm.vars[v].clone().list();
-                                                let mut list = vec![C('[')];
-                                                for (i, p) in a.borrow().chunks(2).enumerate() {
-                                                    if i < list_limit {
-                                                        if i > 0 {
-                                                            list.push(C(','));
-                                                        }
-                                                        point(&mut list, p[0], p[1]);
-                                                    } else if i == list_limit {
-                                                        list.extend([
-                                                            C(','),
-                                                            C('.'),
-                                                            C('.'),
-                                                            C('.'),
-                                                        ]);
-                                                    }
-                                                    draw_point(p[0], p[1]);
-                                                }
-                                                list.push(C(']'));
-                                                nodes.push(Node::DelimitedGroup(list));
-                                            }
-                                            Type::Polygon => {
-                                                is_polygon = true;
-                                                let a = vm.vars[v].clone().list();
+                                        }
+                                        Type::PolygonList => {
+                                            let a = vm.vars[v].clone().polygon_list();
+                                            geometry.extend(a.borrow().iter().map(|a| {
                                                 let a = a.borrow();
-                                                geometry.push(Geometry {
+                                                Geometry {
                                                     width: 2.5,
                                                     color,
                                                     kind: Line(
@@ -1026,49 +1119,34 @@ impl ExpressionList {
                                                             .map(|p| dvec2(p[0], p[1]))
                                                             .collect(),
                                                     ),
-                                                });
-                                            }
-                                            Type::PolygonList => {
-                                                is_polygon = true;
-                                                let a = vm.vars[v].clone().polygon_list();
-                                                geometry.extend(a.borrow().iter().map(|a| {
-                                                    let a = a.borrow();
-                                                    Geometry {
-                                                        width: 2.5,
-                                                        color,
-                                                        kind: Line(
-                                                            a.chunks(2)
-                                                                .chain(a.chunks(2).take(
-                                                                    if a.len() > 2 { 1 } else { 0 },
-                                                                ))
-                                                                .map(|p| dvec2(p[0], p[1]))
-                                                                .collect(),
-                                                        ),
-                                                    }
-                                                }));
-                                            }
-                                            Type::Bool | Type::BoolList => unreachable!(),
-                                            Type::EmptyList => nodes
-                                                .push(Node::DelimitedGroup(vec![C('['), C(']')])),
+                                                }
+                                            }));
                                         }
-
-                                        if is_polygon {
-                                            Output::Polygon(geometry)
-                                        } else {
-                                            Output::new_value(&nodes, geometry)
+                                        Type::Bool | Type::BoolList => unreachable!(),
+                                        Type::EmptyList => {
+                                            nodes.push(Node::DelimitedGroup(vec![C('['), C(']')]))
                                         }
                                     }
-                                    Err(e) => Output::Error(format!("type error: {e}")),
-                                },
-                                Some(Err(e)) => Output::Error(format!("name error: {e}")),
-                                None => Output::None,
+
+                                    if ty.as_single() != Type::Polygon
+                                        && let OutputUi::None = output.ui
+                                        && !matches!(output.data, OutputData::DraggablePoint(_))
+                                    {
+                                        output.ui = OutputUi::field_from_latex(&nodes);
+                                    }
+                                    if let OutputData::None = output.data {
+                                        output.data = OutputData::Geometry(geometry);
+                                    }
+                                }
                             }
                         }
                     }
 
+                    self.vm_vars = vm.vars;
+
                     let mut has_error = false;
                     for (i, e) in self.expressions.iter().enumerate() {
-                        if let Output::Error(e) = &e.output {
+                        if let OutputData::Error(e) = &e.output.data {
                             println!("expression {} {e}", i + 1);
                             has_error = true;
                         }
@@ -1082,14 +1160,14 @@ impl ExpressionList {
 
         let mut geometry = None;
 
-        if redraw_points {
+        if redraw_geometry {
             let mut regular_geometry = vec![];
             let mut draggable_points = vec![];
             let mut focussed_geometry = vec![];
 
             for e in &self.expressions {
-                match &e.output {
-                    Output::DraggablePoint(p) => {
+                match &e.output.data {
+                    OutputData::DraggablePoint(p) => {
                         let mut p = p.clone();
                         if e.has_focus() {
                             p.width *= 1.15;
@@ -1098,14 +1176,11 @@ impl ExpressionList {
                             draggable_points.push(p);
                         }
                     }
-                    Output::Value {
-                        points: geometry, ..
-                    }
-                    | Output::Polygon(geometry) => {
+                    OutputData::Geometry(geometry) => {
                         if e.has_focus() {
                             for mut g in geometry.iter().cloned() {
                                 g.width *= match g.kind {
-                                    Line(_) => 1.4,
+                                    Line(_) | Plot { .. } => 1.4,
                                     Point { .. } => 1.2,
                                 };
                                 focussed_geometry.push(g);
@@ -1121,7 +1196,7 @@ impl ExpressionList {
             regular_geometry.append(&mut draggable_points);
             regular_geometry.append(&mut focussed_geometry);
 
-            geometry = Some(regular_geometry);
+            geometry = Some((regular_geometry, self.vm_vars.clone()));
         }
 
         self.expressions_changed = false;

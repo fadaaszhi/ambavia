@@ -2,10 +2,10 @@ use std::iter::zip;
 
 use eval::{compiler::compile_assignments, vm::Vm};
 use parse::{
+    analyze_expression_list::{ExpressionResult, analyze_expression_list},
     ast_parser::parse_expression_list_entry,
     latex_parser::parse_latex,
-    name_resolver::resolve_names,
-    type_checker::{Type, type_check},
+    type_checker::Type,
 };
 use rstest::rstest;
 
@@ -101,12 +101,15 @@ fn assert_expression_eq<'a>(source: &str, value: Value) {
     println!("Expression: {source}");
     let tree = parse_latex(source).unwrap();
     let entry = parse_expression_list_entry(&tree).unwrap();
-    let (assignments, ei_to_id) = resolve_names([entry].as_slice().as_ref(), false);
-    let id = ei_to_id.first().unwrap().clone().unwrap().unwrap();
-    let (assignments, types) = type_check(&assignments);
-    println!("Type checked: {assignments:#?}",);
-    let ty = types[&id].clone().unwrap();
-    let (instructions, id_to_vi) = compile_assignments(&assignments);
+    let analysis = analyze_expression_list([entry].as_slice().as_ref(), false);
+    let Some(ExpressionResult::Value(id, ty)) = analysis.results.first() else {
+        panic!(
+            "expected Value but first result was {:#?}",
+            analysis.results.first()
+        );
+    };
+    let (instructions, _, var_indices) =
+        compile_assignments::<std::iter::Empty<_>, &[_]>(&analysis.assignments, []);
 
     println!("Compiled instructions:");
     let width = (instructions.len() - 1).to_string().len();
@@ -114,9 +117,9 @@ fn assert_expression_eq<'a>(source: &str, value: Value) {
         println!("  {i:width$} {instruction:?}");
     }
 
-    let v = id_to_vi[&id];
+    let v = var_indices[id];
 
-    let mut vm = Vm::with_program(instructions);
+    let mut vm = Vm::new(&instructions, Default::default());
     vm.run(false);
     assert_eq!(
         match ty {
@@ -137,7 +140,7 @@ fn assert_expression_eq<'a>(source: &str, value: Value) {
                     .chunks(2)
                     .map(|p| (p[0], p[1]))
                     .collect::<Vec<_>>();
-                (if ty == Type::PointList {
+                (if *ty == Type::PointList {
                     Value::PointList
                 } else {
                     Value::Polygon
@@ -174,11 +177,11 @@ fn assert_type_error(source: &str, error: &str) {
     println!("expression: {source}");
     let tree = parse_latex(source).unwrap();
     let entry = parse_expression_list_entry(&tree).unwrap();
-
-    let (assignments, ei_to_id) = resolve_names([entry].as_slice().as_ref(), false);
-    let id = ei_to_id.first().unwrap().clone().unwrap().unwrap();
-    let types = type_check(&assignments).1;
-    assert_eq!(types[&id], Err(error.into()));
+    let analysis = analyze_expression_list([entry].as_slice().as_ref(), false);
+    assert_eq!(
+        analysis.results.first(),
+        Some(&ExpressionResult::Err(error.into()))
+    );
 }
 
 const NAN: f64 = f64::NAN;

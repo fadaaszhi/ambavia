@@ -648,10 +648,14 @@ fn parse_expression(tokens: &mut Tokens, min_bp: u8) -> Result<Expression, Strin
 
                     tokens.expect(Token::RParen)?;
                     left = if let Some(callee) = callee.strip_suffix("^2") {
-                        Expression::Call {
-                            callee: callee.into(),
-                            args,
-                        }
+                        binary(
+                            OpName::Pow,
+                            Expression::Call {
+                                callee: callee.into(),
+                                args,
+                            },
+                            Expression::Number(2.0),
+                        )
                     } else {
                         Expression::CallOrMultiply { callee, args }
                     };
@@ -1202,6 +1206,15 @@ mod tests {
             },
             T::Minus,
             T::Number("3".into()),
+            T::Plus,
+            T::IdentFrag("sin".into()),
+            T::SubSup {
+                sub: None,
+                sup: Some(&[Node::Char('2')]),
+            },
+            T::LParen,
+            T::Number("9".into()),
+            T::RParen,
         ];
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
         assert_eq!(
@@ -1209,18 +1222,29 @@ mod tests {
             Ok(binary(
                 Add,
                 binary(
-                    Mul,
-                    Id("a".into()),
-                    Call {
-                        callee: "arcsin".into(),
-                        args: vec![binary(Mul, Num(5.0), Id("x".into()))]
-                    }
+                    Add,
+                    binary(
+                        Mul,
+                        Id("a".into()),
+                        Call {
+                            callee: "arcsin".into(),
+                            args: vec![binary(Mul, Num(5.0), Id("x".into()))]
+                        }
+                    ),
+                    binary(
+                        Pow,
+                        Call {
+                            callee: "arctan".into(),
+                            args: vec![unary(Neg, Num(3.0))]
+                        },
+                        Num(2.0)
+                    )
                 ),
                 binary(
                     Pow,
                     Call {
-                        callee: "arctan".into(),
-                        args: vec![unary(Neg, Num(3.0))]
+                        callee: "sin".into(),
+                        args: vec![Num(9.0)]
                     },
                     Num(2.0)
                 )

@@ -998,10 +998,10 @@ impl<'a, 'i> Vm<'a, 'i> {
                     let a = self.pop().list();
                     let a = a.borrow();
 
-                    self.push(if b < 0.0 || b >= a.len() as f64 {
-                        f64::NAN
-                    } else {
+                    self.push(if 0.0 <= b && b < a.len() as f64 {
                         a[b as usize]
+                    } else {
+                        f64::NAN
                     });
                 }
                 Instruction::Index2 => {
@@ -1009,12 +1009,12 @@ impl<'a, 'i> Vm<'a, 'i> {
                     let a = self.pop().list();
                     let a = a.borrow();
 
-                    if b < 0.0 || b >= a.len() as f64 {
-                        self.push(f64::NAN);
-                        self.push(f64::NAN);
-                    } else {
+                    if 0.0 <= b && b < a.len() as f64 {
                         self.push(a[b as usize]);
                         self.push(a[b as usize + 1]);
+                    } else {
+                        self.push(f64::NAN);
+                        self.push(f64::NAN);
                     }
                 }
                 Instruction::IndexPolygonList => {
@@ -1022,10 +1022,10 @@ impl<'a, 'i> Vm<'a, 'i> {
                     let a = self.pop().polygon_list();
                     let a = a.borrow();
 
-                    self.push(if b < 0.0 || b >= a.len() as f64 {
-                        Rc::new(RefCell::new(vec![]))
-                    } else {
+                    self.push(if 0.0 <= b && b < a.len() as f64 {
                         Rc::clone(&a[b as usize])
+                    } else {
+                        Rc::new(RefCell::new(vec![]))
                     });
                 }
                 Instruction::UncheckedIndex(index) => {

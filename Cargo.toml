@@ -7,5 +7,5 @@ parse = { path = "parse" }
 eval = { path = "eval" }
 
 typed-index-collections = "3.3.0"
-derive_more = { version = "2.0.1", features = ["from", "into"] }
+derive_more = { version = "2.0.1", features = ["from", "into", "add"] }
 pretty_assertions = "1.4.1"

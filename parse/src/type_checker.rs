@@ -1,11 +1,16 @@
-use std::{collections::HashMap, mem, ops::ControlFlow};
+use std::{
+    collections::HashMap,
+    fmt::{Debug, Display},
+    mem,
+    ops::ControlFlow,
+};
 
 use derive_more::{From, Into};
 
 pub use crate::name_resolver::{ComparisonOperator, SumProdKind};
 use crate::{
     name_resolver::{self as nr, Id},
-    op::{Op, SigSatisfies},
+    op::{Op, OpError, SigSatisfies},
 };
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -170,7 +175,7 @@ pub struct Body {
 
 #[derive(Default)]
 struct TypeChecker {
-    computed_types: HashMap<Id, Result<Type, String>>,
+    computed_types: HashMap<Id, Result<Type, TypeError>>,
     id_counter: usize,
 }
 fn binary(operation: Op, left: TypedExpression, right: TypedExpression) -> Expression {
@@ -260,7 +265,7 @@ impl TypedExpression {
 }
 
 impl TypeChecker {
-    fn get_type(&self, id: Id) -> Result<Type, String> {
+    fn get_type(&self, id: Id) -> Result<Type, TypeError> {
         self.computed_types.get(&id).unwrap().clone()
     }
 
@@ -274,12 +279,12 @@ impl TypeChecker {
         }
     }
 
-    fn insert_computed_type(&mut self, id: Id, ty: Result<Type, String>) {
+    fn insert_computed_type(&mut self, id: Id, ty: Result<Type, TypeError>) {
         let existing = self.computed_types.insert(id, ty);
         assert_eq!(existing, None);
     }
 
-    fn check_body(&mut self, body: &nr::Body) -> Result<Body, String> {
+    fn check_body(&mut self, body: &nr::Body) -> Result<Body, TypeError> {
         Ok(Body {
             assignments: body
                 .assignments
@@ -290,18 +295,21 @@ impl TypeChecker {
                     self.insert_computed_type(id, Ok(value.ty));
                     Ok(Assignment { id, name, value })
                 })
-                .collect::<Result<_, String>>()?,
+                .collect::<Result<_, TypeError>>()?,
             value: Box::new(self.check_expression(&body.value)?),
         })
     }
 
-    fn check_expressions(&mut self, es: &[nr::Expression]) -> Result<Vec<TypedExpression>, String> {
+    fn check_expressions(
+        &mut self,
+        es: &[nr::Expression],
+    ) -> Result<Vec<TypedExpression>, TypeError> {
         es.iter()
             .map(|e| self.check_expression(e))
             .collect::<Result<Vec<_>, _>>()
     }
 
-    fn check_expression(&mut self, e: &nr::Expression) -> Result<TypedExpression, String> {
+    fn check_expression(&mut self, e: &nr::Expression) -> Result<TypedExpression, TypeError> {
         use BaseType as B;
         fn empty_list<U>(b: B) -> Result<TypedExpression, U> {
             Ok(te(Type::list_of(b), Expression::List(vec![])))
@@ -322,12 +330,12 @@ impl TypeChecker {
                 let ty = list[0].ty;
 
                 if ty.is_list() {
-                    return Err(format!("cannot store {ty} in a list"));
+                    return Err(TypeError::ListOfList(ty));
                 }
 
                 for v in &list {
                     if v.ty != ty {
-                        return Err("all elements of a list must have the same type".into());
+                        return Err(TypeError::MixedListElementTypes);
                     }
                 }
 
@@ -343,7 +351,7 @@ impl TypeChecker {
                 if before_ellipsis.iter().any(|e| e.ty != Type::Number)
                     || after_ellipsis.iter().any(|e| e.ty != Type::Number)
                 {
-                    return Err("ranges must be arithmetic sequences".into());
+                    return Err(TypeError::NonArithmeticRange);
                 }
 
                 Ok(te(
@@ -363,7 +371,7 @@ impl TypeChecker {
                 for w in operands.windows(2) {
                     for o in w {
                         if !matches!(o.ty.base(), B::Number | B::Empty) {
-                            return Err(format!("cannot compare {} to {}", w[0].ty, w[1].ty));
+                            return Err(TypeError::CannotCompare(w[0].ty, w[1].ty));
                         }
                     }
                 }
@@ -457,10 +465,7 @@ impl TypeChecker {
                 }
 
                 if a.ty.base() != c.ty.base() {
-                    return Err(format!(
-                        "cannot use {} and {} as the branches in a piecewise, every branch must have the same type",
-                        c.ty, a.ty
-                    ));
+                    return Err(TypeError::PiecewiseBranchMismatch(c.ty, a.ty));
                 }
 
                 if !t.ty.is_list() && (c.ty.is_list() == a.ty.is_list()) {
@@ -504,12 +509,10 @@ impl TypeChecker {
                         let list = self.check_expression(&l.value)?;
 
                         if !list.ty.is_list() {
-                            return Err(
-                                // not just putting it all in the format macro because that caused rustfmt to fail
-                                "a definition on the right-hand side of 'for' must be a list, but "
-                                    .to_string()
-                                    + &format!("'{}' is {}", l.name, list.ty),
-                            );
+                            return Err(TypeError::ListComprehensionNonListInput(
+                                l.name.clone(),
+                                list.ty,
+                            ));
                         }
 
                         self.insert_computed_type(l.id, Ok(Type::single(list.ty.base())));
@@ -520,12 +523,12 @@ impl TypeChecker {
                         };
                         Ok(assignment)
                     })
-                    .collect::<Result<_, String>>()?;
+                    .collect::<Result<_, _>>()?;
 
                 let body = self.check_body(body)?;
 
                 if body.value.ty.is_list() {
-                    return Err(format!("cannot store {} in a list", body.value.ty));
+                    return Err(TypeError::ListOfList(body.value.ty));
                 }
 
                 Ok(te(
@@ -548,7 +551,7 @@ impl TypeChecker {
                             }
                             let ty = first_non_empty.get_or_insert(a.ty);
                             if ty.base() != a.ty.base() {
-                                return Err(format!("cannot join {ty} and {}", a.ty));
+                                return Err(TypeError::JoinMismatch(*ty, a.ty));
                             }
                             new_args.push(a);
                         }
@@ -847,10 +850,51 @@ fn find_max_id(assignments: &[nr::Assignment], max: &mut Option<usize>) {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum TypeError {
+    CannotCompare(Type, Type),
+    JoinMismatch(Type, Type),
+    ListComprehensionNonListInput(String, Type),
+    ListOfList(Type),
+    MixedListElementTypes,
+    NonArithmeticRange,
+    PiecewiseBranchMismatch(Type, Type),
+    OpError(OpError),
+}
+
+impl From<OpError> for TypeError {
+    fn from(value: OpError) -> Self {
+        TypeError::OpError(value)
+    }
+}
+
+impl Display for TypeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TypeError::CannotCompare(a, b) => write!(f, "cannot compare {a} to {b}"),
+            TypeError::JoinMismatch(a, b) => write!(f, "cannot join {a} and {b}"),
+            TypeError::ListComprehensionNonListInput(name, ty) => write!(
+                f,
+                "a definition on the right-hand side of 'for' must be a list, but '{name}' is {ty}"
+            ),
+            TypeError::ListOfList(ty) => write!(f, "cannot store {ty} in a list"),
+            TypeError::MixedListElementTypes => {
+                write!(f, "all elements of a list must have the same type")
+            }
+            TypeError::NonArithmeticRange => write!(f, "ranges must be arithmetic sequences"),
+            TypeError::PiecewiseBranchMismatch(a, b) => write!(
+                f,
+                "cannot use {a} and {b} as the branches in a piecewise, every branch must have the same type"
+            ),
+            TypeError::OpError(e) => std::fmt::Display::fmt(e, f),
+        }
+    }
+}
+
 pub fn type_check(
     assignments: &[nr::Assignment],
     freevars: &HashMap<String, Id>,
-) -> (Vec<Assignment>, HashMap<Id, Result<Type, String>>) {
+) -> (Vec<Assignment>, HashMap<Id, Result<Type, TypeError>>) {
     let mut tc = TypeChecker::default();
 
     let mut max_id = None;
@@ -978,8 +1022,20 @@ mod tests {
                     (Id(0), Ok(Type::Number)),
                     (Id(2), Ok(Type::Point)),
                     (Id(3), Ok(Type::Point)),
-                    (Id(88), Err("cannot Add a point and a number".into())),
-                    (Id(89), Err("cannot Add a point and a number".into())),
+                    (
+                        Id(88),
+                        Err(TypeError::OpError(OpError::NoOverload(
+                            OpName::Add,
+                            vec![Type::Point, Type::Number]
+                        )))
+                    ),
+                    (
+                        Id(89),
+                        Err(TypeError::OpError(OpError::NoOverload(
+                            OpName::Add,
+                            vec![Type::Point, Type::Number]
+                        )))
+                    ),
                     (Id(999), Ok(Type::Number)),
                 ])
             )

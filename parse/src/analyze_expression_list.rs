@@ -13,7 +13,7 @@ use crate::{
     name_resolver::{
         ExpressionIndex, ExpressionResult as NrEr, Id, NameError, PlotKinds, resolve_names,
     },
-    type_checker::{Assignment, Type, type_check, walk_assignment_ids},
+    type_checker::{Assignment, Type, TypeError, type_check, walk_assignment_ids},
 };
 
 #[derive(Debug, Copy, Clone, From, Into, PartialEq)]
@@ -34,7 +34,7 @@ pub enum PlotKind {
 #[derive(Debug, PartialEq)]
 pub enum AnalysisError {
     NameError(NameError),
-    TypeError(String),
+    TypeError(TypeError),
     TodoListPlot,
 }
 
@@ -153,10 +153,9 @@ pub fn analyze_expression_list(
                     }
                     _ if ty != Type::EmptyList && allowed_kinds == PlotKinds::IMPLICIT => {
                         // (x,y) = (x,y)
-                        return ExpressionResult::Err(AnalysisError::TypeError(format!(
-                            "cannot compare {} to {}",
-                            ty, ty
-                        )));
+                        return ExpressionResult::Err(AnalysisError::TypeError(
+                            TypeError::CannotCompare(ty, ty),
+                        ));
                     }
                     Type::Point | Type::PointList => {
                         if allowed_kinds.intersects(PlotKinds::PARAMETRIC) {

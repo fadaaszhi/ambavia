@@ -1,4 +1,7 @@
-use std::iter::{once, repeat, zip};
+use std::{
+    fmt::Display,
+    iter::{repeat, zip},
+};
 
 use crate::type_checker::Type;
 
@@ -437,7 +440,7 @@ impl<T> SatisfyMeta<T> {
 pub(crate) type CoercionMeta = bool;
 
 impl<T: Iterator<Item = CoercionMeta> + Clone> SigSatisfies<T> {
-    fn unify(this: (Op, Self), other: (Option<Op>, Self)) -> Result<(Option<Op>, Self), String> {
+    fn unify(this: (Op, Self), other: (Option<Op>, Self)) -> Result<(Option<Op>, Self), OpError> {
         let this_op = Some(this.0);
         let other_op = other.0;
         let (this, other) = (this.1, other.1);
@@ -464,9 +467,136 @@ impl<T: Iterator<Item = CoercionMeta> + Clone> SigSatisfies<T> {
                     )
                 })
             }
-            _ => Err(format!(
-                "[internal] failed to unify ambiguous overloads {this_op:#?} and {other_op:#?}"
-            )),
+            _ => Err(OpError::Internal(format!(
+                "failed to unify ambiguous overloads {this_op:#?} and {other_op:#?}"
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum OpError {
+    Internal(String),
+    NoOverload(OpName, Vec<Type>),
+}
+
+impl OpName {
+    fn to_str(self) -> &'static str {
+        match self {
+            OpName::Neg => "negate",
+            OpName::Fac => "factorial",
+            OpName::Sqrt => "sqrt",
+            OpName::Norm => "abs",
+            OpName::PointX => ".x",
+            OpName::PointY => ".y",
+            OpName::Add => "add",
+            OpName::Sub => "subtract",
+            OpName::Mul => "multiply",
+            OpName::Div => "divide",
+            OpName::Pow => "pow",
+            OpName::Dot => "multiply",
+            OpName::Cross => "multiply",
+            OpName::Point => "point",
+            OpName::Index => "index",
+            OpName::Ln => "ln",
+            OpName::Exp => "exp",
+            OpName::Erf => "erf",
+            OpName::Sin => "sin",
+            OpName::Cos => "cos",
+            OpName::Tan => "tan",
+            OpName::Sec => "sec",
+            OpName::Csc => "csc",
+            OpName::Cot => "cot",
+            OpName::Sinh => "sinh",
+            OpName::Cosh => "cosh",
+            OpName::Tanh => "tanh",
+            OpName::Sech => "sech",
+            OpName::Csch => "csch",
+            OpName::Coth => "coth",
+            OpName::Asin => "arcsin",
+            OpName::Acos => "arccos",
+            OpName::Atan => "arctan",
+            OpName::Asec => "arcsec",
+            OpName::Acsc => "arccsc",
+            OpName::Acot => "arccot",
+            OpName::Asinh => "arcsinh",
+            OpName::Acosh => "arccosh",
+            OpName::Atanh => "arctanh",
+            OpName::Asech => "arcsech",
+            OpName::Acsch => "arccsch",
+            OpName::Acoth => "arccoth",
+            OpName::Abs => "abs",
+            OpName::Sgn => "sign",
+            OpName::Round => "round",
+            OpName::Floor => "floor",
+            OpName::Ceil => "ceil",
+            OpName::Mod => "mod",
+            OpName::Midpoint => "midpoint",
+            OpName::Distance => "distance",
+            OpName::Min => "min",
+            OpName::Max => "max",
+            OpName::Median => "median",
+            OpName::Argmin => "argmin",
+            OpName::Argmax => "argmax",
+            OpName::Total => "total",
+            OpName::Mean => "mean",
+            OpName::Count => "count",
+            OpName::Unique => "unique",
+            OpName::UniquePerm => "uniquePerm",
+            OpName::Sort => "sort",
+            OpName::SortPerm => "sortPerm",
+            OpName::Polygon => "polygon",
+            OpName::Join => "join",
+        }
+    }
+}
+
+impl Display for OpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OpError::Internal(e) => write!(f, "[internal] {e}"),
+            OpError::NoOverload(op, a) => match op {
+                OpName::Neg => write!(f, "cannot negate {}", a[0]),
+                OpName::Sqrt => write!(f, "cannot take the square root of {}", a[0]),
+                OpName::Norm => write!(f, "cannot take the absolute value of {}", a[0]),
+                OpName::PointX => write!(f, "cannot access coordinate '.x' of {}", a[0]),
+                OpName::PointY => write!(f, "cannot access coordinate '.y' of {}", a[0]),
+                OpName::Add => write!(f, "cannot add {} and {}", a[0], a[1]),
+                OpName::Sub => write!(f, "cannot subtract {1} from {0}", a[0], a[1]),
+                OpName::Cross
+                    if a[0].as_single() == Type::Point && a[1].as_single() == Type::Point =>
+                {
+                    write!(f, "cannot take the cross product of {} and {}", a[0], a[1])
+                }
+                OpName::Mul | OpName::Dot | OpName::Cross => {
+                    write!(f, "cannot multiply {} by {}", a[0], a[1])
+                }
+                OpName::Div => write!(f, "cannot divide {} by {}", a[0], a[1]),
+                OpName::Pow => write!(f, "cannot raise {} to {}", a[0], a[1]),
+                OpName::Point => write!(
+                    f,
+                    "cannot use {} and {} as the coordinates of a point",
+                    a[0], a[1]
+                ),
+                OpName::Index => write!(f, "cannot index {} with {}", a[0], a[1]),
+                _ => write!(
+                    f,
+                    "function '{}' cannot be applied {}",
+                    op.to_str(),
+                    match &a[..] {
+                        [] => "nothing".into(),
+                        [a] => a.to_string(),
+                        [first @ .., last] => format!(
+                            "{} and {last}",
+                            first
+                                .iter()
+                                .map(|t| t.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                    }
+                ),
+            },
         }
     }
 }
@@ -474,13 +604,13 @@ impl<T: Iterator<Item = CoercionMeta> + Clone> SigSatisfies<T> {
 impl OpName {
     pub(crate) fn overload_for(
         self,
-        mut ptypes: impl DoubleEndedIterator<Item = Type> + Clone,
+        ptypes: impl DoubleEndedIterator<Item = Type> + Clone,
     ) -> Result<
         (
             Option<Op>,
             SigSatisfies<impl Iterator<Item = CoercionMeta> + Clone>,
         ),
-        String,
+        OpError,
     > {
         self.overloads()
             .iter()
@@ -494,27 +624,7 @@ impl OpName {
                     (Some(this), Some(prev)) => Some(SigSatisfies::unify(this, prev)?),
                 })
             })
-            .and_then(|v| {
-                v.ok_or_else(|| {
-                    let Some(first) = ptypes.next() else {
-                        return format!("cannot {self:#?} nothing");
-                    };
-                    let last = ptypes.next_back();
-                    format!(
-                        "cannot {self:#?} {}{}",
-                        once(first)
-                            .chain(ptypes)
-                            .map(|a| format!("{a}"))
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                        if let Some(last) = last {
-                            format!(" and {last}")
-                        } else {
-                            String::new()
-                        }
-                    )
-                })
-            })
+            .and_then(|v| v.ok_or_else(|| OpError::NoOverload(self, ptypes.collect())))
     }
 }
 
@@ -522,7 +632,7 @@ impl OpName {
 mod tests {
 
     use crate::{
-        op::{CoercionMeta, Op, OpName, SigSatisfies},
+        op::{CoercionMeta, Op, OpError, OpName, SigSatisfies},
         type_checker::Type,
     };
 
@@ -541,7 +651,7 @@ mod tests {
             }
         }
     }
-    fn try_get_overload(op: OpName, req: &[Type]) -> Result<MatchedOverload, String> {
+    fn try_get_overload(op: OpName, req: &[Type]) -> Result<MatchedOverload, OpError> {
         op.overload_for(req.iter().copied())
             .map(|v| (v.0, v.1.map_iter(|a| a.collect())))
     }

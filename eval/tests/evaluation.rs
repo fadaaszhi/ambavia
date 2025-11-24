@@ -5,7 +5,8 @@ use parse::{
     analyze_expression_list::{AnalysisError, ExpressionResult, analyze_expression_list},
     ast_parser::parse_expression_list_entry,
     latex_parser::parse_latex,
-    type_checker::Type,
+    op::{OpError, OpName},
+    type_checker::{Type, TypeError},
 };
 use rstest::rstest;
 
@@ -167,16 +168,14 @@ fn assert_expression_eq<'a>(source: &str, value: Value) {
     );
 }
 
-fn assert_type_error(source: &str, error: &str) {
+fn assert_type_error(source: &str, error: TypeError) {
     println!("expression: {source}");
     let tree = parse_latex(source).unwrap();
     let entry = parse_expression_list_entry(&tree).unwrap();
     let analysis = analyze_expression_list([entry].as_slice().as_ref(), false);
     assert_eq!(
         analysis.results.first(),
-        Some(&ExpressionResult::Err(AnalysisError::TypeError(
-            error.into()
-        )))
+        Some(&ExpressionResult::Err(AnalysisError::TypeError(error)))
     );
 }
 
@@ -237,9 +236,12 @@ fn expression_eq(#[case] expression: &str, #[case] expected: impl Into<Value>) {
 #[rstest]
 #[case(
     r"\{1<2:(3,4),5\}",
-    "cannot use a point and a number as the branches in a piecewise, every branch must have the same type"
+    TypeError::PiecewiseBranchMismatch(Type::Point, Type::Number)
 )]
-#[case(r"\sort([])+(0,0)", "cannot Add a list of numbers and a point")]
-fn expression_type_error(#[case] expression: &str, #[case] error: &str) {
+#[case(
+    r"\sort([])+(0,0)",
+    TypeError::OpError(OpError::NoOverload(OpName::Add, vec![Type::NumberList, Type::Point]))
+)]
+fn expression_type_error(#[case] expression: &str, #[case] error: TypeError) {
     assert_type_error(expression, error);
 }

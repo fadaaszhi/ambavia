@@ -2,6 +2,7 @@ use std::{
     array,
     borrow::Borrow,
     collections::HashMap,
+    fmt::Display,
     iter::zip,
     ops::{Deref, DerefMut},
     sync::OnceLock,
@@ -216,7 +217,7 @@ enum ScopeKind {
 struct Scope<'a> {
     kind: ScopeKind,
     substitutions: HashMap<&'a str, SubstitutionInfo>,
-    computed: HashMap<&'a str, (Result<Id, String>, Dependencies<'a>)>,
+    computed: HashMap<&'a str, (Result<Id, NameError>, Dependencies<'a>)>,
 }
 
 #[derive(Debug, Default)]
@@ -230,26 +231,12 @@ struct CycleDetector<'a> {
 }
 
 impl<'a> CycleDetector<'a> {
-    fn push(&mut self, name: &'a str) -> Result<(), String> {
+    fn push(&mut self, name: &'a str) -> Result<(), NameError> {
         let count = self.counts.entry(name).or_insert(0);
         if *count == 2 {
             let start = self.stack.iter().rposition(|&n| n == name).unwrap();
-            let mut names = self.stack[start..].to_vec();
-            names.sort();
-            return Err(match names[..] {
-                [] => unreachable!(),
-                [a] => format!("'{a}' can't be defined in terms of itself"),
-                [ref first @ .., last] => {
-                    format!(
-                        "{} and '{last}' can't be defined in terms of each other",
-                        first
-                            .iter()
-                            .map(|n| format!("'{n}'"))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )
-                }
-            });
+            let names = self.stack[start..].iter().cloned();
+            return Err(NameError::cyclic_definition(names));
         }
         *count += 1;
         self.stack.push(name);
@@ -266,7 +253,7 @@ struct Resolver<'a> {
     use_v1_9_scoping_rules: bool,
     scopes: Vec<Scope<'a>>,
     line_count: usize,
-    definitions: HashMap<&'a str, Result<&'a ExpressionListEntry, String>>,
+    definitions: HashMap<&'a str, Result<&'a ExpressionListEntry, NameError>>,
     dependencies_being_tracked: Option<Dependencies<'a>>,
     assignments: Vec<Vec<Assignment>>,
     freevars: HashMap<&'a str, Id>,
@@ -291,7 +278,7 @@ impl<'a> Resolver<'a> {
                     if name != "x" && name != "y" =>
                 {
                     if let Some(result) = definitions.get_mut(name.as_str()) {
-                        *result = Err(format!("'{name}' defined multiple times"));
+                        *result = Err(NameError::MultipleDefinitions(name.into()));
                     } else {
                         definitions.insert(name.as_str(), Ok(entry.borrow()));
                     }
@@ -409,7 +396,7 @@ impl<'a> Resolver<'a> {
         &mut self,
         expression: &'a ast::Expression,
         substitutions: Option<(ScopeKind, HashMap<&'a str, SubstitutionInfo>)>,
-    ) -> (Result<Expression, String>, Dependencies<'a>) {
+    ) -> (Result<Expression, NameError>, Dependencies<'a>) {
         self.resolve_with_dependencies(|this| this.resolve_expression(expression), substitutions)
     }
 
@@ -447,7 +434,7 @@ impl<'a> Resolver<'a> {
     }
 
     /// Computes a variable or finds an existing assignment ID if it's already been resolved before.
-    fn resolve_variable(&mut self, name: &'a str) -> Result<Id, String> {
+    fn resolve_variable(&mut self, name: &'a str) -> Result<Id, NameError> {
         if let Some(i) = self.find_substitution(name, true) {
             self.push_dependency(name, Dependency::Substitution(i));
             return Ok(i.id);
@@ -487,10 +474,10 @@ impl<'a> Resolver<'a> {
 
         // It hasn't been computed before so we'll have to compute it again
         let (id, deps) = if let Some(entry) = self.definitions.get(name) {
-            let expr = match entry.as_ref()? {
+            let expr = match entry.as_ref().map_err(Clone::clone)? {
                 ExpressionListEntry::Assignment { value, .. } => value,
                 ExpressionListEntry::FunctionDeclaration { .. } => {
-                    return Err(format!("'{name}' is a function, try using parentheses"));
+                    return Err(NameError::FunctionAsVariable(name.into()));
                 }
                 _ => unreachable!(),
             };
@@ -522,7 +509,7 @@ impl<'a> Resolver<'a> {
     fn resolve_expressions(
         &mut self,
         es: &'a [ast::Expression],
-    ) -> Result<Vec<Expression>, String> {
+    ) -> Result<Vec<Expression>, NameError> {
         es.iter().map(|e| self.resolve_expression(e)).collect()
     }
 
@@ -531,13 +518,13 @@ impl<'a> Resolver<'a> {
         body: &'a ast::Expression,
         kind: ScopeKind,
         bindings: impl Iterator<Item = (&'a String, &'a ast::Expression)>,
-        error_string: impl FnOnce(&str) -> String,
-    ) -> Result<Expression, String> {
+        error: impl FnOnce(String) -> NameError,
+    ) -> Result<Expression, NameError> {
         let mut substitutions = HashMap::new();
 
         for (name, value) in bindings {
             if substitutions.contains_key(name.as_str()) {
-                return Err(error_string(name));
+                return Err(error(name.into()));
             }
 
             let (value, deps) = self.resolve_expression_with_dependencies(value, None);
@@ -563,7 +550,7 @@ impl<'a> Resolver<'a> {
         &mut self,
         callee: &'a str,
         args: &'a [ast::Expression],
-    ) -> Result<Expression, String> {
+    ) -> Result<Expression, NameError> {
         if let Some(operation) = OpName::from_str(callee) {
             return Ok(Expression::Op {
                 operation,
@@ -575,25 +562,17 @@ impl<'a> Resolver<'a> {
             Some(Ok(ExpressionListEntry::FunctionDeclaration {
                 parameters, body, ..
             })) => (parameters, body),
-            Some(Ok(_)) => return Err(format!("variable '{callee}' can't be used as a function")),
+            Some(Ok(_)) => return Err(NameError::VariableAsFunction(callee.into())),
             Some(Err(e)) => return Err(e.clone()),
-            None => return Err(format!("'{callee}' is not defined")),
+            None => return Err(NameError::undefined([callee])),
         };
 
         if parameters.len() != args.len() {
-            return Err(format!(
-                "function '{callee}' requires {}{}",
-                if args.len() > parameters.len() {
-                    "only "
-                } else {
-                    ""
-                },
-                if parameters.len() == 1 {
-                    "1 argument".into()
-                } else {
-                    format!("{} arguments", parameters.len())
-                }
-            ));
+            return Err(NameError::ArityMismatch {
+                callee: callee.into(),
+                expected: parameters.len(),
+                found: args.len(),
+            });
         }
 
         self.cycle_detector.push(callee)?;
@@ -605,15 +584,18 @@ impl<'a> Resolver<'a> {
                 line_count: self.line_count,
             }
         };
-        let value = self.resolve_substitutions(body, kind, zip(parameters, args), |name| {
-            format!("cannot use '{name}' for multiple parameters of this function")
-        });
+        let value = self.resolve_substitutions(
+            body,
+            kind,
+            zip(parameters, args),
+            NameError::DuplicateFunctionParameter,
+        );
         self.line_count -= 1;
         self.cycle_detector.pop();
         value
     }
 
-    fn resolve_expression(&mut self, e: &'a ast::Expression) -> Result<Expression, String> {
+    fn resolve_expression(&mut self, e: &'a ast::Expression) -> Result<Expression, NameError> {
         match e {
             ast::Expression::Number(value) => Ok(Expression::Number(*value)),
             ast::Expression::Identifier(name) => {
@@ -662,9 +644,9 @@ impl<'a> Resolver<'a> {
                         })
                     } else {
                         Err(if len == 0 {
-                            format!("variable '{name}' can't be used as a function")
+                            NameError::VariableAsFunction(name.into())
                         } else {
-                            "points may only have 2 coordinates".into()
+                            NameError::BadPointDimension
                         })
                     }
                 }
@@ -690,9 +672,7 @@ impl<'a> Resolver<'a> {
                     None
                 },
             }),
-            ast::Expression::SumProd { .. } => {
-                Err("todo: sum and prod are not supported yet".into())
-            }
+            ast::Expression::SumProd { .. } => Err(NameError::TodoSumProd),
             ast::Expression::With {
                 body,
                 substitutions,
@@ -700,9 +680,7 @@ impl<'a> Resolver<'a> {
                 body,
                 ScopeKind::Dynamic,
                 substitutions.iter().map(|(n, v)| (n, v)),
-                |name| {
-                    format!("a 'with' expression cannot make multiple substitutions for '{name}'")
-                },
+                NameError::DuplicateWithSubstitution,
             ),
             ast::Expression::For { body, lists } => {
                 let level = self.assignments.len();
@@ -711,9 +689,7 @@ impl<'a> Resolver<'a> {
 
                 for (name, value) in lists {
                     if substitutions.contains_key(name.as_str()) {
-                        return Err(format!(
-                            "you can't define '{name}' more than once on the right-hand side of 'for'"
-                        ));
+                        return Err(NameError::DuplicateListComprehensionInput(name.into()));
                     }
 
                     let value = self.resolve_expression(value)?;
@@ -767,42 +743,141 @@ bitflags::bitflags! {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum NameError {
+    ArityMismatch {
+        callee: String,
+        expected: usize,
+        found: usize,
+    },
+    BadPointDimension,
+    CyclicDefinition(Vec<String>),
+    DuplicateFunctionParameter(String),
+    DuplicateListComprehensionInput(String),
+    DuplicateWithSubstitution(String),
+    ExpressionWithFreeVariablY,
+    FunctionAsVariable(String),
+    MultipleDefinitions(String),
+    TodoChainedRelation,
+    TodoInequality,
+    TodoSumProd,
+    Undefined(Vec<String>),
+    VariableAsFunction(String),
+}
+
+fn sorted<S: Into<String>>(n: impl IntoIterator<Item = S>) -> Vec<String> {
+    let mut n = n.into_iter().map(Into::into).collect::<Vec<_>>();
+    n.sort();
+    n
+}
+
+impl NameError {
+    pub fn cyclic_definition<S: Into<String>>(n: impl IntoIterator<Item = S>) -> NameError {
+        NameError::CyclicDefinition(sorted(n))
+    }
+
+    pub fn undefined<S: Into<String>>(n: impl IntoIterator<Item = S>) -> NameError {
+        NameError::Undefined(sorted(n))
+    }
+}
+
+impl Display for NameError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NameError::ArityMismatch {
+                callee,
+                expected,
+                found,
+            } => {
+                write!(
+                    f,
+                    "function '{callee}' requires {}{}",
+                    if found > expected { "only " } else { "" },
+                    if *expected == 1 {
+                        "1 argument".into()
+                    } else {
+                        format!("{} arguments", expected)
+                    }
+                )
+            }
+            NameError::BadPointDimension => write!(f, "points may only have 2 coordinates"),
+            NameError::CyclicDefinition(names) => match &names[..] {
+                [] => write!(f, "[internal] cyclic definition with no names"),
+                [a] => write!(f, "'{a}' can't be defined in terms of itself"),
+                [first @ .., last] => {
+                    write!(
+                        f,
+                        "{} and '{last}' can't be defined in terms of each other",
+                        first
+                            .iter()
+                            .map(|n| format!("'{n}'"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                }
+            },
+            NameError::DuplicateFunctionParameter(name) => write!(
+                f,
+                "cannot use '{name}' for multiple parameters of this function"
+            ),
+            NameError::DuplicateListComprehensionInput(name) => write!(
+                f,
+                "you can't define '{name}' more than once on the right-hand side of 'for'"
+            ),
+            NameError::DuplicateWithSubstitution(name) => write!(
+                f,
+                "a 'with' expression cannot make multiple substitutions for '{name}'"
+            ),
+            NameError::ExpressionWithFreeVariablY => {
+                write!(f, "try adding 'x=' to the beginning of this equation")
+            }
+            NameError::FunctionAsVariable(name) => {
+                write!(f, "'{name}' is a function, try using parentheses")
+            }
+            NameError::MultipleDefinitions(name) => write!(f, "'{name}' defined multiple times"),
+            NameError::TodoChainedRelation => {
+                write!(f, "todo: chained relations are not implemented yet")
+            }
+            NameError::TodoInequality => {
+                write!(f, "todo: inequalities are not implemented yet")
+            }
+            NameError::TodoSumProd => write!(f, "todo: sum and prod are not implemented yet"),
+            NameError::Undefined(names) => {
+                match &names
+                    .iter()
+                    .filter(|&n| n != "x" && n != "y")
+                    .collect::<Vec<_>>()[..]
+                {
+                    [] => write!(f, "[internal] nothing is undefined"),
+                    [a] => write!(f, "'{a}' is not defined"),
+                    [first @ .., last] => write!(
+                        f,
+                        "{} and '{last}' are not defined",
+                        first
+                            .iter()
+                            .map(|n| format!("'{n}'"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                }
+            }
+            NameError::VariableAsFunction(name) => {
+                write!(f, "variable '{name}' can't be used as a function")
+            }
+        }
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub enum ExpressionResult {
     None,
-    Err(String),
+    Err(NameError),
     Value(Id),
     Plot {
         allowed_kinds: PlotKinds,
         value: Id,
         parameters: Vec<Id>,
     },
-}
-
-fn undefined_vars_error(names: &[&str]) -> ExpressionResult {
-    undefined_vars_error_msg(names.iter().cloned())
-        .map_or(ExpressionResult::None, ExpressionResult::Err)
-}
-
-pub(crate) fn undefined_vars_error_msg<'a>(
-    names: impl IntoIterator<Item = &'a str>,
-) -> Option<String> {
-    match &names
-        .into_iter()
-        .filter(|&n| n != "x" && n != "y")
-        .collect::<Vec<_>>()[..]
-    {
-        [] => None,
-        [a] => Some(format!("'{a}' is not defined")),
-        [first @ .., last] => Some(format!(
-            "{} and '{last}' are not defined",
-            first
-                .iter()
-                .map(|n| format!("'{n}'"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )),
-    }
 }
 
 trait ToVec {
@@ -928,7 +1003,7 @@ pub fn resolve_names(
                             } else if freevars.is_empty() {
                                 ExpressionResult::Value(id)
                             } else {
-                                undefined_vars_error(&freevars)
+                                ExpressionResult::Err(NameError::undefined(freevars))
                             }
                         }
                         Err(e) => ExpressionResult::Err(e),
@@ -963,11 +1038,7 @@ pub fn resolve_names(
                                             ast::Expression::Identifier(arg.into())
                                         })],
                                     ),
-                                    |name| {
-                                        // rustfmt failed to format otherwise
-                                        format!("cannot use '{name}'")
-                                            + " for multiple parameters of this function"
-                                    },
+                                    NameError::DuplicateFunctionParameter,
                                 );
                                 resolver.line_count -= 1;
                                 resolver.cycle_detector.pop();
@@ -1001,7 +1072,7 @@ pub fn resolve_names(
                                         .map(|v| resolver.freevars[v])
                                         .to_vec(),
                                 },
-                                _ => undefined_vars_error(&freevars),
+                                _ => ExpressionResult::Err(NameError::undefined(freevars)),
                             },
                             Err(e) => ExpressionResult::Err(e),
                         }
@@ -1014,16 +1085,14 @@ pub fn resolve_names(
                     operators,
                 }) => {
                     let [operator] = &operators[..] else {
-                        return ExpressionResult::Err(
-                            "todo: chained relations aren't supported".into(),
-                        );
+                        return ExpressionResult::Err(NameError::TodoChainedRelation);
                     };
                     if *operator != ast::ComparisonOperator::Equal {
-                        return ExpressionResult::Err("todo: inequalities aren't supported".into());
+                        return ExpressionResult::Err(NameError::TodoInequality);
                     }
                     let (value, deps) = resolver.resolve_with_dependencies(
                         |this| {
-                            Ok::<_, String>(Expression::Op {
+                            Ok(Expression::Op {
                                 operation: OpName::Sub,
                                 args: this.resolve_expressions(operands)?,
                             })
@@ -1054,7 +1123,7 @@ pub fn resolve_names(
                             } else if freevars.is_empty() {
                                 ExpressionResult::None
                             } else {
-                                undefined_vars_error(&freevars)
+                                ExpressionResult::Err(NameError::undefined(freevars))
                             }
                         }
                         Err(e) => ExpressionResult::Err(e),
@@ -1085,10 +1154,8 @@ pub fn resolve_names(
                                 value: id,
                                 parameters: vec![resolver.freevars[v]],
                             },
-                            ["y"] => ExpressionResult::Err(
-                                "try adding 'x=' to the beginning of this equation".into(),
-                            ),
-                            _ => undefined_vars_error(&freevars),
+                            ["y"] => ExpressionResult::Err(NameError::ExpressionWithFreeVariablY),
+                            _ => ExpressionResult::Err(NameError::undefined(freevars)),
                         },
                         Err(e) => ExpressionResult::Err(e),
                     }
@@ -1289,11 +1356,11 @@ mod tests {
                 vec![
                     ExpressionResult::Value(Id(0)),
                     ExpressionResult::Value(Id(1)),
-                    ExpressionResult::Err("'a' defined multiple times".into()),
+                    ExpressionResult::Err(NameError::MultipleDefinitions("a".into())),
                     ExpressionResult::Value(Id(2)),
                     ExpressionResult::Value(Id(3)),
                     ExpressionResult::Value(Id(4)),
-                    ExpressionResult::Err("'c' defined multiple times".into()),
+                    ExpressionResult::Err(NameError::MultipleDefinitions("c".into())),
                 ],
                 HashMap::from([]),
             ),
@@ -1316,12 +1383,14 @@ mod tests {
             (
                 vec![],
                 vec![
-                    ExpressionResult::Err(
-                        "'a' and 'b' can't be defined in terms of each other".into()
-                    ),
-                    ExpressionResult::Err(
-                        "'a' and 'b' can't be defined in terms of each other".into()
-                    ),
+                    ExpressionResult::Err(NameError::CyclicDefinition(vec![
+                        "a".into(),
+                        "b".into()
+                    ])),
+                    ExpressionResult::Err(NameError::CyclicDefinition(vec![
+                        "a".into(),
+                        "b".into()
+                    ])),
                 ],
                 HashMap::from([]),
             ),
@@ -1384,7 +1453,7 @@ mod tests {
                 ],
                 vec![
                     ExpressionResult::Value(Id(0)),
-                    ExpressionResult::Err("'b' can't be defined in terms of itself".into()),
+                    ExpressionResult::Err(NameError::CyclicDefinition(vec!["b".into()])),
                 ],
                 HashMap::from([]),
             ),
@@ -1482,23 +1551,32 @@ mod tests {
                     },
                 ],
                 vec![
-                    ExpressionResult::Err(
-                        "'a', 'f' and 'g' can't be defined in terms of each other".into()
-                    ),
-                    ExpressionResult::Err(
-                        "'a', 'f' and 'g' can't be defined in terms of each other".into()
-                    ),
-                    ExpressionResult::Err(
-                        "'a', 'f' and 'g' can't be defined in terms of each other".into()
-                    ),
-                    ExpressionResult::Err(
-                        "'a', 'f' and 'g' can't be defined in terms of each other".into()
-                    ),
+                    ExpressionResult::Err(NameError::CyclicDefinition(vec![
+                        "a".into(),
+                        "f".into(),
+                        "g".into()
+                    ])),
+                    ExpressionResult::Err(NameError::CyclicDefinition(vec![
+                        "a".into(),
+                        "f".into(),
+                        "g".into()
+                    ])),
+                    ExpressionResult::Err(NameError::CyclicDefinition(vec![
+                        "a".into(),
+                        "f".into(),
+                        "g".into()
+                    ])),
+                    ExpressionResult::Err(NameError::CyclicDefinition(vec![
+                        "a".into(),
+                        "f".into(),
+                        "g".into()
+                    ])),
                     ExpressionResult::None,
                     ExpressionResult::None,
-                    ExpressionResult::Err(
-                        "'h' and 'i' can't be defined in terms of each other".into()
-                    ),
+                    ExpressionResult::Err(NameError::CyclicDefinition(vec![
+                        "h".into(),
+                        "i".into()
+                    ])),
                 ],
                 HashMap::from([("<anonymous function argument>".into(), Id(0))]),
             ),
@@ -1813,11 +1891,11 @@ mod tests {
                     }
                 ],
                 vec![
-                    ExpressionResult::Err("variable 'a' can't be used as a function".into()),
+                    ExpressionResult::Err(NameError::VariableAsFunction("a".into())),
                     ExpressionResult::Value(Id(1)),
-                    ExpressionResult::Err("variable 'b' can't be used as a function".into()),
+                    ExpressionResult::Err(NameError::VariableAsFunction("b".into())),
                     ExpressionResult::None,
-                    ExpressionResult::Err("'c' is a function, try using parentheses".into()),
+                    ExpressionResult::Err(NameError::FunctionAsVariable("c".into())),
                 ],
                 HashMap::from([("a".into(), Id(0))]),
             ),
@@ -1883,7 +1961,7 @@ mod tests {
                     ExpressionResult::Value(Id(0)),
                     ExpressionResult::Value(Id(1)),
                     ExpressionResult::Value(Id(2)),
-                    ExpressionResult::Err("points may only have 2 coordinates".into()),
+                    ExpressionResult::Err(NameError::BadPointDimension),
                 ],
                 HashMap::from([]),
             ),
@@ -2820,7 +2898,7 @@ mod tests {
                 ],
                 vec![
                     ExpressionResult::Value(Id(6)),
-                    ExpressionResult::Err("'i' and 'j' are not defined".into()),
+                    ExpressionResult::Err(NameError::undefined(["i", "j"])),
                     ExpressionResult::Value(Id(0)),
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
@@ -3165,7 +3243,7 @@ mod tests {
                         value: Id(16),
                         parameters: vec![Id(15)]
                     },
-                    ExpressionResult::Err("'i' and 'j' are not defined".into()),
+                    ExpressionResult::Err(NameError::undefined(["i", "j"])),
                     ExpressionResult::Value(Id(6)),
                 ],
                 HashMap::from([("j".into(), Id(12)), ("i".into(), Id(15))]),

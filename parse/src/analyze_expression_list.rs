@@ -1,6 +1,7 @@
 use std::{
     borrow::Borrow,
     collections::{HashMap, HashSet},
+    fmt::Display,
     ops::ControlFlow,
 };
 
@@ -10,8 +11,7 @@ use typed_index_collections::{TiSlice, TiVec};
 use crate::{
     ast::ExpressionListEntry,
     name_resolver::{
-        ExpressionIndex, ExpressionResult as NrEr, Id, PlotKinds, resolve_names,
-        undefined_vars_error_msg,
+        ExpressionIndex, ExpressionResult as NrEr, Id, NameError, PlotKinds, resolve_names,
     },
     type_checker::{Assignment, Type, type_check, walk_assignment_ids},
 };
@@ -32,9 +32,26 @@ pub enum PlotKind {
 }
 
 #[derive(Debug, PartialEq)]
+pub enum AnalysisError {
+    NameError(NameError),
+    TypeError(String),
+    TodoListPlot,
+}
+
+impl Display for AnalysisError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AnalysisError::NameError(e) => e.fmt(f),
+            AnalysisError::TypeError(e) => e.fmt(f),
+            AnalysisError::TodoListPlot => write!(f, "todo: plotting lists is not implemented yet"),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
 pub enum ExpressionResult {
     None,
-    Err(String),
+    Err(AnalysisError),
     Value(Id, Type),
     Plot {
         kind: PlotKind,
@@ -95,10 +112,10 @@ pub fn analyze_expression_list(
         .into_iter()
         .map(|r| match r {
             NrEr::None => ExpressionResult::None,
-            NrEr::Err(e) => ExpressionResult::Err(e),
+            NrEr::Err(e) => ExpressionResult::Err(AnalysisError::NameError(e)),
             NrEr::Value(id) => match types[&id].clone() {
                 Ok(ty) => ExpressionResult::Value(id, ty),
-                Err(e) => ExpressionResult::Err(e),
+                Err(e) => ExpressionResult::Err(AnalysisError::TypeError(e)),
             },
             NrEr::Plot {
                 allowed_kinds,
@@ -107,7 +124,7 @@ pub fn analyze_expression_list(
             } => {
                 let ty = match types[&value].clone() {
                     Ok(ty) => ty,
-                    Err(e) => return ExpressionResult::Err(e),
+                    Err(e) => return ExpressionResult::Err(AnalysisError::TypeError(e)),
                 };
 
                 // Figure out plot kind, handling mismatches between expected
@@ -118,9 +135,7 @@ pub fn analyze_expression_list(
                             PlotKinds::NORMAL | PlotKinds::INVERSE | PlotKinds::IMPLICIT,
                         ) {
                             if ty.is_list() {
-                                return ExpressionResult::Err(
-                                    "todo: plotting lists is not supported yet".into(),
-                                );
+                                return ExpressionResult::Err(AnalysisError::TodoListPlot);
                             }
                             if allowed_kinds.contains(PlotKinds::NORMAL) {
                                 PlotKind::Normal
@@ -131,24 +146,22 @@ pub fn analyze_expression_list(
                             }
                         } else {
                             // a+2
-                            return ExpressionResult::Err(
-                                undefined_vars_error_msg(
-                                    parameters.iter().map(|p| freevar_names[p]),
-                                )
-                                .unwrap(),
-                            );
+                            return ExpressionResult::Err(AnalysisError::NameError(
+                                NameError::undefined(parameters.iter().map(|p| freevar_names[p])),
+                            ));
                         }
                     }
                     _ if ty != Type::EmptyList && allowed_kinds == PlotKinds::IMPLICIT => {
                         // (x,y) = (x,y)
-                        return ExpressionResult::Err(format!("cannot compare {} to {}", ty, ty));
+                        return ExpressionResult::Err(AnalysisError::TypeError(format!(
+                            "cannot compare {} to {}",
+                            ty, ty
+                        )));
                     }
                     Type::Point | Type::PointList => {
                         if allowed_kinds.intersects(PlotKinds::PARAMETRIC) {
                             if ty.is_list() {
-                                return ExpressionResult::Err(
-                                    "todo: plotting lists is not supported yet".into(),
-                                );
+                                return ExpressionResult::Err(AnalysisError::TodoListPlot);
                             }
                             if parameters.is_empty() {
                                 // y = (3,4)
@@ -163,14 +176,16 @@ pub fn analyze_expression_list(
                     }
                     Type::Polygon | Type::PolygonList => {
                         return if allowed_kinds.contains(PlotKinds::PARAMETRIC) {
-                            if let Some(e) = undefined_vars_error_msg(
-                                parameters.iter().map(|p| freevar_names[p]),
-                            ) {
-                                // a = polygon([(b,b)])
-                                ExpressionResult::Err(e)
-                            } else {
+                            if parameters.is_empty() {
                                 // x = polygon([0,1,1],[0,0,1])
                                 ExpressionResult::Value(value, ty)
+                            } else {
+                                // a = polygon([(b,b)])
+                                ExpressionResult::Err(AnalysisError::NameError(
+                                    NameError::undefined(
+                                        parameters.iter().map(|p| freevar_names[p]),
+                                    ),
+                                ))
                             }
                         } else {
                             // f(p) = polygon(p)

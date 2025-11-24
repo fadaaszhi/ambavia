@@ -2,7 +2,7 @@ use std::iter::zip;
 
 use eval::{compiler::compile_assignments, vm::Vm};
 use parse::{
-    analyze_expression_list::{ExpressionResult, analyze_expression_list},
+    analyze_expression_list::{AnalysisError, ExpressionResult, analyze_expression_list},
     ast_parser::parse_expression_list_entry,
     latex_parser::parse_latex,
     type_checker::Type,
@@ -174,7 +174,9 @@ fn assert_type_error(source: &str, error: &str) {
     let analysis = analyze_expression_list([entry].as_slice().as_ref(), false);
     assert_eq!(
         analysis.results.first(),
-        Some(&ExpressionResult::Err(error.into()))
+        Some(&ExpressionResult::Err(AnalysisError::TypeError(
+            error.into()
+        )))
     );
 }
 

@@ -581,7 +581,7 @@ impl Display for OpError {
                 OpName::Index => write!(f, "cannot index {} with {}", a[0], a[1]),
                 _ => write!(
                     f,
-                    "function '{}' cannot be applied {}",
+                    "function '{}' cannot be applied to {}",
                     op.to_str(),
                     match &a[..] {
                         [] => "nothing".into(),

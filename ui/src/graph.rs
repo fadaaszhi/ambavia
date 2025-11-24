@@ -713,8 +713,7 @@ impl GraphPaper {
                                     }
                                 } else {
                                     run(&mut vm, inputs, &[p.x, p.y]);
-                                    let f = vm.vars[*output].clone().number();
-                                    f
+                                    vm.vars[*output].clone().number()
                                 }
                             },
                             vp_min,

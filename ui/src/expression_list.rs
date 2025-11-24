@@ -1029,7 +1029,7 @@ impl ExpressionList {
                                             kind,
                                             inputs: parameters
                                                 .iter()
-                                                .map(|p| var_indices[&p])
+                                                .map(|p| var_indices[p])
                                                 .collect(),
                                             output: var_indices[&value],
                                             instructions: functions.remove(&ei).unwrap(),

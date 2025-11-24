@@ -195,7 +195,7 @@ pub fn analyze_expression_list(
                         if value_dependencies.contains(&assignment.id) {
                             let _ = assignment.value.walk_ids(&mut |id| {
                                 if let Some(d) = freevar_dependencies.get(&id)
-                                    && parameters.iter().any(|p| d.contains(&p))
+                                    && parameters.iter().any(|p| d.contains(p))
                                 {
                                     value_dependencies.insert(id);
                                 }

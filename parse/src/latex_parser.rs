@@ -166,28 +166,30 @@ fn parse_nodes<'a>(
                 let left = lexer.next()?;
                 let mut inner = vec![];
                 let token = lexer.next()?;
-                match token.kind {
-                    Tk::Char(c @ ('(' | '[' | '{' | '|')) => inner.push(Node::Char(c)),
-                    _ => {
-                        return Err(ParseError::ExpectedBracket {
-                            after: left,
-                            found: token,
-                        });
-                    }
+                let left = if let Tk::Char(c) = token.kind
+                    && let Ok(b) = c.try_into()
+                {
+                    b
+                } else {
+                    return Err(ParseError::ExpectedBracket {
+                        after: left,
+                        found: token,
+                    });
                 };
                 parse_nodes(lexer, &mut inner, NodesKind::Content)?;
                 let right = lexer.expect(Tk::Right)?;
                 let token = lexer.next()?;
-                match token.kind {
-                    TokenKind::Char(c @ (')' | ']' | '}' | '|')) => inner.push(Node::Char(c)),
-                    _ => {
-                        return Err(ParseError::ExpectedBracket {
-                            after: right,
-                            found: token,
-                        });
-                    }
-                }
-                contents.push(Node::DelimitedGroup(inner));
+                let right = if let Tk::Char(c) = token.kind
+                    && let Ok(b) = c.try_into()
+                {
+                    b
+                } else {
+                    return Err(ParseError::ExpectedBracket {
+                        after: right,
+                        found: token,
+                    });
+                };
+                contents.push(Node::DelimitedGroup { left, right, inner });
             }
             Tk::EndGroup | Tk::Right | Tk::EndOfInput => match kind {
                 NodesKind::Argument {
@@ -435,14 +437,11 @@ mod tests {
             Ok(vec![
                 Char('2'),
                 Char('3'),
-                DelimitedGroup(vec![
-                    Char('('),
-                    Char('4'),
-                    Char('5'),
-                    Char('0'),
-                    CtrlSeq("pi"),
-                    Char('}'),
-                ]),
+                DelimitedGroup {
+                    left: Bracket::Paren,
+                    right: Bracket::Brace,
+                    inner: vec![Char('4'), Char('5'), Char('0'), CtrlSeq("pi")],
+                },
             ]),
         );
         test_parse(
@@ -483,11 +482,15 @@ mod tests {
         );
         test_parse(
             r"\left({\left(\right)}\right)",
-            Ok(vec![DelimitedGroup(vec![
-                Char('('),
-                DelimitedGroup(vec![Char('('), Char(')')]),
-                Char(')'),
-            ])]),
+            Ok(vec![DelimitedGroup {
+                left: Bracket::Paren,
+                right: Bracket::Paren,
+                inner: vec![DelimitedGroup {
+                    left: Bracket::Paren,
+                    right: Bracket::Paren,
+                    inner: vec![],
+                }],
+            }]),
         );
         test_parse(
             "2^7",
@@ -592,7 +595,11 @@ mod tests {
                 Char('1'),
                 SubSup {
                     sub: None,
-                    sup: Some(vec![DelimitedGroup(vec![Char('('), Char('2'), Char(')')])]),
+                    sup: Some(vec![DelimitedGroup {
+                        left: Bracket::Paren,
+                        right: Bracket::Paren,
+                        inner: vec![Char('2')],
+                    }]),
                 },
                 Char('3'),
             ]),
@@ -716,14 +723,16 @@ mod tests {
         test_parse(
             r"\frac\left(1+2\right)\left(3\right)",
             Ok(vec![Frac {
-                num: vec![DelimitedGroup(vec![
-                    Char('('),
-                    Char('1'),
-                    Char('+'),
-                    Char('2'),
-                    Char(')'),
-                ])],
-                den: vec![DelimitedGroup(vec![Char('('), Char('3'), Char(')')])],
+                num: vec![DelimitedGroup {
+                    left: Bracket::Paren,
+                    right: Bracket::Paren,
+                    inner: vec![Char('1'), Char('+'), Char('2')],
+                }],
+                den: vec![DelimitedGroup {
+                    left: Bracket::Paren,
+                    right: Bracket::Paren,
+                    inner: vec![Char('3')],
+                }],
             }]),
         );
         test_parse(
@@ -758,7 +767,11 @@ mod tests {
             Ok(vec![
                 Sqrt {
                     root: None,
-                    arg: vec![DelimitedGroup(vec![Char('['), Char('n'), Char(']')])],
+                    arg: vec![DelimitedGroup {
+                        left: Bracket::Square,
+                        right: Bracket::Square,
+                        inner: vec![Char('n')],
+                    }],
                 },
                 Char('x'),
             ]),
@@ -796,7 +809,11 @@ mod tests {
         test_parse(
             r"\sqrt[\left[1\right]]2",
             Ok(vec![Sqrt {
-                root: Some(vec![DelimitedGroup(vec![Char('['), Char('1'), Char(']')])]),
+                root: Some(vec![DelimitedGroup {
+                    left: Bracket::Square,
+                    right: Bracket::Square,
+                    inner: vec![Char('1')],
+                }]),
                 arg: vec![Char('2')],
             }]),
         );
@@ -838,7 +855,11 @@ mod tests {
             r"\sqrt\left\{1\right\}",
             Ok(vec![Sqrt {
                 root: None,
-                arg: vec![DelimitedGroup(vec![Char('{'), Char('1'), Char('}')])],
+                arg: vec![DelimitedGroup {
+                    left: Bracket::Brace,
+                    right: Bracket::Brace,
+                    inner: vec![Char('1')],
+                }],
             }]),
         );
         test_parse(
@@ -869,7 +890,11 @@ mod tests {
             r"\sqrt[\left([\right])]1",
             Ok(vec![Sqrt {
                 root: Some(vec![
-                    DelimitedGroup(vec![Char('('), Char('['), Char(']')]),
+                    DelimitedGroup {
+                        left: Bracket::Paren,
+                        right: Bracket::Square,
+                        inner: vec![Char('[')],
+                    },
                     Char(')'),
                 ]),
                 arg: vec![Char('1')],
@@ -888,7 +913,11 @@ mod tests {
         test_parse(
             r"\left[(1\right)]",
             Ok(vec![
-                DelimitedGroup(vec![Char('['), Char('('), Char('1'), Char(')')]),
+                DelimitedGroup {
+                    left: Bracket::Square,
+                    right: Bracket::Paren,
+                    inner: vec![Char('('), Char('1')],
+                },
                 Char(']'),
             ]),
         );
@@ -919,19 +948,18 @@ mod tests {
         test_parse(
             r"\left(\sqrt\left((1\right)\right))",
             Ok(vec![
-                DelimitedGroup(vec![
-                    Char('('),
-                    Sqrt {
+                DelimitedGroup {
+                    left: Bracket::Paren,
+                    right: Bracket::Paren,
+                    inner: vec![Sqrt {
                         root: None,
-                        arg: vec![DelimitedGroup(vec![
-                            Char('('),
-                            Char('('),
-                            Char('1'),
-                            Char(')'),
-                        ])],
-                    },
-                    Char(')'),
-                ]),
+                        arg: vec![DelimitedGroup {
+                            left: Bracket::Paren,
+                            right: Bracket::Paren,
+                            inner: vec![Char('('), Char('1')],
+                        }],
+                    }],
+                },
                 Char(')'),
             ]),
         );

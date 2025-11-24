@@ -1,4 +1,4 @@
-use crate::latex_tree::Node;
+use crate::latex_tree::{Bracket, Node};
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Token<'a> {
@@ -120,9 +120,21 @@ fn flatten_helper<'a>(
         };
 
         match node {
-            Node::DelimitedGroup(nodes) => {
+            Node::DelimitedGroup { left, right, inner } => {
                 index += 1;
-                flatten_helper(nodes, true, tokens)?
+                tokens.push(match left {
+                    Bracket::Paren => Token::LParen,
+                    Bracket::Square => Token::LBracket,
+                    Bracket::Brace => Token::LBrace,
+                    Bracket::Pipe => Token::LPipe,
+                });
+                flatten_helper(inner, true, tokens)?;
+                tokens.push(match right {
+                    Bracket::Paren => Token::RParen,
+                    Bracket::Square => Token::RBracket,
+                    Bracket::Brace => Token::RBrace,
+                    Bracket::Pipe => Token::RPipe,
+                });
             }
             Node::SubSup { sub, sup } => {
                 index += 1;
@@ -523,24 +535,24 @@ mod tests {
         assert_eq!(
             flatten(&[
                 Char('5'),
-                DelimitedGroup(vec![
-                    Char('|'),
-                    DelimitedGroup(vec![
-                        Char('['),
-                        CtrlSeq("pi"),
-                        Char('3'),
-                        Char('.'),
-                        Char('7'),
-                        Char('.'),
-                        Char('|'),
-                    ]),
-                    Char(')'),
-                ]),
+                DelimitedGroup {
+                    left: Bracket::Pipe,
+                    right: Bracket::Paren,
+                    inner: vec![DelimitedGroup {
+                        left: Bracket::Square,
+                        right: Bracket::Pipe,
+                        inner: vec![CtrlSeq("pi"), Char('3'), Char('.'), Char('7'), Char('.'),]
+                    },]
+                },
                 Char('4'),
                 Char('.'),
                 Char('.'),
                 Char('.'),
-                DelimitedGroup(vec![Char('|'), Char('a'), Char('.'), Char(')')]),
+                DelimitedGroup {
+                    left: Bracket::Pipe,
+                    right: Bracket::Paren,
+                    inner: vec![Char('a'), Char('.')]
+                },
                 Char('6'),
             ]),
             Ok(vec![

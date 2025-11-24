@@ -26,7 +26,7 @@ use parse::{
     analyze_expression_list::{ExpressionResult, analyze_expression_list},
     ast_parser::parse_expression_list_entry,
     latex_parser::parse_latex,
-    latex_tree,
+    latex_tree::{self, Bracket},
     name_resolver::ExpressionIndex,
     type_checker::Type,
 };
@@ -712,12 +712,15 @@ impl ExpressionList {
             .collect::<Vec<_>>();
         let mut latex = name;
         latex.push(C('='));
-        let mut point = vec![C('(')];
-        point.extend(p.x.to_string().chars().map(C));
-        point.push(C(','));
-        point.extend(p.y.to_string().chars().map(C));
-        point.push(C(')'));
-        latex.push(Node::DelimitedGroup(point));
+        let mut inner = vec![];
+        inner.extend(p.x.to_string().chars().map(C));
+        inner.push(C(','));
+        inner.extend(p.y.to_string().chars().map(C));
+        latex.push(Node::DelimitedGroup {
+            left: Bracket::Paren,
+            right: Bracket::Paren,
+            inner,
+        });
         self.expressions[i].set_latex(&latex);
         self.expressions_changed = true;
     }
@@ -888,12 +891,15 @@ impl ExpressionList {
                         [0.0, 0.0, 0.0, 1.0],
                     ];
                     let point = |nodes: &mut Vec<Node>, x: f64, y: f64| {
-                        let mut point = vec![C('(')];
-                        number(&mut point, x);
-                        point.push(C(','));
-                        number(&mut point, y);
-                        point.push(C(')'));
-                        nodes.push(Node::DelimitedGroup(point));
+                        let mut inner = vec![];
+                        number(&mut inner, x);
+                        inner.push(C(','));
+                        number(&mut inner, y);
+                        nodes.push(Node::DelimitedGroup {
+                            left: Bracket::Paren,
+                            right: Bracket::Paren,
+                            inner,
+                        });
                     };
 
                     let mut ei_to_oi: TiVec<ExpressionIndex, ExpressionId> = ti_vec![];
@@ -1050,20 +1056,23 @@ impl ExpressionList {
                                         }
                                         Type::NumberList => {
                                             let a = vm.vars[v].clone().list();
-                                            let mut list = vec![C('[')];
+                                            let mut inner = vec![];
                                             for (i, x) in a.borrow().as_slice().iter().enumerate() {
                                                 if i < list_limit {
                                                     if i > 0 {
-                                                        list.push(C(','));
+                                                        inner.push(C(','));
                                                     }
-                                                    number(&mut list, *x);
+                                                    number(&mut inner, *x);
                                                 } else {
-                                                    list.extend([C(','), C('.'), C('.'), C('.')]);
+                                                    inner.extend([C(','), C('.'), C('.'), C('.')]);
                                                     break;
                                                 }
                                             }
-                                            list.push(C(']'));
-                                            nodes.push(Node::DelimitedGroup(list));
+                                            nodes.push(Node::DelimitedGroup {
+                                                left: Bracket::Square,
+                                                right: Bracket::Square,
+                                                inner,
+                                            });
                                         }
                                         Type::Point => {
                                             let x = vm.vars[v].clone().number();
@@ -1073,20 +1082,23 @@ impl ExpressionList {
                                         }
                                         Type::PointList => {
                                             let a = vm.vars[v].clone().list();
-                                            let mut list = vec![C('[')];
+                                            let mut inner = vec![];
                                             for (i, p) in a.borrow().chunks(2).enumerate() {
                                                 if i < list_limit {
                                                     if i > 0 {
-                                                        list.push(C(','));
+                                                        inner.push(C(','));
                                                     }
-                                                    point(&mut list, p[0], p[1]);
+                                                    point(&mut inner, p[0], p[1]);
                                                 } else if i == list_limit {
-                                                    list.extend([C(','), C('.'), C('.'), C('.')]);
+                                                    inner.extend([C(','), C('.'), C('.'), C('.')]);
                                                 }
                                                 draw_point(p[0], p[1]);
                                             }
-                                            list.push(C(']'));
-                                            nodes.push(Node::DelimitedGroup(list));
+                                            nodes.push(Node::DelimitedGroup {
+                                                left: Bracket::Square,
+                                                right: Bracket::Square,
+                                                inner,
+                                            });
                                         }
                                         Type::Polygon => {
                                             let a = vm.vars[v].clone().list();
@@ -1125,9 +1137,11 @@ impl ExpressionList {
                                             }));
                                         }
                                         Type::Bool | Type::BoolList => unreachable!(),
-                                        Type::EmptyList => {
-                                            nodes.push(Node::DelimitedGroup(vec![C('['), C(']')]))
-                                        }
+                                        Type::EmptyList => nodes.push(Node::DelimitedGroup {
+                                            left: Bracket::Square,
+                                            right: Bracket::Square,
+                                            inner: vec![],
+                                        }),
                                     }
 
                                     if ty.as_single() != Type::Polygon

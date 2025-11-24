@@ -8,6 +8,8 @@ use glam::{DVec2, dvec2};
 use crate::katex_font::{Font, Glyph, get_glyph};
 use parse::latex_tree::{self, Node as LNode};
 
+pub use latex_tree::Bracket;
+
 const OPERATORNAME_SPACE: f64 = 0.17;
 const BINOP_SPACE: f64 = 0.2;
 const COMMA_SPACE: f64 = 0.15;
@@ -147,26 +149,6 @@ pub const OPERATORNAMES: &[&str] = &[
     "abs",
     "TScore",
 ];
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Bracket {
-    Paren,
-    Square,
-    Brace,
-    Pipe,
-}
-
-impl From<char> for Bracket {
-    fn from(value: char) -> Self {
-        match value {
-            '(' | ')' => Bracket::Paren,
-            '[' | ']' => Bracket::Square,
-            '{' | '}' => Bracket::Brace,
-            '|' => Bracket::Pipe,
-            _ => panic!("{value:?} is not a bracket"),
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BigOp {
@@ -459,24 +441,9 @@ pub fn to_latex(tree: &[(Bounds, Node)]) -> latex_tree::Nodes<'static> {
             Node::Bracket {
                 left, right, inner, ..
             } => {
-                let (left, right) = (
-                    match left.or(*right).unwrap() {
-                        Bracket::Paren => '(',
-                        Bracket::Square => '[',
-                        Bracket::Brace => '{',
-                        Bracket::Pipe => '|',
-                    },
-                    match right.or(*left).unwrap() {
-                        Bracket::Paren => ')',
-                        Bracket::Square => ']',
-                        Bracket::Brace => '}',
-                        Bracket::Pipe => '|',
-                    },
-                );
-                let mut inner = to_latex(inner);
-                inner.insert(0, LNode::Char(left));
-                inner.push(LNode::Char(right));
-                nodes.push(LNode::DelimitedGroup(inner));
+                let (left, right) = (left.or(*right).unwrap(), right.or(*left).unwrap());
+                let inner = to_latex(inner);
+                nodes.push(LNode::DelimitedGroup { left, right, inner });
             }
             Node::Script { lower, upper } => {
                 nodes.push(LNode::SubSup {
@@ -586,12 +553,7 @@ impl From<&[LNode<'_>]> for Tree {
         let mut lnodes = lnodes.iter().peekable();
         while let Some(node) = lnodes.next() {
             let node = match node {
-                LNode::DelimitedGroup(nodes) => {
-                    let [LNode::Char(left), inner @ .., LNode::Char(right)] = &nodes[..] else {
-                        unreachable!();
-                    };
-                    new_bracket(Bracket::from(*left), Bracket::from(*right), inner)
-                }
+                LNode::DelimitedGroup { left, right, inner } => new_bracket(*left, *right, inner),
                 LNode::SubSup { sub, sup } => new_script(sub.as_ref(), sup.as_ref()),
                 LNode::Sqrt { root, arg } => new_radical(root.as_ref(), arg),
                 LNode::Frac { num, den } => new_frac(num, den),

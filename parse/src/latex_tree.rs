@@ -2,9 +2,35 @@ use std::fmt;
 
 pub type Nodes<'a> = Vec<Node<'a>>;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Bracket {
+    Paren,
+    Square,
+    Brace,
+    Pipe,
+}
+
+impl TryFrom<char> for Bracket {
+    type Error = ();
+
+    fn try_from(value: char) -> Result<Self, Self::Error> {
+        Ok(match value {
+            '(' | ')' => Bracket::Paren,
+            '[' | ']' => Bracket::Square,
+            '{' | '}' => Bracket::Brace,
+            '|' => Bracket::Pipe,
+            _ => return Err(()),
+        })
+    }
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum Node<'a> {
-    DelimitedGroup(Nodes<'a>),
+    DelimitedGroup {
+        left: Bracket,
+        right: Bracket,
+        inner: Nodes<'a>,
+    },
     SubSup {
         sub: Option<Nodes<'a>>,
         sup: Option<Nodes<'a>>,
@@ -25,7 +51,7 @@ pub enum Node<'a> {
 impl<'a> Node<'a> {
     pub fn to_small_string(&self) -> String {
         match self {
-            Node::DelimitedGroup(_) => r"'\left'".into(),
+            Node::DelimitedGroup { .. } => r"'\left'".into(),
             Node::SubSup { sub: Some(_), .. } => r"'_'".into(),
             Node::SubSup { .. } => r"'^'".into(),
             Node::Sqrt { .. } => r"'\sqrt'".into(),
@@ -51,13 +77,23 @@ impl<'a> fmt::Display for NodesDisplayer<'a> {
 impl<'a> fmt::Display for Node<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Node::DelimitedGroup(nodes) => {
+            Node::DelimitedGroup { left, right, inner } => {
                 write!(
                     f,
                     r"\left{}{}\right{}",
-                    nodes[0],
-                    NodesDisplayer(&nodes[1..nodes.len() - 1]),
-                    nodes[nodes.len() - 1]
+                    match left {
+                        Bracket::Paren => '(',
+                        Bracket::Square => '[',
+                        Bracket::Brace => '{',
+                        Bracket::Pipe => '|',
+                    },
+                    NodesDisplayer(inner),
+                    match right {
+                        Bracket::Paren => ')',
+                        Bracket::Square => ']',
+                        Bracket::Brace => '}',
+                        Bracket::Pipe => '|',
+                    },
                 )?;
             }
             Node::SubSup {

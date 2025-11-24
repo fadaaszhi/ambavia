@@ -1930,7 +1930,7 @@ impl MathField {
                             response.consume_event();
                         }
                         Some(b @ ('(' | '[' | '{')) if write => {
-                            let b = Some(BracketE::from(b));
+                            let b = Some(b.try_into().unwrap());
                             match span {
                                 SelectionSpan::Cursor(i) => {
                                     let nodes = self.tree.walk_mut(&path);
@@ -1973,7 +1973,7 @@ impl MathField {
                             response.consume_event();
                         }
                         Some(b @ (')' | ']' | '}')) if write => {
-                            let b = Some(BracketE::from(b));
+                            let b = Some(b.try_into().unwrap());
                             match span {
                                 SelectionSpan::Cursor(i) => {
                                     if i > 0

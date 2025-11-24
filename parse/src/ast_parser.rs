@@ -143,10 +143,9 @@ fn parse_ident_frag(tokens: &mut Tokens) -> Result<String, String> {
             sup: Some(sup),
         } = tokens.peek()
     {
-        let sup = flatten(sup)?;
-        if sup.as_slice() == [Token::Minus, Token::Number("1".into())] {
+        if sup == &[Token::Minus, Token::Number("1".into())] {
             name = inverse.into();
-        } else if sup.as_slice() == [Token::Number("2".into())] {
+        } else if sup == &[Token::Number("2".into())] {
             name += "^2";
         } else {
             return Err(format!("only {name}^2 and {name}^-1 are supported"));
@@ -181,12 +180,12 @@ fn parse_nodes_into_name_subscript(nodes: &[Node]) -> Result<String, String> {
 fn parse_assignment(tokens: &mut Tokens, min_bp: u8) -> Result<(String, Expression), String> {
     let mut identifier = parse_ident_frag(tokens)?;
     if let Token::SubSup {
-        sub: Some(sub),
+        sub: Some((sub_nodes, _)),
         sup,
     } = tokens.peek()
     {
         identifier += "_{";
-        identifier += &parse_nodes_into_name_subscript(sub)?;
+        identifier += &parse_nodes_into_name_subscript(sub_nodes)?;
         identifier += "}";
 
         if sup.is_some() {
@@ -232,12 +231,18 @@ fn get_infix_op(token: &Token) -> Option<(OpName, u8, u8)> {
     })
 }
 
-pub fn parse_nodes_into_expression(nodes: &[Node], end_token: Token) -> Result<Expression, String> {
-    let tokens = flatten(nodes)?;
-    let mut tokens = Tokens::new(&tokens, end_token.clone());
+pub fn parse_tokens_into_expression(
+    tokens: &[Token],
+    end_token: Token,
+) -> Result<Expression, String> {
+    let mut tokens = Tokens::new(tokens, end_token.clone());
     let expression = parse_expression(&mut tokens, 0)?;
     tokens.expect(end_token)?;
     Ok(expression)
+}
+
+pub fn parse_nodes_into_expression(nodes: &[Node], end_token: Token) -> Result<Expression, String> {
+    parse_tokens_into_expression(&flatten(nodes)?, end_token)
 }
 
 fn parse_args(
@@ -466,14 +471,14 @@ fn parse_expression(tokens: &mut Tokens, min_bp: u8) -> Result<Expression, Strin
                 Token::Frac { num, den } => {
                     let frac = binary(
                         OpName::Div,
-                        parse_nodes_into_expression(num, Token::EndOfGroup)?,
-                        parse_nodes_into_expression(den, Token::EndOfGroup)?,
+                        parse_tokens_into_expression(num, Token::EndOfGroup)?,
+                        parse_tokens_into_expression(den, Token::EndOfGroup)?,
                     );
                     tokens.next();
                     frac
                 }
                 Token::Sqrt { root, arg } => {
-                    let arg = parse_nodes_into_expression(arg, Token::EndOfGroup)?;
+                    let arg = parse_tokens_into_expression(arg, Token::EndOfGroup)?;
                     let expr = if let Some(root) = root {
                         binary(
                             OpName::Pow,
@@ -481,7 +486,7 @@ fn parse_expression(tokens: &mut Tokens, min_bp: u8) -> Result<Expression, Strin
                             binary(
                                 OpName::Div,
                                 Expression::Number(1.0),
-                                parse_nodes_into_expression(root, Token::EndOfGroup)?,
+                                parse_tokens_into_expression(root, Token::EndOfGroup)?,
                             ),
                         )
                     } else {
@@ -536,14 +541,13 @@ fn parse_expression(tokens: &mut Tokens, min_bp: u8) -> Result<Expression, Strin
                             sub_sup.to_small_string()
                         ));
                     };
-                    let Some(sub) = sub else {
+                    let Some((_, sub)) = sub else {
                         return Err(format!(
                             r"{} expected lower bound",
                             kind_token.to_small_string(),
                         ));
                     };
-                    let sub = flatten(sub)?;
-                    let mut sub_tokens = Tokens::new(&sub, Token::EndOfGroup);
+                    let mut sub_tokens = Tokens::new(sub, Token::EndOfGroup);
                     let (variable, lower_bound) = parse_assignment(&mut sub_tokens, 0)?;
                     sub_tokens.expect(Token::EndOfGroup)?;
                     let Some(sup) = sup else {
@@ -553,7 +557,7 @@ fn parse_expression(tokens: &mut Tokens, min_bp: u8) -> Result<Expression, Strin
                         ));
                     };
                     let upper_bound =
-                        Box::new(parse_nodes_into_expression(sup, Token::EndOfGroup)?);
+                        Box::new(parse_tokens_into_expression(sup, Token::EndOfGroup)?);
                     let body = Box::new(parse_expression(
                         tokens,
                         get_infix_op(&Token::Plus)
@@ -594,7 +598,7 @@ fn parse_expression(tokens: &mut Tokens, min_bp: u8) -> Result<Expression, Strin
         } else {
             match tokens.peek() {
                 Token::SubSup { sub, sup } => {
-                    if let Some(sub) = sub {
+                    if let Some((sub, _)) = sub {
                         let subscript = parse_nodes_into_name_subscript(sub)?;
                         match left {
                             Expression::Identifier(ref mut name) => {
@@ -610,7 +614,7 @@ fn parse_expression(tokens: &mut Tokens, min_bp: u8) -> Result<Expression, Strin
                         left = binary(
                             OpName::Pow,
                             left,
-                            parse_nodes_into_expression(sup, Token::EndOfGroup)?,
+                            parse_tokens_into_expression(sup, Token::EndOfGroup)?,
                         )
                     }
 
@@ -999,8 +1003,8 @@ mod tests {
             T::Number("1".into()),
             T::Cdot,
             T::Frac {
-                num: &[Node::Char('2'), Node::Char('.'), Node::Char('3')],
-                den: &[Node::Char('4')],
+                num: vec![T::Number("2.3".into())],
+                den: vec![T::Number("4".into())],
             },
         ];
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
@@ -1015,15 +1019,15 @@ mod tests {
     fn sqrt() {
         let tokens = [T::Sqrt {
             root: None,
-            arg: &[Node::Char('4')],
+            arg: vec![T::Number("4".into())],
         }];
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
         assert_eq!(parse_expression(&mut tokens, 0), Ok(unary(Sqrt, Num(4.0))));
         assert_eq!(tokens.next(), &T::EndOfInput);
 
         let tokens = [T::Sqrt {
-            root: Some(&[Node::Char('3')]),
-            arg: &[Node::Char('4')],
+            root: Some(vec![T::Number("3".into())]),
+            arg: vec![T::Number("4".into())],
         }];
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
         assert_eq!(
@@ -1035,22 +1039,21 @@ mod tests {
 
     #[test]
     fn sup() {
-        let sup = [
-            Node::Char('2'),
-            Node::SubSup {
-                sub: None,
-                sup: Some(vec![Node::Char('3')]),
-            },
-        ];
         let tokens = [
             T::Number("1".into()),
             T::SubSup {
                 sub: None,
-                sup: Some(&sup),
+                sup: Some(vec![
+                    T::Number("2".into()),
+                    T::SubSup {
+                        sub: None,
+                        sup: Some(vec![T::Number("3".into())]),
+                    },
+                ]),
             },
             T::SubSup {
                 sub: None,
-                sup: Some(&[Node::CtrlSeq("asdf")]),
+                sup: Some(vec![T::IdentFrag("asdf".into())]),
             },
         ];
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
@@ -1070,14 +1073,20 @@ mod tests {
         let tokens = [
             T::IdentFrag("a".into()),
             T::SubSup {
-                sub: Some(&[Node::Char('b'), Node::Char('c')]),
+                sub: Some((
+                    &[Node::Char('b'), Node::Char('c')],
+                    vec![T::IdentFrag("bc".into())],
+                )),
                 sup: None,
             },
             T::Asterisk,
             T::IdentFrag("n".into()),
             T::SubSup {
-                sub: Some(&[Node::Char('d'), Node::Char('6')]),
-                sup: Some(&[Node::Char('e')]),
+                sub: Some((
+                    &[Node::Char('d'), Node::Char('6')],
+                    vec![T::IdentFrag("d".into()), T::Number("6".into())],
+                )),
+                sup: Some(vec![T::IdentFrag("e".into())]),
             },
         ];
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
@@ -1097,14 +1106,20 @@ mod tests {
         let tokens = [
             T::IdentFrag("a".into()),
             T::SubSup {
-                sub: Some(&[Node::Char('b'), Node::Char(' '), Node::Char('c')]),
-                sup: Some(&[]),
+                sub: Some((
+                    &[Node::Char('b'), Node::Char(' '), Node::Char('c')],
+                    vec![T::IdentFrag("b".into()), T::IdentFrag("c".into())],
+                )),
+                sup: Some(vec![]),
             },
             T::Asterisk,
             T::IdentFrag("n".into()),
             T::SubSup {
-                sub: Some(&[Node::Char('d'), Node::Char('6')]),
-                sup: Some(&[Node::Char('e')]),
+                sub: Some((
+                    &[Node::Char('d'), Node::Char('6')],
+                    vec![T::IdentFrag("d".into()), T::Number("6".into())],
+                )),
+                sup: Some(vec![T::IdentFrag("e".into())]),
             },
         ];
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
@@ -1116,8 +1131,11 @@ mod tests {
         let tokens = [
             T::Number("4".into()),
             T::SubSup {
-                sub: Some(&[Node::Char('b'), Node::Char('j'), Node::Char('c')]),
-                sup: Some(&[]),
+                sub: Some((
+                    &[Node::Char('b'), Node::Char('j'), Node::Char('c')],
+                    vec![Token::IdentFrag("bjc".into())],
+                )),
+                sup: Some(vec![]),
             },
         ];
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
@@ -1194,7 +1212,7 @@ mod tests {
             T::IdentFrag("sin".into()),
             T::SubSup {
                 sub: None,
-                sup: Some(&[Node::Char('-'), Node::Char('1')]),
+                sup: Some(vec![T::Minus, T::Number("1".into())]),
             },
             T::Number("5".into()),
             T::IdentFrag("x".into()),
@@ -1202,7 +1220,7 @@ mod tests {
             T::IdentFrag("arctan".into()),
             T::SubSup {
                 sub: None,
-                sup: Some(&[Node::Char('2')]),
+                sup: Some(vec![T::Number("2".into())]),
             },
             T::Minus,
             T::Number("3".into()),
@@ -1210,7 +1228,7 @@ mod tests {
             T::IdentFrag("sin".into()),
             T::SubSup {
                 sub: None,
-                sup: Some(&[Node::Char('2')]),
+                sup: Some(vec![T::Number("2".into())]),
             },
             T::LParen,
             T::Number("9".into()),
@@ -1399,7 +1417,7 @@ mod tests {
             T::Comma,
             T::IdentFrag("a".into()),
             T::SubSup {
-                sub: Some(&[Node::Char('2')]),
+                sub: Some((&[Node::Char('2')], vec![T::Number("2".into())])),
                 sup: None,
             },
             T::Plus,
@@ -1426,7 +1444,7 @@ mod tests {
             T::Comma,
             T::IdentFrag("a".into()),
             T::SubSup {
-                sub: Some(&[Node::Char('2')]),
+                sub: Some((&[Node::Char('2')], vec![T::Number("2".into())])),
                 sup: None,
             },
             T::Plus,
@@ -1455,7 +1473,7 @@ mod tests {
             T::Comma,
             T::IdentFrag("a".into()),
             T::SubSup {
-                sub: Some(&[Node::Char('2')]),
+                sub: Some((&[Node::Char('2')], vec![T::Number("2".into())])),
                 sup: None,
             },
             T::Plus,
@@ -1485,7 +1503,7 @@ mod tests {
             T::Comma,
             T::IdentFrag("a".into()),
             T::SubSup {
-                sub: Some(&[Node::Char('2')]),
+                sub: Some((&[Node::Char('2')], vec![T::Number("2".into())])),
                 sup: None,
             },
             T::Plus,
@@ -1507,7 +1525,7 @@ mod tests {
             T::Comma,
             T::IdentFrag("a".into()),
             T::SubSup {
-                sub: Some(&[Node::Char('2')]),
+                sub: Some((&[Node::Char('2')], vec![T::Number("2".into())])),
                 sup: None,
             },
             T::Plus,
@@ -1849,7 +1867,7 @@ mod tests {
         let tokens = [
             T::Sum,
             T::SubSup {
-                sub: Some(&[]),
+                sub: Some((&[], vec![])),
                 sup: None,
             },
         ];
@@ -1863,7 +1881,7 @@ mod tests {
             T::Prod,
             T::SubSup {
                 sub: None,
-                sup: Some(&[]),
+                sup: Some(vec![]),
             },
         ];
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
@@ -1875,8 +1893,8 @@ mod tests {
         let tokens = [
             T::Sum,
             T::SubSup {
-                sub: Some(&[Node::Char('5')]),
-                sup: Some(&[]),
+                sub: Some((&[Node::Char('5')], vec![T::Number("5".into())])),
+                sup: Some(vec![]),
             },
         ];
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
@@ -1888,8 +1906,8 @@ mod tests {
         let tokens = [
             T::Prod,
             T::SubSup {
-                sub: Some(&[Node::Char('n')]),
-                sup: Some(&[]),
+                sub: Some((&[Node::Char('n')], vec![T::IdentFrag("n".into())])),
+                sup: Some(vec![]),
             },
         ];
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
@@ -1901,8 +1919,11 @@ mod tests {
         let tokens = [
             T::Sum,
             T::SubSup {
-                sub: Some(&[Node::Char('n'), Node::Char('=')]),
-                sup: Some(&[]),
+                sub: Some((
+                    &[Node::Char('n'), Node::Char('=')],
+                    vec![T::IdentFrag("n".into()), T::Equal],
+                )),
+                sup: Some(vec![]),
             },
         ];
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
@@ -1914,8 +1935,11 @@ mod tests {
         let tokens = [
             T::Prod,
             T::SubSup {
-                sub: Some(&[Node::Char('n'), Node::Char('='), Node::Char('1')]),
-                sup: Some(&[]),
+                sub: Some((
+                    &[Node::Char('n'), Node::Char('='), Node::Char('1')],
+                    vec![T::IdentFrag("n".into()), T::Equal, T::Number("1".into())],
+                )),
+                sup: Some(vec![]),
             },
         ];
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
@@ -1927,13 +1951,21 @@ mod tests {
         let tokens = [
             T::Sum,
             T::SubSup {
-                sub: Some(&[
-                    Node::Char('n'),
-                    Node::Char('='),
-                    Node::Char('1'),
-                    Node::Char('='),
-                ]),
-                sup: Some(&[]),
+                sub: Some((
+                    &[
+                        Node::Char('n'),
+                        Node::Char('='),
+                        Node::Char('1'),
+                        Node::Char('='),
+                    ],
+                    vec![
+                        T::IdentFrag("n".into()),
+                        T::Equal,
+                        T::Number("1".into()),
+                        T::Equal,
+                    ],
+                )),
+                sup: Some(vec![]),
             },
         ];
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
@@ -1945,8 +1977,11 @@ mod tests {
         let tokens = [
             T::Prod,
             T::SubSup {
-                sub: Some(&[Node::Char('n'), Node::Char('='), Node::Char('1')]),
-                sup: Some(&[Node::Char('9')]),
+                sub: Some((
+                    &[Node::Char('n'), Node::Char('='), Node::Char('1')],
+                    vec![T::IdentFrag("n".into()), T::Equal, T::Number("1".into())],
+                )),
+                sup: Some(vec![T::Number("9".into())]),
             },
         ];
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
@@ -1958,8 +1993,11 @@ mod tests {
         let tokens = [
             T::Prod,
             T::SubSup {
-                sub: Some(&[Node::Char('n'), Node::Char('='), Node::Char('1')]),
-                sup: Some(&[Node::Char('9')]),
+                sub: Some((
+                    &[Node::Char('n'), Node::Char('='), Node::Char('1')],
+                    vec![T::IdentFrag("n".into()), T::Equal, T::Number("1".into())],
+                )),
+                sup: Some(vec![T::Number("9".into())]),
             },
             T::Number("5".into()),
             T::IdentFrag("n".into()),
@@ -2016,7 +2054,7 @@ mod tests {
             T::For,
             T::IdentFrag("c".into()),
             T::SubSup {
-                sub: Some(&[Node::Char('4')]),
+                sub: Some((&[Node::Char('4')], vec![T::Number("4".into())])),
                 sup: None,
             },
             T::Equal,
@@ -2130,7 +2168,7 @@ mod tests {
         let tokens = [
             T::IdentFrag("f".into()),
             T::SubSup {
-                sub: Some(&[Node::Char('4')]),
+                sub: Some((&[Node::Char('4')], vec![T::Number("4".into())])),
                 sup: None,
             },
             T::LParen,
@@ -2142,7 +2180,7 @@ mod tests {
             T::IdentFrag("x".into()),
             T::SubSup {
                 sub: None,
-                sup: Some(&[Node::Char('2')]),
+                sup: Some(vec![T::Number("2".into())]),
             },
             T::IdentFrag("y".into()),
         ];
@@ -2163,7 +2201,7 @@ mod tests {
         let tokens = [
             T::IdentFrag("f".into()),
             T::SubSup {
-                sub: Some(&[Node::Char('4')]),
+                sub: Some((&[Node::Char('4')], vec![T::Number("4".into())])),
                 sup: None,
             },
             T::LParen,
@@ -2175,7 +2213,7 @@ mod tests {
             T::IdentFrag("x".into()),
             T::SubSup {
                 sub: None,
-                sup: Some(&[Node::Char('2')]),
+                sup: Some(vec![T::Number("2".into())]),
             },
             T::IdentFrag("y".into()),
         ];
@@ -2201,7 +2239,7 @@ mod tests {
         let tokens = [
             T::IdentFrag("f".into()),
             T::SubSup {
-                sub: Some(&[Node::Char('4')]),
+                sub: Some((&[Node::Char('4')], vec![T::Number("4".into())])),
                 sup: None,
             },
             T::LParen,
@@ -2213,7 +2251,7 @@ mod tests {
             T::IdentFrag("x".into()),
             T::SubSup {
                 sub: None,
-                sup: Some(&[Node::Char('2')]),
+                sup: Some(vec![T::Number("2".into())]),
             },
             T::IdentFrag("y".into()),
         ];

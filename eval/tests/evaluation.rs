@@ -167,12 +167,6 @@ fn assert_expression_eq<'a>(source: &str, value: Value) {
     );
 }
 
-// fn assert_ast_error(source: &str) {
-//     println!("expression: {source}");
-//     let tree = parse_latex(source).unwrap();
-//     assert_matches::assert_matches!(parse_nodes_into_expression(&tree, Token::EndOfInput), Err(..));
-// }
-
 fn assert_type_error(source: &str, error: &str) {
     println!("expression: {source}");
     let tree = parse_latex(source).unwrap();

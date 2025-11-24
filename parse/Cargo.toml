@@ -11,4 +11,3 @@ typed-index-collections = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
-assert_matches = "1.5.0"

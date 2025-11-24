@@ -3,16 +3,18 @@ use crate::latex_tree::Node;
 #[derive(Debug, PartialEq, Clone)]
 pub enum Token<'a> {
     SubSup {
-        sub: Option<&'a [Node<'a>]>,
-        sup: Option<&'a [Node<'a>]>,
+        /// `&[Node]` is used when parsing name subscripts since they get
+        /// interpreted as raw characters
+        sub: Option<(&'a [Node<'a>], Vec<Token<'a>>)>,
+        sup: Option<Vec<Token<'a>>>,
     },
     Sqrt {
-        root: Option<&'a [Node<'a>]>,
-        arg: &'a [Node<'a>],
+        root: Option<Vec<Token<'a>>>,
+        arg: Vec<Token<'a>>,
     },
     Frac {
-        num: &'a [Node<'a>],
-        den: &'a [Node<'a>],
+        num: Vec<Token<'a>>,
+        den: Vec<Token<'a>>,
     },
     LParen,
     RParen,
@@ -125,20 +127,26 @@ fn flatten_helper<'a>(
             Node::SubSup { sub, sup } => {
                 index += 1;
                 tokens.push(Token::SubSup {
-                    sub: sub.as_deref(),
-                    sup: sup.as_deref(),
+                    sub: match sub {
+                        Some(sub) => Some((sub, flatten(sub)?)),
+                        None => None,
+                    },
+                    sup: sup.as_deref().map(flatten).transpose()?,
                 })
             }
             Node::Sqrt { root, arg } => {
                 index += 1;
                 tokens.push(Token::Sqrt {
-                    root: root.as_deref(),
-                    arg,
+                    root: root.as_deref().map(flatten).transpose()?,
+                    arg: flatten(arg)?,
                 })
             }
             Node::Frac { num, den } => {
                 index += 1;
-                tokens.push(Token::Frac { num, den })
+                tokens.push(Token::Frac {
+                    num: flatten(num)?,
+                    den: flatten(den)?,
+                })
             }
             Node::Operatorname(nodes) => {
                 index += 1;
@@ -279,7 +287,6 @@ mod tests {
     use super::*;
     use Node::*;
     use Token as Tk;
-    use assert_matches::assert_matches;
     use pretty_assertions::assert_eq;
 
     #[test]
@@ -558,95 +565,61 @@ mod tests {
 
     #[test]
     fn sub_sup() {
-        let nodes = [
-            SubSup {
-                sub: Some(vec![Char('1')]),
-                sup: Some(vec![CtrlSeq("pi")]),
-            },
-            Char('j'),
-        ];
-        let tokens = flatten(&nodes);
-        assert_matches!(
-            tokens.as_deref(),
-            Ok([
-                Tk::SubSup {
-                    sub: Some(..),
-                    sup: Some(..)
+        assert_eq!(
+            flatten(&[
+                SubSup {
+                    sub: Some(vec![Char('1')]),
+                    sup: Some(vec![CtrlSeq("pi")]),
                 },
-                Tk::IdentFrag(name)
-            ]) if name == "j"
+                Char('j'),
+            ]),
+            Ok(vec![
+                Tk::SubSup {
+                    sub: Some((&[Char('1')], vec![Tk::Number("1".into())])),
+                    sup: Some(vec![Tk::IdentFrag("pi".into())])
+                },
+                Tk::IdentFrag("j".into())
+            ])
         );
-
-        let Ok(
-            [
-                Tk::SubSup {
-                    sub: Some(sub),
-                    sup: Some(sup),
-                },
-                ..,
-            ],
-        ) = tokens.as_deref()
-        else {
-            unreachable!();
-        };
-
-        assert_eq!(flatten(sub), Ok(vec![Tk::Number("1".into())]));
-        assert_eq!(flatten(sup), Ok(vec![Tk::IdentFrag("pi".into())]));
     }
 
     #[test]
     fn sqrt() {
-        let nodes = [
-            Sqrt {
-                root: Some(vec![Char('1')]),
-                arg: vec![CtrlSeq("pi")],
-            },
-            Char('j'),
-        ];
-        let tokens = flatten(&nodes);
-        assert_matches!(tokens.as_deref(), Ok([Tk::Sqrt { root: Some(..), .. },
-                Tk::IdentFrag(name)
-            ]) if name == "j"
-        );
-
-        let Ok(
-            [
-                Tk::Sqrt {
-                    root: Some(root),
-                    arg,
+        assert_eq!(
+            flatten(&[
+                Sqrt {
+                    root: Some(vec![Char('1')]),
+                    arg: vec![CtrlSeq("pi")],
                 },
-                ..,
-            ],
-        ) = tokens.as_deref()
-        else {
-            unreachable!();
-        };
-
-        assert_eq!(flatten(root), Ok(vec![Tk::Number("1".into())]));
-        assert_eq!(flatten(arg), Ok(vec![Tk::IdentFrag("pi".into())]));
+                Char('j'),
+            ]),
+            Ok(vec![
+                Tk::Sqrt {
+                    root: Some(vec![Tk::Number("1".into())]),
+                    arg: vec![Tk::IdentFrag("pi".into())]
+                },
+                Tk::IdentFrag("j".into())
+            ])
+        );
     }
 
     #[test]
     fn frac() {
-        let nodes = [
-            Frac {
-                num: vec![Char('1')],
-                den: vec![CtrlSeq("pi")],
-            },
-            Char('j'),
-        ];
-
-        let tokens = flatten(&nodes);
-        assert_matches!(tokens.as_deref(), Ok([Tk::Frac { .. },
-                Tk::IdentFrag(name)
-            ]) if name == "j"
+        assert_eq!(
+            flatten(&[
+                Frac {
+                    num: vec![Char('1')],
+                    den: vec![CtrlSeq("pi")],
+                },
+                Char('j'),
+            ]),
+            Ok(vec![
+                Tk::Frac {
+                    num: vec![Tk::Number("1".into())],
+                    den: vec![Tk::IdentFrag("pi".into())]
+                },
+                Tk::IdentFrag("j".into())
+            ])
         );
-
-        let Ok([Tk::Frac { num, den }, ..]) = tokens.as_deref() else {
-            unreachable!();
-        };
-
-        assert_eq!(flatten(num), Ok(vec![Tk::Number("1".into())]));
-        assert_eq!(flatten(den), Ok(vec![Tk::IdentFrag("pi".into())]));
     }
 }

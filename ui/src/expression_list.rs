@@ -963,7 +963,7 @@ impl ExpressionList {
                         analysis.constants.iter().map(|&i| &analysis.assignments[i]),
                         analysis.results.iter_enumerated().filter_map(|(i, r)| {
                             let ExpressionResult::Plot {
-                                parameter,
+                                parameters,
                                 assignments,
                                 ..
                             } = r
@@ -972,7 +972,7 @@ impl ExpressionList {
                             };
                             function_id_map.insert(i, function_id_map.len());
                             Some((
-                                *parameter,
+                                parameters.iter().cloned(),
                                 assignments.iter().map(|&i| &analysis.assignments[i]),
                             ))
                         }),
@@ -1018,7 +1018,7 @@ impl ExpressionList {
                                 if let ExpressionResult::Plot {
                                     kind,
                                     value,
-                                    parameter,
+                                    ref parameters,
                                     ..
                                 } = r
                                 {
@@ -1027,20 +1027,22 @@ impl ExpressionList {
                                         color,
                                         kind: Plot {
                                             kind,
-                                            input: parameter.map(|p| var_indices[&p]),
+                                            inputs: parameters
+                                                .iter()
+                                                .map(|p| var_indices[&p])
+                                                .collect(),
                                             output: var_indices[&value],
                                             instructions: functions.remove(&ei).unwrap(),
                                         },
                                     }]);
                                 }
 
-                                if !matches!(
-                                    r,
-                                    ExpressionResult::Plot {
-                                        parameter: Some(_),
-                                        ..
-                                    },
-                                ) {
+                                if match r {
+                                    ExpressionResult::Plot { parameters, .. } => {
+                                        parameters.is_empty()
+                                    }
+                                    _ => true,
+                                } {
                                     let v = var_indices[&id];
                                     match ty {
                                         Type::Number => {

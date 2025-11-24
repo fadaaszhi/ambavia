@@ -1,5 +1,3 @@
-use std::time::Instant;
-
 use glam::DVec2;
 
 use crate::utility::mix;
@@ -89,7 +87,7 @@ impl<F: FnMut(f64) -> DVec2> Sampler<F> {
     }
 }
 
-pub fn sample_function(
+pub fn sample_explicit(
     mut f: impl FnMut(f64) -> DVec2,
     t_min: f64,
     t_max: f64,
@@ -98,13 +96,7 @@ pub fn sample_function(
     tolerance: f64,
     uniform_sample_count: usize,
 ) -> Vec<DVec2> {
-    let start = Instant::now();
     let half_uniform_sample_count = uniform_sample_count / 2;
-    let mut f_eval_count = 0;
-    let mut f = |x: f64| {
-        f_eval_count += 1;
-        f(x)
-    };
     let p = f(t_min);
     let mut s = Sampler {
         f,
@@ -126,15 +118,5 @@ pub fn sample_function(
         s.subdivide(t0, t1, p0, p1, 10, 20);
     }
 
-    let points = s.points;
-    let elapsed = start.elapsed();
-    println!();
-    println!("points.len() = {}", points.len());
-    println!("f eval count = {}", f_eval_count);
-    println!("  time taken = {:?}", elapsed);
-
-    if points.len() < 10 {
-        dbg!(&points);
-    }
-    points
+    s.points
 }

@@ -1,4 +1,11 @@
-mod sample;
+mod sample_explicit;
+mod sample_implicit;
+
+use std::{
+    collections::HashMap,
+    iter::zip,
+    time::{Duration, Instant},
+};
 
 use eval::vm::{self, Instruction, VarIndex, Vm};
 use glam::{DVec2, Vec2, dvec2, uvec2};
@@ -11,7 +18,7 @@ use winit::{
 use crate::{
     Bounds, Context, Event, Response,
     expression_list::ExpressionId,
-    graph::sample::sample_function,
+    graph::{sample_explicit::sample_explicit, sample_implicit::sample_implicit},
     utility::{flip_y, snap},
 };
 
@@ -38,7 +45,7 @@ pub enum GeometryKind {
     },
     Plot {
         kind: PlotKind,
-        input: Option<VarIndex>,
+        inputs: Vec<VarIndex>,
         output: VarIndex,
         instructions: Vec<Instruction>,
     },
@@ -644,7 +651,7 @@ impl GraphPaper {
             match kind {
                 GeometryKind::Plot {
                     kind,
-                    input,
+                    inputs,
                     output,
                     instructions,
                 } => {
@@ -652,15 +659,6 @@ impl GraphPaper {
                     shapes.push(Shape::line(*color, ctx.scale_factor as f32 * width));
 
                     let mut vm = Vm::new(instructions, std::mem::take(&mut self.vm_vars));
-
-                    let n_uniform_samples = match kind {
-                        // Desmos seems to do 4 per physical pixel
-                        PlotKind::Normal => (physical.size.x * 4.0) as usize,
-                        PlotKind::Inverse => (physical.size.y * 4.0) as usize,
-                        // Desmos seems to do 2000
-                        PlotKind::Parametric => 2000,
-                    };
-
                     let pixels_per_math = vp.width / physical.size.x;
 
                     let buffer = 0.5 * ctx.scale_factor * *width as f64 * pixels_per_math;
@@ -668,68 +666,133 @@ impl GraphPaper {
                     let vp_max = vp.center + vp_size * 0.5 + buffer;
                     let tolerance = 1.0 * pixels_per_math;
 
-                    let run = |vm: &mut Vm, input_index: &Option<VarIndex>, input_value: f64| {
-                        // Sometimes the input is optimized out of the program (e.g., f(x)=2)
-                        // so we need to check if it actually exists first
-                        if let Some(index) = input_index
-                            && let Some(input) = vm.vars.get_mut(*index)
-                        {
-                            *input = vm::Value::Number(input_value);
-                        }
-                        vm.run(false);
-                    };
+                    const TRACK_STATS: bool = false;
+                    const CACHE_IMPLICIT_EVALUATIONS: bool = true;
 
-                    let points = match kind {
-                        PlotKind::Normal => {
-                            let f = |x: f64| {
-                                run(&mut vm, input, x);
-                                let y = vm.vars[*output].clone().number();
-                                dvec2(x, y)
-                            };
-                            sample_function(
-                                f,
-                                vp_min.x,
-                                vp_max.x,
-                                vp_min,
-                                vp_max,
-                                tolerance,
-                                n_uniform_samples,
-                            )
-                        }
-                        PlotKind::Inverse => {
-                            let f = |y: f64| {
-                                run(&mut vm, input, y);
-                                let x = vm.vars[*output].clone().number();
-                                dvec2(x, y)
-                            };
-                            sample_function(
-                                f,
-                                vp_min.y,
-                                vp_max.y,
-                                vp_min,
-                                vp_max,
-                                tolerance,
-                                n_uniform_samples,
-                            )
-                        }
-                        PlotKind::Parametric => {
-                            let f = |t: f64| {
-                                run(&mut vm, input, t);
-                                let x = vm.vars[*output].clone().number();
-                                let y = vm.vars[*output + 1.into()].clone().number();
-                                dvec2(x, y)
-                            };
-                            sample_function(
-                                f,
-                                0.0,
-                                1.0,
-                                vp_min,
-                                vp_max,
-                                tolerance,
-                                n_uniform_samples,
-                            )
+                    let mut f_eval_count = 0;
+                    let mut cache_hits = 0;
+                    let mut f_elapsed = Duration::ZERO;
+                    let mut run =
+                        |vm: &mut Vm, input_indices: &[VarIndex], input_values: &[f64]| {
+                            if TRACK_STATS {
+                                f_eval_count += 1;
+                            }
+                            for (index, value) in zip(input_indices, input_values) {
+                                // Sometimes the input is optimized out of the program (e.g., f(x)=2)
+                                // so we need to check if it actually exists first
+                                if let Some(input) = vm.vars.get_mut(*index) {
+                                    *input = vm::Value::Number(*value);
+                                }
+                            }
+                            if TRACK_STATS {
+                                let start = Instant::now();
+                                vm.run(false);
+                                f_elapsed += start.elapsed();
+                            } else {
+                                vm.run(false);
+                            }
+                        };
+
+                    let start = Instant::now();
+                    let points = if *kind == PlotKind::Implicit {
+                        let mut cache = HashMap::new();
+                        sample_implicit(
+                            |p| {
+                                if CACHE_IMPLICIT_EVALUATIONS {
+                                    let key = [p.x.to_bits(), p.y.to_bits()];
+                                    if let Some(f) = cache.get(&key) {
+                                        if TRACK_STATS {
+                                            cache_hits += 1;
+                                        }
+                                        *f
+                                    } else {
+                                        run(&mut vm, inputs, &[p.x, p.y]);
+                                        let f = vm.vars[*output].clone().number();
+                                        cache.insert(key, f);
+                                        f
+                                    }
+                                } else {
+                                    run(&mut vm, inputs, &[p.x, p.y]);
+                                    let f = vm.vars[*output].clone().number();
+                                    f
+                                }
+                            },
+                            vp_min,
+                            vp_max,
+                        )
+                    } else {
+                        let n_uniform_samples = match kind {
+                            // Desmos seems to do 4 per physical pixel
+                            PlotKind::Normal => (physical.size.x * 4.0) as usize,
+                            PlotKind::Inverse => (physical.size.y * 4.0) as usize,
+                            // Desmos seems to do 2000
+                            PlotKind::Parametric => 2000,
+                            PlotKind::Implicit => unreachable!(),
+                        };
+
+                        match kind {
+                            PlotKind::Normal => {
+                                let f = |x: f64| {
+                                    run(&mut vm, inputs, &[x]);
+                                    let y = vm.vars[*output].clone().number();
+                                    dvec2(x, y)
+                                };
+                                sample_explicit(
+                                    f,
+                                    vp_min.x,
+                                    vp_max.x,
+                                    vp_min,
+                                    vp_max,
+                                    tolerance,
+                                    n_uniform_samples,
+                                )
+                            }
+                            PlotKind::Inverse => {
+                                let f = |y: f64| {
+                                    run(&mut vm, inputs, &[y]);
+                                    let x = vm.vars[*output].clone().number();
+                                    dvec2(x, y)
+                                };
+                                sample_explicit(
+                                    f,
+                                    vp_min.y,
+                                    vp_max.y,
+                                    vp_min,
+                                    vp_max,
+                                    tolerance,
+                                    n_uniform_samples,
+                                )
+                            }
+                            PlotKind::Parametric => {
+                                let f = |t: f64| {
+                                    run(&mut vm, inputs, &[t]);
+                                    let x = vm.vars[*output].clone().number();
+                                    let y = vm.vars[*output + 1.into()].clone().number();
+                                    dvec2(x, y)
+                                };
+                                sample_explicit(
+                                    f,
+                                    0.0,
+                                    1.0,
+                                    vp_min,
+                                    vp_max,
+                                    tolerance,
+                                    n_uniform_samples,
+                                )
+                            }
+                            PlotKind::Implicit => unreachable!(),
                         }
                     };
+                    let elapsed = start.elapsed();
+
+                    if TRACK_STATS {
+                        println!();
+                        println!("points.len() = {}", points.len());
+                        println!("cache hits   = {}", cache_hits);
+                        println!("f eval count = {}", f_eval_count);
+                        println!("f eval time  = {:?}", f_elapsed);
+                        println!("total time   = {:?}", elapsed);
+                    }
 
                     for p in points {
                         let p = to_physical(p).as_vec2();

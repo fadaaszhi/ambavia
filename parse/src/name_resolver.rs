@@ -762,6 +762,8 @@ bitflags::bitflags! {
         const INVERSE = 1 << 1;
         /// `(x(t), y(t))`
         const PARAMETRIC = 1 << 2;
+        /// `f(x, y) = 0`
+        const IMPLICIT = 1 << 3;
     }
 }
 
@@ -773,23 +775,50 @@ pub enum ExpressionResult {
     Plot {
         allowed_kinds: PlotKinds,
         value: Id,
-        parameter: Option<Id>,
+        parameters: Vec<Id>,
     },
 }
 
 fn undefined_vars_error(names: &[&str]) -> ExpressionResult {
-    ExpressionResult::Err(match names {
-        [] => unreachable!(),
-        [a] => format!("'{a}' is not defined"),
-        [first @ .., last] => format!(
+    undefined_vars_error_msg(names.iter().cloned())
+        .map_or(ExpressionResult::None, ExpressionResult::Err)
+}
+
+pub(crate) fn undefined_vars_error_msg<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+) -> Option<String> {
+    match &names
+        .into_iter()
+        .filter(|&n| n != "x" && n != "y")
+        .collect::<Vec<_>>()[..]
+    {
+        [] => None,
+        [a] => Some(format!("'{a}' is not defined")),
+        [first @ .., last] => Some(format!(
             "{} and '{last}' are not defined",
             first
                 .iter()
                 .map(|n| format!("'{n}'"))
                 .collect::<Vec<_>>()
                 .join(", ")
-        ),
-    })
+        )),
+    }
+}
+
+trait ToVec {
+    type T;
+    fn to_vec(self) -> Vec<Self::T>;
+}
+
+impl<T> ToVec for Option<T> {
+    type T = T;
+
+    fn to_vec(self) -> Vec<Self::T> {
+        match self {
+            Some(x) => vec![x],
+            None => vec![],
+        }
+    }
 }
 
 pub fn resolve_names(
@@ -856,7 +885,10 @@ pub fn resolve_names(
                                         PlotKinds::INVERSE | PlotKinds::PARAMETRIC
                                     },
                                     value: id,
-                                    parameter: freevars.first().map(|v| resolver.freevars[v]),
+                                    parameters: freevars
+                                        .first()
+                                        .map(|v| resolver.freevars[v])
+                                        .to_vec(),
                                 }
                             } else if freevars.len() == 1 && freevars != [name]
                                 || name == "y" && freevars.is_empty()
@@ -868,7 +900,30 @@ pub fn resolve_names(
                                         PlotKinds::NORMAL | PlotKinds::PARAMETRIC
                                     },
                                     value: id,
-                                    parameter: freevars.first().map(|v| resolver.freevars[v]),
+                                    parameters: freevars
+                                        .first()
+                                        .map(|v| resolver.freevars[v])
+                                        .to_vec(),
+                                }
+                            } else if (name == "x" || name == "y")
+                                && matches!(freevars[..], ["x"] | ["y"] | ["x", "y"])
+                            {
+                                let lhs = Expression::Identifier(
+                                    resolver.resolve_variable(name).unwrap(),
+                                );
+                                let rhs = Expression::Identifier(id);
+                                let f = Expression::Op {
+                                    operation: OpName::Sub,
+                                    args: vec![lhs, rhs],
+                                };
+                                let value = resolver.push_assignment("<implicit plot>", 0, f);
+                                ExpressionResult::Plot {
+                                    allowed_kinds: PlotKinds::IMPLICIT,
+                                    value,
+                                    parameters: vec![
+                                        resolver.resolve_variable("x").unwrap(),
+                                        resolver.resolve_variable("y").unwrap(),
+                                    ],
                                 }
                             } else if freevars.is_empty() {
                                 ExpressionResult::Value(id)
@@ -941,7 +996,10 @@ pub fn resolve_names(
                                         PlotKinds::NORMAL
                                     },
                                     value: id,
-                                    parameter: freevars.first().map(|v| resolver.freevars[v]),
+                                    parameters: freevars
+                                        .first()
+                                        .map(|v| resolver.freevars[v])
+                                        .to_vec(),
                                 },
                                 _ => undefined_vars_error(&freevars),
                             },
@@ -951,8 +1009,56 @@ pub fn resolve_names(
                         ExpressionResult::None
                     }
                 }
-                ExpressionListEntry::Relation(..) => {
-                    ExpressionResult::Err("todo: relations are not supported yet".into())
+                ExpressionListEntry::Relation(ast::ChainedComparison {
+                    operands,
+                    operators,
+                }) => {
+                    let [operator] = &operators[..] else {
+                        return ExpressionResult::Err(
+                            "todo: chained relations aren't supported".into(),
+                        );
+                    };
+                    if *operator != ast::ComparisonOperator::Equal {
+                        return ExpressionResult::Err("todo: inequalities aren't supported".into());
+                    }
+                    let (value, deps) = resolver.resolve_with_dependencies(
+                        |this| {
+                            Ok::<_, String>(Expression::Op {
+                                operation: OpName::Sub,
+                                args: this.resolve_expressions(operands)?,
+                            })
+                        },
+                        None,
+                    );
+                    let level = deps.level();
+                    assert_eq!(level, 0);
+                    let id =
+                        value.map(|value| resolver.push_assignment("<anonymous>", level, value));
+                    let mut freevars = deps
+                        .keys()
+                        .cloned()
+                        .filter(|name| resolver.freevars.contains_key(name))
+                        .collect::<Vec<_>>();
+                    freevars.sort();
+                    match id {
+                        Ok(id) => {
+                            if matches!(freevars[..], ["x"] | ["y"] | ["x", "y"]) {
+                                ExpressionResult::Plot {
+                                    allowed_kinds: PlotKinds::IMPLICIT,
+                                    value: id,
+                                    parameters: vec![
+                                        resolver.resolve_variable("x").unwrap(),
+                                        resolver.resolve_variable("y").unwrap(),
+                                    ],
+                                }
+                            } else if freevars.is_empty() {
+                                ExpressionResult::None
+                            } else {
+                                undefined_vars_error(&freevars)
+                            }
+                        }
+                        Err(e) => ExpressionResult::Err(e),
+                    }
                 }
                 ExpressionListEntry::Expression(value) => {
                     let (value, deps) = resolver.resolve_expression_with_dependencies(value, None);
@@ -972,12 +1078,12 @@ pub fn resolve_names(
                             ["x"] => ExpressionResult::Plot {
                                 allowed_kinds: PlotKinds::NORMAL,
                                 value: id,
-                                parameter: Some(resolver.freevars["x"]),
+                                parameters: vec![resolver.freevars["x"]],
                             },
                             [v] if v != "y" => ExpressionResult::Plot {
                                 allowed_kinds: PlotKinds::PARAMETRIC,
                                 value: id,
-                                parameter: Some(resolver.freevars[v]),
+                                parameters: vec![resolver.freevars[v]],
                             },
                             ["y"] => ExpressionResult::Err(
                                 "try adding 'x=' to the beginning of this equation".into(),
@@ -1927,14 +2033,14 @@ mod tests {
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(1),
-                        parameter: Some(Id(0))
+                        parameters: vec![Id(0)]
                     },
                     ExpressionResult::Value(Id(3)),
                     ExpressionResult::Value(Id(2)),
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(5),
-                        parameter: Some(Id(4))
+                        parameters: vec![Id(4)]
                     },
                     ExpressionResult::Value(Id(15)),
                 ],
@@ -2081,14 +2187,14 @@ mod tests {
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(1),
-                        parameter: Some(Id(0))
+                        parameters: vec![Id(0)]
                     },
                     ExpressionResult::Value(Id(3)),
                     ExpressionResult::Value(Id(2)),
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(5),
-                        parameter: Some(Id(4))
+                        parameters: vec![Id(4)]
                     },
                     ExpressionResult::Value(Id(14)),
                 ],
@@ -2184,12 +2290,12 @@ mod tests {
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL,
                         value: Id(3),
-                        parameter: Some(Id(0))
+                        parameters: vec![Id(0)]
                     },
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(5),
-                        parameter: Some(Id(4))
+                        parameters: vec![Id(4)]
                     },
                     ExpressionResult::Value(Id(8))
                 ],
@@ -2293,12 +2399,12 @@ mod tests {
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL,
                         value: Id(3),
-                        parameter: Some(Id(0))
+                        parameters: vec![Id(0)]
                     },
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(5),
-                        parameter: Some(Id(4))
+                        parameters: vec![Id(4)]
                     },
                     ExpressionResult::Value(Id(9))
                 ],
@@ -2490,17 +2596,17 @@ mod tests {
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL,
                         value: Id(3),
-                        parameter: Some(Id(0))
+                        parameters: vec![Id(0)]
                     },
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(5),
-                        parameter: Some(Id(4))
+                        parameters: vec![Id(4)]
                     },
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL,
                         value: Id(10),
-                        parameter: Some(Id(0))
+                        parameters: vec![Id(0)]
                     },
                     ExpressionResult::Value(Id(15))
                 ],
@@ -2719,7 +2825,7 @@ mod tests {
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(8),
-                        parameter: Some(Id(7))
+                        parameters: vec![Id(7)]
                     },
                     ExpressionResult::Value(Id(4)),
                 ],
@@ -3052,12 +3158,12 @@ mod tests {
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(14),
-                        parameter: Some(Id(12))
+                        parameters: vec![Id(12)]
                     },
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(16),
-                        parameter: Some(Id(15))
+                        parameters: vec![Id(15)]
                     },
                     ExpressionResult::Err("'i' and 'j' are not defined".into()),
                     ExpressionResult::Value(Id(6)),
@@ -3124,12 +3230,12 @@ mod tests {
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::PARAMETRIC,
                         value: Id(3),
-                        parameter: Some(Id(2))
+                        parameters: vec![Id(2)]
                     },
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(5),
-                        parameter: Some(Id(4))
+                        parameters: vec![Id(4)]
                     },
                 ],
                 HashMap::from([("c".into(), Id(2)), ("a".into(), Id(4))]),
@@ -3178,12 +3284,12 @@ mod tests {
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(2),
-                        parameter: Some(Id(1))
+                        parameters: vec![Id(1)]
                     },
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::PARAMETRIC,
                         value: Id(3),
-                        parameter: Some(Id(1))
+                        parameters: vec![Id(1)]
                     },
                 ],
                 HashMap::from([("c".into(), Id(1))]),
@@ -3611,7 +3717,7 @@ mod tests {
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL,
                         value: Id(4),
-                        parameter: Some(Id(0))
+                        parameters: vec![Id(0)]
                     },
                     ExpressionResult::Value(Id(2)),
                     ExpressionResult::Value(Id(3)),

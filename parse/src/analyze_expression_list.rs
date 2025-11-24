@@ -9,7 +9,10 @@ use typed_index_collections::{TiSlice, TiVec};
 
 use crate::{
     ast::ExpressionListEntry,
-    name_resolver::{ExpressionIndex, ExpressionResult as NrEr, Id, PlotKinds, resolve_names},
+    name_resolver::{
+        ExpressionIndex, ExpressionResult as NrEr, Id, PlotKinds, resolve_names,
+        undefined_vars_error_msg,
+    },
     type_checker::{Assignment, Type, type_check, walk_assignment_ids},
 };
 
@@ -24,6 +27,8 @@ pub enum PlotKind {
     Inverse,
     /// `(x(t), y(t))`
     Parametric,
+    /// `f(x, y) = 0`
+    Implicit,
 }
 
 #[derive(Debug, PartialEq)]
@@ -35,7 +40,7 @@ pub enum ExpressionResult {
         kind: PlotKind,
         value: Id,
         ty: Type,
-        parameter: Option<Id>,
+        parameters: Vec<Id>,
         assignments: Vec<AssignmentIndex>,
     },
 }
@@ -98,7 +103,7 @@ pub fn analyze_expression_list(
             NrEr::Plot {
                 allowed_kinds,
                 value,
-                parameter,
+                parameters,
             } => {
                 let ty = match types[&value].clone() {
                     Ok(ty) => ty,
@@ -109,7 +114,9 @@ pub fn analyze_expression_list(
                 // plot kind and received type
                 let kind = match ty {
                     Type::Number | Type::NumberList => {
-                        if allowed_kinds.intersects(PlotKinds::NORMAL | PlotKinds::INVERSE) {
+                        if allowed_kinds.intersects(
+                            PlotKinds::NORMAL | PlotKinds::INVERSE | PlotKinds::IMPLICIT,
+                        ) {
                             if ty.is_list() {
                                 return ExpressionResult::Err(
                                     "todo: plotting lists is not supported yet".into(),
@@ -117,16 +124,24 @@ pub fn analyze_expression_list(
                             }
                             if allowed_kinds.contains(PlotKinds::NORMAL) {
                                 PlotKind::Normal
-                            } else {
+                            } else if allowed_kinds.contains(PlotKinds::INVERSE) {
                                 PlotKind::Inverse
+                            } else {
+                                PlotKind::Implicit
                             }
                         } else {
                             // a+2
-                            return ExpressionResult::Err(format!(
-                                "'{}' is not defined",
-                                freevar_names[&parameter.unwrap()]
-                            ));
+                            return ExpressionResult::Err(
+                                undefined_vars_error_msg(
+                                    parameters.iter().map(|p| freevar_names[p]),
+                                )
+                                .unwrap(),
+                            );
                         }
+                    }
+                    _ if ty != Type::EmptyList && allowed_kinds == PlotKinds::IMPLICIT => {
+                        // (x,y) = (x,y)
+                        return ExpressionResult::Err(format!("cannot compare {} to {}", ty, ty));
                     }
                     Type::Point | Type::PointList => {
                         if allowed_kinds.intersects(PlotKinds::PARAMETRIC) {
@@ -135,7 +150,7 @@ pub fn analyze_expression_list(
                                     "todo: plotting lists is not supported yet".into(),
                                 );
                             }
-                            if parameter.is_none() {
+                            if parameters.is_empty() {
                                 // y = (3,4)
                                 return ExpressionResult::Value(value, ty);
                             }
@@ -148,12 +163,11 @@ pub fn analyze_expression_list(
                     }
                     Type::Polygon | Type::PolygonList => {
                         return if allowed_kinds.contains(PlotKinds::PARAMETRIC) {
-                            if let Some(parameter) = parameter {
+                            if let Some(e) = undefined_vars_error_msg(
+                                parameters.iter().map(|p| freevar_names[p]),
+                            ) {
                                 // a = polygon([(b,b)])
-                                ExpressionResult::Err(format!(
-                                    "'{}' is not defined",
-                                    freevar_names[&parameter]
-                                ))
+                                ExpressionResult::Err(e)
                             } else {
                                 // x = polygon([0,1,1],[0,0,1])
                                 ExpressionResult::Value(value, ty)
@@ -172,14 +186,17 @@ pub fn analyze_expression_list(
                 // value that depend on our parameter, since constants that we
                 // depend on have already been computed and we don't want to
                 // unnecessarily compute them again
-                let assignments = if let Some(parameter) = parameter
-                    && freevar_dependencies[&value].contains(&parameter)
+                let assignments = if parameters
+                    .iter()
+                    .any(|p| freevar_dependencies[&value].contains(p))
                 {
                     let mut value_dependencies = HashSet::from([value]);
                     for assignment in assignments.iter().rev() {
                         if value_dependencies.contains(&assignment.id) {
                             let _ = assignment.value.walk_ids(&mut |id| {
-                                if freevar_dependencies[&id].contains(&parameter) {
+                                if let Some(d) = freevar_dependencies.get(&id)
+                                    && parameters.iter().any(|p| d.contains(&p))
+                                {
                                     value_dependencies.insert(id);
                                 }
                                 ControlFlow::Continue::<()>(())
@@ -198,7 +215,7 @@ pub fn analyze_expression_list(
                     kind,
                     value,
                     ty,
-                    parameter,
+                    parameters,
                     assignments,
                 }
             }

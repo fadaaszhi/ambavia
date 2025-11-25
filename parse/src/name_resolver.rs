@@ -9,7 +9,7 @@ use std::{
 };
 
 use derive_more::{From, Into};
-use typed_index_collections::{TiSlice, TiVec};
+use typed_index_collections::{TiSlice, TiVec, ti_vec};
 
 pub use crate::ast::{ComparisonOperator, SumProdKind};
 use crate::{
@@ -113,7 +113,8 @@ impl OpName {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Id(pub usize);
 
-type Level = usize;
+#[derive(Debug, Copy, Clone, From, Into, PartialEq)]
+struct Level(usize);
 
 #[derive(Debug, PartialEq)]
 pub struct Assignment {
@@ -176,10 +177,10 @@ impl<'a> Dependencies<'a> {
         let mut level = 0;
         for d in self.0.values() {
             if let Dependency::Substitution(i) = d {
-                level = level.max(i.level);
+                level = level.max(i.level.into());
             }
         }
-        level
+        level.into()
     }
 
     fn scope_index(&self) -> usize {
@@ -255,7 +256,7 @@ struct Resolver<'a> {
     line_count: usize,
     definitions: HashMap<&'a str, Result<&'a ExpressionListEntry, NameError>>,
     dependencies_being_tracked: Option<Dependencies<'a>>,
-    assignments: Vec<Vec<Assignment>>,
+    assignments: TiVec<Level, Vec<Assignment>>,
     freevars: HashMap<&'a str, Id>,
     id_counter: usize,
     cycle_detector: CycleDetector<'a>,
@@ -297,7 +298,7 @@ impl<'a> Resolver<'a> {
             line_count: 0,
             definitions,
             dependencies_being_tracked: None,
-            assignments: vec![vec![]],
+            assignments: ti_vec![vec![]],
             freevars: HashMap::new(),
             id_counter: 0,
             cycle_detector: CycleDetector::default(),
@@ -325,7 +326,7 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    fn push_assignment(&mut self, name: &str, level: usize, value: Expression) -> Id {
+    fn push_assignment(&mut self, name: &str, level: Level, value: Expression) -> Id {
         let assignment = self.create_assignment(name, value);
         let id = assignment.id;
         self.assignments[level].push(assignment);
@@ -683,7 +684,7 @@ impl<'a> Resolver<'a> {
                 NameError::DuplicateWithSubstitution,
             ),
             ast::Expression::For { body, lists } => {
-                let level = self.assignments.len();
+                let level = self.assignments.next_key();
                 let mut substitutions = HashMap::new();
                 let mut resolved_lists = vec![];
 
@@ -706,7 +707,7 @@ impl<'a> Resolver<'a> {
                     resolved_lists.push(assignment);
                 }
 
-                assert_eq!(self.assignments.len(), level);
+                assert_eq!(self.assignments.next_key(), level);
                 self.assignments.push(vec![]);
                 let (body, _) = self.resolve_expression_with_dependencies(
                     body,
@@ -933,7 +934,7 @@ pub fn resolve_names(
                             resolver.resolve_expression_with_dependencies(value, None);
                         resolver.cycle_detector.pop();
                         let level = deps.level();
-                        assert_eq!(level, 0);
+                        assert_eq!(level, Level(0));
                         let id = value.map(|value| resolver.push_assignment(name, level, value));
                         if let Some(Ok(_)) = resolver.definitions.get(name.as_str()) {
                             resolver.scopes[0]
@@ -991,7 +992,8 @@ pub fn resolve_names(
                                     operation: OpName::Sub,
                                     args: vec![lhs, rhs],
                                 };
-                                let value = resolver.push_assignment("<implicit plot>", 0, f);
+                                let value =
+                                    resolver.push_assignment("<implicit plot>", Level(0), f);
                                 ExpressionResult::Plot {
                                     allowed_kinds: PlotKinds::IMPLICIT,
                                     value,
@@ -1047,7 +1049,7 @@ pub fn resolve_names(
                             None,
                         );
                         let level = deps.level();
-                        assert_eq!(level, 0);
+                        assert_eq!(level, Level(0));
                         let id = value.map(|value| {
                             resolver.push_assignment("<anonymous function plot>", level, value)
                         });
@@ -1100,7 +1102,7 @@ pub fn resolve_names(
                         None,
                     );
                     let level = deps.level();
-                    assert_eq!(level, 0);
+                    assert_eq!(level, Level(0));
                     let id =
                         value.map(|value| resolver.push_assignment("<anonymous>", level, value));
                     let mut freevars = deps
@@ -1132,7 +1134,7 @@ pub fn resolve_names(
                 ExpressionListEntry::Expression(value) => {
                     let (value, deps) = resolver.resolve_expression_with_dependencies(value, None);
                     let level = deps.level();
-                    assert_eq!(level, 0);
+                    assert_eq!(level, Level(0));
                     let id =
                         value.map(|value| resolver.push_assignment("<anonymous>", level, value));
                     let mut freevars = deps

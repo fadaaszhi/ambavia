@@ -1199,22 +1199,134 @@ mod tests {
     };
     use pretty_assertions::assert_eq;
 
+    fn canonicalize_assignment_ids(a: &mut [Assignment], f: &mut impl FnMut(&mut Id)) {
+        for a in a {
+            a.canonicalize_ids(f);
+        }
+    }
+
+    impl Body {
+        fn canonicalize_ids(&mut self, f: &mut impl FnMut(&mut Id)) {
+            canonicalize_assignment_ids(&mut self.assignments, f);
+            self.value.canonicalize_ids(f);
+        }
+    }
+
+    impl Expression {
+        fn canonicalize_ids(&mut self, f: &mut impl FnMut(&mut Id)) {
+            fn canonicalize_list(es: &mut [Expression], f: &mut impl FnMut(&mut Id)) {
+                for e in es {
+                    e.canonicalize_ids(f);
+                }
+            }
+
+            match self {
+                Expression::Number(_) => {}
+                Expression::Identifier(id) => f(id),
+                Expression::List(list) => canonicalize_list(list, f),
+                Expression::ListRange {
+                    before_ellipsis,
+                    after_ellipsis,
+                } => {
+                    canonicalize_list(before_ellipsis, f);
+                    canonicalize_list(after_ellipsis, f);
+                }
+                Expression::Op { args, .. } => canonicalize_list(args, f),
+                Expression::ChainedComparison { operands, .. } => canonicalize_list(operands, f),
+                Expression::Piecewise {
+                    test,
+                    consequent,
+                    alternate,
+                } => {
+                    test.canonicalize_ids(f);
+                    consequent.canonicalize_ids(f);
+                    if let Some(a) = alternate {
+                        a.canonicalize_ids(f);
+                    }
+                }
+                Expression::SumProd {
+                    variable,
+                    lower_bound,
+                    upper_bound,
+                    body,
+                    ..
+                } => {
+                    f(variable);
+                    lower_bound.canonicalize_ids(f);
+                    upper_bound.canonicalize_ids(f);
+                    body.canonicalize_ids(f);
+                }
+                Expression::For { body, lists } => {
+                    body.canonicalize_ids(f);
+                    canonicalize_assignment_ids(lists, f);
+                }
+            }
+        }
+    }
+
+    impl Assignment {
+        fn canonicalize_ids(&mut self, f: &mut impl FnMut(&mut Id)) {
+            f(&mut self.id);
+            self.value.canonicalize_ids(f);
+        }
+    }
+
+    impl ExpressionResult {
+        fn canonicalize_ids(&mut self, f: &mut impl FnMut(&mut Id)) {
+            match self {
+                ExpressionResult::None => {}
+                ExpressionResult::Err(_) => {}
+                ExpressionResult::Value(id) => f(id),
+                ExpressionResult::Plot {
+                    value, parameters, ..
+                } => {
+                    f(value);
+                    for p in parameters {
+                        f(p);
+                    }
+                }
+            }
+        }
+    }
+
+    type ResolveResult = (Vec<Assignment>, Vec<ExpressionResult>, HashMap<String, Id>);
+
+    /// Rename `Id`s to be in a canonical order so that tests don't fail just
+    /// because `Id`s are different even if they represent the same result
+    fn canonicalize_ids(
+        (mut assignments, mut results, mut freevars): ResolveResult,
+    ) -> ResolveResult {
+        let mut old_to_new = HashMap::new();
+        let f = &mut |id: &mut Id| {
+            let next = Id(old_to_new.len());
+            *id = *old_to_new.entry(*id).or_insert(next);
+        };
+
+        canonicalize_assignment_ids(&mut assignments, f);
+        for r in &mut results {
+            r.canonicalize_ids(f);
+        }
+        freevars.values_mut().for_each(f);
+
+        (assignments, results, freevars)
+    }
+
     fn bx<T>(x: T) -> Box<T> {
         Box::new(x)
     }
 
-    fn resolve_names_ti(
-        list: &[ExpressionListEntry],
-    ) -> (Vec<Assignment>, Vec<ExpressionResult>, HashMap<String, Id>) {
+    fn resolve_names_ti(list: &[ExpressionListEntry]) -> ResolveResult {
         let (a, b, c) = resolve_names(list.as_ref(), false);
         (a, b.into(), c)
     }
 
-    fn resolve_names_ti_v1_9(
-        list: &[ExpressionListEntry],
-    ) -> (Vec<Assignment>, Vec<ExpressionResult>, HashMap<String, Id>) {
+    fn resolve_names_ti_v1_9(list: &[ExpressionListEntry]) -> ResolveResult {
         let (a, b, c) = resolve_names(list.as_ref(), true);
         (a, b.into(), c)
+    }
+
+    fn assert_eq(a: ResolveResult, b: ResolveResult) {
+        assert_eq!(canonicalize_ids(a), canonicalize_ids(b));
     }
 
     #[test]

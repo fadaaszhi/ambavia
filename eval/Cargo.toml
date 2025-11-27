@@ -13,4 +13,4 @@ ordered-float = "5.0"
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
-rstest = "0.25.0"
+rstest = "0.26.1"

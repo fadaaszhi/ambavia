@@ -66,7 +66,7 @@ pub enum Expression {
 }
 
 #[derive(Debug, PartialEq)]
-pub enum ExpressionListEntry {
+pub enum Statement {
     Assignment {
         name: String,
         value: Expression,

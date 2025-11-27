@@ -9,9 +9,9 @@ use derive_more::{From, Into};
 use typed_index_collections::{TiSlice, TiVec};
 
 use crate::{
-    ast::ExpressionListEntry,
     name_resolver::{
-        ExpressionIndex, ExpressionResult as NrEr, Id, NameError, PlotKinds, resolve_names,
+        Domain, ExpressionIndex, ExpressionListEntry, ExpressionResult as NrEr, Id, NameError,
+        PlotKinds, resolve_names,
     },
     type_checker::{Assignment, Type, TypeError, type_check, walk_assignment_ids},
 };
@@ -19,14 +19,14 @@ use crate::{
 #[derive(Debug, Copy, Clone, From, Into, PartialEq)]
 pub struct AssignmentIndex(usize);
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum PlotKind {
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlotKind<T> {
     /// `y = f(x)`
     Normal,
     /// `x = f(y)`
     Inverse,
     /// `(x(t), y(t))`
-    Parametric,
+    Parametric(Domain<T>),
     /// `f(x, y) = 0`
     Implicit,
 }
@@ -35,6 +35,7 @@ pub enum PlotKind {
 pub enum AnalysisError {
     NameError(NameError),
     TypeError(TypeError),
+    DomainBoundNotANumber(Type),
     TodoListPlot,
 }
 
@@ -43,6 +44,9 @@ impl Display for AnalysisError {
         match self {
             AnalysisError::NameError(e) => e.fmt(f),
             AnalysisError::TypeError(e) => e.fmt(f),
+            AnalysisError::DomainBoundNotANumber(ty) => {
+                write!(f, "domain bound should be {}, not {ty}", Type::Number)
+            }
             AnalysisError::TodoListPlot => write!(f, "todo: plotting lists is not implemented yet"),
         }
     }
@@ -54,7 +58,7 @@ pub enum ExpressionResult {
     Err(AnalysisError),
     Value(Id, Type),
     Plot {
-        kind: PlotKind,
+        kind: PlotKind<Result<Id, AnalysisError>>,
         value: Id,
         ty: Type,
         parameters: Vec<Id>,
@@ -66,10 +70,11 @@ pub struct AnalysisResult {
     pub results: TiVec<ExpressionIndex, ExpressionResult>,
     pub assignments: TiVec<AssignmentIndex, Assignment>,
     pub constants: Vec<AssignmentIndex>,
+    pub freevars: HashMap<Id, String>,
 }
 
-pub fn analyze_expression_list(
-    list: &TiSlice<ExpressionIndex, impl Borrow<ExpressionListEntry>>,
+pub fn analyze_expression_list<'a>(
+    list: &TiSlice<ExpressionIndex, impl Borrow<ExpressionListEntry<'a>>>,
     use_v1_9_scoping_rules: bool,
 ) -> AnalysisResult {
     let (assignments, results, freevars) = resolve_names(list, use_v1_9_scoping_rules);
@@ -121,6 +126,7 @@ pub fn analyze_expression_list(
                 allowed_kinds,
                 value,
                 parameters,
+                domain,
             } => {
                 let ty = match types[&value].clone() {
                     Ok(ty) => ty,
@@ -166,7 +172,19 @@ pub fn analyze_expression_list(
                                 // y = (3,4)
                                 return ExpressionResult::Value(value, ty);
                             }
-                            PlotKind::Parametric
+                            let d = domain.unwrap();
+                            let f = |m: Result<Id, NameError>| match m {
+                                Ok(id) => match types[&id].clone() {
+                                    Ok(Type::Number) => Ok(id),
+                                    Ok(ty) => Err(AnalysisError::DomainBoundNotANumber(ty)),
+                                    Err(e) => Err(AnalysisError::TypeError(e)),
+                                },
+                                Err(e) => Err(AnalysisError::NameError(e)),
+                            };
+                            PlotKind::Parametric(Domain {
+                                min: f(d.min),
+                                max: f(d.max),
+                            })
                         } else {
                             // f(t) = (t,t)
                             // y = (x,x)
@@ -236,9 +254,12 @@ pub fn analyze_expression_list(
         })
         .collect();
 
+    let freevars = freevars.into_iter().map(|(k, v)| (v, k)).collect();
+
     AnalysisResult {
         results,
         assignments,
         constants,
+        freevars,
     }
 }

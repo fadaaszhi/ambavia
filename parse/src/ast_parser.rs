@@ -794,21 +794,27 @@ fn parse_chained_comparison(
     })
 }
 
-pub fn parse_expression_list_entry(nodes: &[Node]) -> Result<ExpressionListEntry, String> {
+pub fn parse_standalone_expression(nodes: &[Node]) -> Result<Expression, String> {
     let tokens = flatten(nodes)?;
     let mut tokens = Tokens::new(&tokens, Token::EndOfInput);
-    let entry = parse_expression_list_entry_from_tokens(&mut tokens)?;
+    let expression = parse_expression(&mut tokens, 0)?;
     tokens.expect(Token::EndOfInput)?;
-    Ok(entry)
+    Ok(expression)
 }
 
-fn parse_expression_list_entry_from_tokens(
-    tokens: &mut Tokens,
-) -> Result<ExpressionListEntry, String> {
+pub fn parse_statement(nodes: &[Node]) -> Result<Statement, String> {
+    let tokens = flatten(nodes)?;
+    let mut tokens = Tokens::new(&tokens, Token::EndOfInput);
+    let statement = parse_statement_from_tokens(&mut tokens)?;
+    tokens.expect(Token::EndOfInput)?;
+    Ok(statement)
+}
+
+fn parse_statement_from_tokens(tokens: &mut Tokens) -> Result<Statement, String> {
     let expression = parse_expression(tokens, 0)?;
 
     if get_comparison_op(tokens.peek()).is_none() {
-        return Ok(ExpressionListEntry::Expression(expression));
+        return Ok(Statement::Expression(expression));
     }
 
     let mut chain = parse_chained_comparison(tokens, Some(expression))?;
@@ -816,7 +822,7 @@ fn parse_expression_list_entry_from_tokens(
     if chain.operators.len() == 1 && chain.operators[0] == ComparisonOperator::Equal {
         match &chain.operands[0] {
             Expression::Identifier(name) => {
-                return Ok(ExpressionListEntry::Assignment {
+                return Ok(Statement::Assignment {
                     name: name.clone(),
                     value: chain.operands.pop().unwrap(),
                 });
@@ -830,7 +836,7 @@ fn parse_expression_list_entry_from_tokens(
                     })
                     .collect::<Option<Vec<_>>>()
                 {
-                    return Ok(ExpressionListEntry::FunctionDeclaration {
+                    return Ok(Statement::FunctionDeclaration {
                         name: callee.clone(),
                         parameters: parameters.iter().map(|&p| p.clone()).collect(),
                         body: chain.operands.pop().unwrap(),
@@ -841,7 +847,7 @@ fn parse_expression_list_entry_from_tokens(
         }
     }
 
-    Ok(ExpressionListEntry::Relation(chain))
+    Ok(Statement::Relation(chain))
 }
 
 #[cfg(test)]
@@ -854,8 +860,8 @@ mod tests {
         Call, CallOrMultiply as CallMull, For, Identifier as Id, List, ListRange, Number as Num,
         Piecewise, SumProd, With,
     };
-    use ExpressionListEntry as Ele;
     use OpName::*;
+    use Statement as Ele;
     use SumProdKind::*;
     use Token as T;
     use pretty_assertions::assert_eq;
@@ -2154,7 +2160,7 @@ mod tests {
         ];
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
         assert_eq!(
-            parse_expression_list_entry_from_tokens(&mut tokens),
+            parse_statement_from_tokens(&mut tokens),
             Ok(Ele::Assignment {
                 name: "c".into(),
                 value: binary(Point, Num(1.18), Num(3.78))
@@ -2186,7 +2192,7 @@ mod tests {
         ];
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
         assert_eq!(
-            parse_expression_list_entry_from_tokens(&mut tokens),
+            parse_statement_from_tokens(&mut tokens),
             Ok(Ele::FunctionDeclaration {
                 name: "f_{4}".into(),
                 parameters: vec!["x".into(), "y".into()],
@@ -2219,7 +2225,7 @@ mod tests {
         ];
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
         assert_eq!(
-            parse_expression_list_entry_from_tokens(&mut tokens),
+            parse_statement_from_tokens(&mut tokens),
             Ok(Ele::Relation(ChainedComparison {
                 operands: vec![
                     CallMull {
@@ -2257,7 +2263,7 @@ mod tests {
         ];
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
         assert_eq!(
-            parse_expression_list_entry_from_tokens(&mut tokens),
+            parse_statement_from_tokens(&mut tokens),
             Ok(Ele::Expression(binary(
                 Add,
                 CallMull {

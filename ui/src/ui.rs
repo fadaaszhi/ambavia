@@ -150,6 +150,14 @@ impl Bounds {
         (self.left() <= position.x && position.x < self.right())
             && (self.top() <= position.y && position.y < self.bottom())
     }
+
+    pub fn union(self, other: Bounds) -> Bounds {
+        let pos = self.pos.min(other.pos);
+        Bounds {
+            pos,
+            size: (self.pos + self.size).max(other.pos + other.size) - pos,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -209,6 +217,11 @@ pub enum QuadKind {
     SliderBar,
     SliderPointOuter,
     SliderPointInner,
+    PlaceholderMsdfGlyph(DVec2, DVec2),
+    PlaceholderBlackBox,
+    DomainBoundUnfocussed,
+    DomainBoundFocussed,
+    DomainBoundError,
 }
 
 impl QuadKind {
@@ -226,6 +239,11 @@ impl QuadKind {
             SliderBar => 8,
             SliderPointOuter => 9,
             SliderPointInner => 10,
+            PlaceholderMsdfGlyph(..) => 11,
+            PlaceholderBlackBox => 12,
+            DomainBoundUnfocussed => 13,
+            DomainBoundFocussed => 14,
+            DomainBoundError => 15,
         }
     }
 }

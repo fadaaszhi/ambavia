@@ -18,6 +18,13 @@ const OUTPUT_VALUE_BOX = 7u;
 const SLIDER_BAR = 8u;
 const SLIDER_POINT_OUTER = 9u;
 const SLIDER_POINT_INNER = 10u;
+const PLACEHOLDER_MSDF_GLYPH = 11u;
+const PLACEHOLDER_BLACK_BOX = 12u;
+const DOMAIN_BOUND_UNFOCUSSED = 13u;
+const DOMAIN_BOUND_FOCUSSED = 14u;
+const DOMAIN_BOUND_ERROR = 15u;
+
+const PLACEHOLDER_OPACITY = 0.47;
 
 struct Vertex {
     @location(0) position: vec2f,
@@ -67,6 +74,18 @@ fn fs_latex(in: VertexOutput) -> @location(0) vec4f {
         case TRANSLUCENT_BLACK_BOX {
             return vec4(0.0, 0.0, 0.0, 0.2);
         }
+        case PLACEHOLDER_BLACK_BOX {
+            return vec4(0.0, 0.0, 0.0, PLACEHOLDER_OPACITY);
+        }
+        case DOMAIN_BOUND_UNFOCUSSED {
+            return vec4(0.8, 0.8, 0.8, 1.0);
+        }
+        case DOMAIN_BOUND_FOCUSSED {
+            return vec4(0.18, 0.45, 0.86, 1.0);
+        }
+        case DOMAIN_BOUND_ERROR {
+            return vec4(0.882, 0.345, 0.333, 1.0);
+        }
         case HIGHLIGHT_BOX {
             return vec4(0.706, 0.835, 0.996, 1.0);
         }
@@ -111,6 +130,8 @@ fn fs_latex(in: VertexOutput) -> @location(0) vec4f {
             var opacity = saturate(screen_px_distance + 0.5);
             if in.kind == TRANSLUCENT_MSDF_GLYPH {
                 opacity *= 0.2;
+            } else if in.kind == PLACEHOLDER_MSDF_GLYPH {
+                opacity *= PLACEHOLDER_OPACITY;
             }
             return vec4(0.0, 0.0, 0.0, opacity);
         }

@@ -918,6 +918,7 @@ impl Interactiveness {
 #[derive(Debug)]
 pub struct MathField {
     tree: Tree,
+    placeholder: Tree,
     pub interactiveness: Interactiveness,
     /// Applied before scaling
     pub left_padding: f64,
@@ -946,6 +947,7 @@ impl Default for MathField {
         let v_glyph = get_glyph(Font::MathItalic, 'V');
         Self {
             tree: Default::default(),
+            placeholder: Default::default(),
             interactiveness: Interactiveness::Edit,
             left_padding: -j_glyph.plane.left,
             right_padding: v_glyph.plane.right - v_glyph.advance,
@@ -982,6 +984,8 @@ impl From<&latex_tree::Nodes<'_>> for MathField {
 #[derive(Debug, PartialEq)]
 pub enum Message {
     ContentsChanged,
+    Left,
+    Right,
     Up,
     Down,
     Add,
@@ -989,6 +993,15 @@ pub enum Message {
 }
 
 impl MathField {
+    pub fn set_placeholder(&mut self, latex: &[latex_tree::Node]) {
+        self.placeholder = latex.into();
+        self.placeholder.layout();
+    }
+
+    pub fn get_placeholder(&mut self) -> Vec<latex_tree::Node<'static>> {
+        to_latex(&self.placeholder)
+    }
+
     /// Logical
     pub fn expression_size(&self) -> DVec2 {
         let b = &self.tree.bounds;
@@ -1019,6 +1032,19 @@ impl MathField {
         let cursor_edge = self.scale * CURSOR_EDGE;
         let x1 = x.min(self.width - cursor_edge).max(cursor_edge);
         self.scroll(x1 - x);
+    }
+
+    pub fn select_all(&mut self) {
+        self.set_selection((
+            Cursor {
+                path: vec![],
+                index: self.tree.len(),
+            },
+            Cursor {
+                path: vec![],
+                index: 0,
+            },
+        ));
     }
 
     fn set_cursor(&mut self, cursor: impl Into<Cursor>) {
@@ -1191,6 +1217,8 @@ impl MathField {
                                                 self.set_cursor((path, index));
                                             }
                                         }
+                                    } else {
+                                        message = Some(Message::Left);
                                     }
                                 }
                                 SelectionSpan::Range(r) => self.set_cursor((path, r.start)),
@@ -1269,6 +1297,8 @@ impl MathField {
                                                 self.set_cursor((path, index + 1));
                                             }
                                         }
+                                    } else {
+                                        message = Some(Message::Right);
                                     }
                                 }
                                 SelectionSpan::Range(r) => self.set_cursor((path, r.end)),
@@ -2208,16 +2238,7 @@ impl MathField {
                 if select && !write {
                     let s = self.selection.as_ref().unwrap();
                     if s.anchor == s.focus {
-                        self.set_selection((
-                            Cursor {
-                                path: vec![],
-                                index: self.tree.len(),
-                            },
-                            Cursor {
-                                path: vec![],
-                                index: 0,
-                            },
-                        ));
+                        self.select_all();
                     }
                 }
 
@@ -2256,11 +2277,28 @@ impl MathField {
     ) {
         let top_left = bounds.pos * ctx.scale_factor;
         let bottom_right = (bounds.pos + bounds.size) * ctx.scale_factor;
+        let use_placeholder = self.tree.is_empty() && !self.has_focus();
+        let tree = if use_placeholder {
+            &mut self.placeholder
+        } else {
+            &mut self.tree
+        };
         let draw_quad = &mut |p0: DVec2, p1: DVec2, mut kind: QuadKind| {
             let q0 = p0.clamp(top_left, bottom_right);
             let q1 = p1.clamp(top_left, bottom_right);
+            if use_placeholder {
+                if let QuadKind::MsdfGlyph(uv0, uv1) | QuadKind::TranslucentMsdfGlyph(uv0, uv1) =
+                    kind
+                {
+                    kind = QuadKind::PlaceholderMsdfGlyph(uv0, uv1);
+                } else if let QuadKind::BlackBox = kind {
+                    kind = QuadKind::PlaceholderBlackBox;
+                }
+            }
             match &mut kind {
-                QuadKind::MsdfGlyph(uv0, uv1) | QuadKind::TranslucentMsdfGlyph(uv0, uv1) => {
+                QuadKind::MsdfGlyph(uv0, uv1)
+                | QuadKind::TranslucentMsdfGlyph(uv0, uv1)
+                | QuadKind::PlaceholderMsdfGlyph(uv0, uv1) => {
                     *uv0 = mix(*uv0, *uv1, (q0 - p0) / (p1 - p0));
                     *uv1 = mix(*uv0, *uv1, (q1 - p0) / (p1 - p0));
                 }
@@ -2268,7 +2306,7 @@ impl MathField {
             }
             draw_quad(q0, q1, kind)
         };
-        let height = self.tree.bounds.height;
+        let height = tree.bounds.height;
         let transform = &|p| {
             (bounds.pos - dvec2(self.scroll, 0.0)
                 + self.scale * (p + dvec2(self.left_padding, self.top_padding + height)))
@@ -2279,16 +2317,15 @@ impl MathField {
                 if self.interactiveness.allows_writing() || selection.anchor != selection.focus =>
             {
                 let selection: Selection = selection.into();
-                let nodes = self.tree.walk_mut(&selection.path);
+                let nodes = tree.walk_mut(&selection.path);
                 let original_gray = nodes.has_gray_background;
                 nodes.has_gray_background = false;
-                self.tree
-                    .render_selection(ctx, &selection, transform, draw_quad);
-                self.tree.render(ctx, transform, draw_quad);
-                self.tree.walk_mut(&selection.path).has_gray_background = original_gray;
+                tree.render_selection(ctx, &selection, transform, draw_quad);
+                tree.render(ctx, transform, draw_quad);
+                tree.walk_mut(&selection.path).has_gray_background = original_gray;
             }
             _ => {
-                self.tree.render(ctx, transform, draw_quad);
+                tree.render(ctx, transform, draw_quad);
             }
         }
 

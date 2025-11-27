@@ -44,7 +44,7 @@ pub enum GeometryKind {
         draggable: Option<ExpressionId>,
     },
     Plot {
-        kind: PlotKind,
+        kind: PlotKind<f64>,
         inputs: Vec<VarIndex>,
         output: VarIndex,
         instructions: Vec<Instruction>,
@@ -725,7 +725,7 @@ impl GraphPaper {
                             PlotKind::Normal => (physical.size.x * 4.0) as usize,
                             PlotKind::Inverse => (physical.size.y * 4.0) as usize,
                             // Desmos seems to do 2000
-                            PlotKind::Parametric => 2000,
+                            PlotKind::Parametric(_) => 2000,
                             PlotKind::Implicit => unreachable!(),
                         };
 
@@ -762,7 +762,7 @@ impl GraphPaper {
                                     n_uniform_samples,
                                 )
                             }
-                            PlotKind::Parametric => {
+                            PlotKind::Parametric(t) => {
                                 let f = |t: f64| {
                                     run(&mut vm, inputs, &[t]);
                                     let x = vm.vars[*output].clone().number();
@@ -771,8 +771,8 @@ impl GraphPaper {
                                 };
                                 sample_explicit(
                                     f,
-                                    0.0,
-                                    1.0,
+                                    t.min,
+                                    t.max,
                                     vp_min,
                                     vp_max,
                                     tolerance,

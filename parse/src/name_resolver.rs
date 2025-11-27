@@ -13,7 +13,7 @@ use typed_index_collections::{TiSlice, TiVec, ti_vec};
 
 pub use crate::ast::{ComparisonOperator, SumProdKind};
 use crate::{
-    ast::{self, ExpressionListEntry},
+    ast::{self, Statement},
     op::OpName,
 };
 
@@ -254,7 +254,7 @@ struct Resolver<'a> {
     use_v1_9_scoping_rules: bool,
     scopes: Vec<Scope<'a>>,
     line_count: usize,
-    definitions: HashMap<&'a str, Result<&'a ExpressionListEntry, NameError>>,
+    definitions: HashMap<&'a str, Result<&'a Statement, NameError>>,
     dependencies_being_tracked: Option<Dependencies<'a>>,
     assignments: TiVec<Level, Vec<Assignment>>,
     freevars: HashMap<&'a str, Id>,
@@ -266,22 +266,19 @@ struct Resolver<'a> {
 pub struct ExpressionIndex(usize);
 
 impl<'a> Resolver<'a> {
-    fn new(
-        list: &'a TiSlice<ExpressionIndex, impl Borrow<ExpressionListEntry>>,
-        use_v1_9_scoping_rules: bool,
-    ) -> Self {
+    fn new(list: impl Iterator<Item = &'a Statement>, use_v1_9_scoping_rules: bool) -> Self {
         let mut definitions = HashMap::new();
 
-        for entry in list {
-            match entry.borrow() {
-                ExpressionListEntry::Assignment { name, .. }
-                | ExpressionListEntry::FunctionDeclaration { name, .. }
+        for statement in list {
+            match statement {
+                Statement::Assignment { name, .. }
+                | Statement::FunctionDeclaration { name, .. }
                     if name != "x" && name != "y" =>
                 {
                     if let Some(result) = definitions.get_mut(name.as_str()) {
                         *result = Err(NameError::MultipleDefinitions(name.into()));
                     } else {
-                        definitions.insert(name.as_str(), Ok(entry.borrow()));
+                        definitions.insert(name.as_str(), Ok(statement));
                     }
                 }
                 _ => continue,
@@ -474,10 +471,10 @@ impl<'a> Resolver<'a> {
         }
 
         // It hasn't been computed before so we'll have to compute it again
-        let (id, deps) = if let Some(entry) = self.definitions.get(name) {
-            let expr = match entry.as_ref().map_err(Clone::clone)? {
-                ExpressionListEntry::Assignment { value, .. } => value,
-                ExpressionListEntry::FunctionDeclaration { .. } => {
+        let (id, deps) = if let Some(statement) = self.definitions.get(name) {
+            let expr = match statement.as_ref().map_err(Clone::clone)? {
+                Statement::Assignment { value, .. } => value,
+                Statement::FunctionDeclaration { .. } => {
                     return Err(NameError::FunctionAsVariable(name.into()));
                 }
                 _ => unreachable!(),
@@ -560,7 +557,7 @@ impl<'a> Resolver<'a> {
         }
 
         let (parameters, body) = match self.definitions.get(callee) {
-            Some(Ok(ExpressionListEntry::FunctionDeclaration {
+            Some(Ok(Statement::FunctionDeclaration {
                 parameters, body, ..
             })) => (parameters, body),
             Some(Ok(_)) => return Err(NameError::VariableAsFunction(callee.into())),
@@ -614,7 +611,7 @@ impl<'a> Resolver<'a> {
                 if OpName::from_str(callee).is_some()
                     || matches!(
                         self.definitions.get(callee.as_str()),
-                        Some(Ok(ExpressionListEntry::FunctionDeclaration { .. }))
+                        Some(Ok(Statement::FunctionDeclaration { .. }))
                     )
                 {
                     self.resolve_call(callee, args)
@@ -869,6 +866,25 @@ impl Display for NameError {
     }
 }
 
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Domain<T> {
+    pub min: T,
+    pub max: T,
+}
+
+impl Domain<&'static ast::Expression> {
+    pub const ZERO_TO_ONE: Self = Domain {
+        min: &ast::Expression::Number(0.0),
+        max: &ast::Expression::Number(1.0),
+    };
+}
+
+#[derive(Debug, PartialEq)]
+pub struct ExpressionListEntry<'a> {
+    pub expression: &'a Statement,
+    pub parametric_domain: Domain<&'a ast::Expression>,
+}
+
 #[derive(Debug, PartialEq)]
 pub enum ExpressionResult {
     None,
@@ -878,6 +894,7 @@ pub enum ExpressionResult {
         allowed_kinds: PlotKinds,
         value: Id,
         parameters: Vec<Id>,
+        domain: Option<Domain<Result<Id, NameError>>>,
     },
 }
 
@@ -897,18 +914,22 @@ impl<T> ToVec for Option<T> {
     }
 }
 
-pub fn resolve_names(
-    list: &TiSlice<ExpressionIndex, impl Borrow<ExpressionListEntry>>,
+pub fn resolve_names<'a>(
+    list: &TiSlice<ExpressionIndex, impl Borrow<ExpressionListEntry<'a>>>,
     use_v1_9_scoping_rules: bool,
 ) -> (
     Vec<Assignment>,
     TiVec<ExpressionIndex, ExpressionResult>,
     HashMap<String, Id>,
 ) {
-    let mut resolver = Resolver::new(list, use_v1_9_scoping_rules);
+    let mut resolver = Resolver::new(
+        list.iter().map(|e| e.borrow().expression),
+        use_v1_9_scoping_rules,
+    );
 
     let results = list
         .iter()
+        .map(Borrow::borrow)
         .map(|e| {
             // When we start resolving a new expression, there shouldn't be any
             // variables that are in scope from a `for` or `with` clause
@@ -919,8 +940,8 @@ pub fn resolve_names(
             assert_eq!(resolver.cycle_detector.stack, Vec::<&str>::new());
             assert!(resolver.cycle_detector.counts.values().all(|&c| c == 0));
 
-            match e.borrow() {
-                ExpressionListEntry::Assignment { name, value } => {
+            let mut result = match e.expression {
+                Statement::Assignment { name, value } => {
                     let (id, deps) = if !resolver.freevars.contains_key(name.as_str())
                         && let Some((id, deps)) = resolver.scopes[0].computed.get(name.as_str())
                     {
@@ -965,6 +986,7 @@ pub fn resolve_names(
                                         .first()
                                         .map(|v| resolver.freevars[v])
                                         .to_vec(),
+                                    domain: None,
                                 }
                             } else if freevars.len() == 1 && freevars != [name]
                                 || name == "y" && freevars.is_empty()
@@ -980,6 +1002,7 @@ pub fn resolve_names(
                                         .first()
                                         .map(|v| resolver.freevars[v])
                                         .to_vec(),
+                                    domain: None,
                                 }
                             } else if (name == "x" || name == "y")
                                 && matches!(freevars[..], ["x"] | ["y"] | ["x", "y"])
@@ -1001,6 +1024,7 @@ pub fn resolve_names(
                                         resolver.resolve_variable("x").unwrap(),
                                         resolver.resolve_variable("y").unwrap(),
                                     ],
+                                    domain: None,
                                 }
                             } else if freevars.is_empty() {
                                 ExpressionResult::Value(id)
@@ -1011,7 +1035,7 @@ pub fn resolve_names(
                         Err(e) => ExpressionResult::Err(e),
                     }
                 }
-                ExpressionListEntry::FunctionDeclaration {
+                Statement::FunctionDeclaration {
                     name,
                     parameters,
                     body,
@@ -1073,6 +1097,7 @@ pub fn resolve_names(
                                         .first()
                                         .map(|v| resolver.freevars[v])
                                         .to_vec(),
+                                    domain: None,
                                 },
                                 _ => ExpressionResult::Err(NameError::undefined(freevars)),
                             },
@@ -1082,7 +1107,7 @@ pub fn resolve_names(
                         ExpressionResult::None
                     }
                 }
-                ExpressionListEntry::Relation(ast::ChainedComparison {
+                Statement::Relation(ast::ChainedComparison {
                     operands,
                     operators,
                 }) => {
@@ -1121,6 +1146,7 @@ pub fn resolve_names(
                                         resolver.resolve_variable("x").unwrap(),
                                         resolver.resolve_variable("y").unwrap(),
                                     ],
+                                    domain: None,
                                 }
                             } else if freevars.is_empty() {
                                 ExpressionResult::None
@@ -1131,7 +1157,7 @@ pub fn resolve_names(
                         Err(e) => ExpressionResult::Err(e),
                     }
                 }
-                ExpressionListEntry::Expression(value) => {
+                Statement::Expression(value) => {
                     let (value, deps) = resolver.resolve_expression_with_dependencies(value, None);
                     let level = deps.level();
                     assert_eq!(level, Level(0));
@@ -1150,11 +1176,13 @@ pub fn resolve_names(
                                 allowed_kinds: PlotKinds::NORMAL,
                                 value: id,
                                 parameters: vec![resolver.freevars["x"]],
+                                domain: None,
                             },
                             [v] if v != "y" => ExpressionResult::Plot {
                                 allowed_kinds: PlotKinds::PARAMETRIC,
                                 value: id,
                                 parameters: vec![resolver.freevars[v]],
+                                domain: None,
                             },
                             ["y"] => ExpressionResult::Err(NameError::ExpressionWithFreeVariablY),
                             _ => ExpressionResult::Err(NameError::undefined(freevars)),
@@ -1162,7 +1190,41 @@ pub fn resolve_names(
                         Err(e) => ExpressionResult::Err(e),
                     }
                 }
+            };
+
+            match &mut result {
+                ExpressionResult::Plot {
+                    allowed_kinds,
+                    domain,
+                    ..
+                } if allowed_kinds.contains(PlotKinds::PARAMETRIC) => {
+                    let mut f = |e, name| {
+                        let (value, deps) = resolver.resolve_expression_with_dependencies(e, None);
+                        value.and_then(|value| {
+                            let freevars = deps
+                                .keys()
+                                .filter(|&name| resolver.freevars.contains_key(name))
+                                .map(ToString::to_string)
+                                .collect::<Vec<_>>();
+                            if freevars.is_empty() {
+                                let level = deps.level();
+                                assert_eq!(level, Level(0));
+                                let id = resolver.push_assignment(name, level, value);
+                                Ok(id)
+                            } else {
+                                Err(NameError::undefined(freevars))
+                            }
+                        })
+                    };
+                    *domain = Some(Domain {
+                        min: f(e.parametric_domain.min, "<parametric min>"),
+                        max: f(e.parametric_domain.max, "<parametric max>"),
+                    });
+                }
+                _ => {}
             }
+
+            result
         })
         .collect();
 
@@ -1178,8 +1240,10 @@ pub fn resolve_names(
 
 #[cfg(test)]
 mod tests {
+    use std::hash::Hash;
+
     use super::*;
-    use ExpressionListEntry::{
+    use Statement::{
         Assignment as ElAssign, Expression as ElExpr, FunctionDeclaration as ElFunction,
     };
     use ast::Expression::{
@@ -1278,11 +1342,22 @@ mod tests {
                 ExpressionResult::Err(_) => {}
                 ExpressionResult::Value(id) => f(id),
                 ExpressionResult::Plot {
-                    value, parameters, ..
+                    allowed_kinds: _,
+                    value,
+                    parameters,
+                    domain,
                 } => {
                     f(value);
                     for p in parameters {
                         f(p);
+                    }
+                    if let Some(Domain { min, max }) = domain {
+                        if let Ok(id) = min {
+                            f(id);
+                        }
+                        if let Ok(id) = max {
+                            f(id);
+                        }
                     }
                 }
             }
@@ -1311,16 +1386,56 @@ mod tests {
         (assignments, results, freevars)
     }
 
+    #[derive(Default)]
+    struct IdGenerator<T>(HashMap<T, Id>);
+
+    impl<T: Eq + Hash> std::ops::Index<T> for IdGenerator<T> {
+        type Output = Id;
+
+        fn index(&self, index: T) -> &Self::Output {
+            &self.0[&index]
+        }
+    }
+
+    impl<T: Eq + Hash + std::fmt::Debug> IdGenerator<T> {
+        fn new(&mut self, name: T) -> Id {
+            let id = Id(self.0.len());
+            assert!(!self.0.contains_key(&name), "id {name:?} already exists");
+            self.0.insert(name, id);
+            id
+        }
+    }
+
     fn bx<T>(x: T) -> Box<T> {
         Box::new(x)
     }
 
-    fn resolve_names_ti(list: &[ExpressionListEntry]) -> ResolveResult {
+    fn resolve_names_ti(list: &[Statement]) -> ResolveResult {
+        let list = list
+            .iter()
+            .map(|e| ExpressionListEntry {
+                expression: e,
+                parametric_domain: Domain {
+                    min: &ANum(0.0),
+                    max: &ANum(1.0),
+                },
+            })
+            .collect::<TiVec<_, _>>();
         let (a, b, c) = resolve_names(list.as_ref(), false);
         (a, b.into(), c)
     }
 
-    fn resolve_names_ti_v1_9(list: &[ExpressionListEntry]) -> ResolveResult {
+    fn resolve_names_ti_v1_9(list: &[Statement]) -> ResolveResult {
+        let list = list
+            .iter()
+            .map(|e| ExpressionListEntry {
+                expression: e,
+                parametric_domain: Domain {
+                    min: &ANum(0.0),
+                    max: &ANum(1.0),
+                },
+            })
+            .collect::<TiVec<_, _>>();
         let (a, b, c) = resolve_names(list.as_ref(), true);
         (a, b.into(), c)
     }
@@ -2084,7 +2199,7 @@ mod tests {
 
     #[test]
     fn function_v1_9() {
-        assert_eq!(
+        assert_eq(
             resolve_names_ti_v1_9(&[
                 // f(a1, a2, a3, a4) = [a1, b, c, d]
                 ElFunction {
@@ -2135,6 +2250,16 @@ mod tests {
                         name: "b".into(),
                         value: Expression::Identifier(Id(0)),
                     },
+                    Assignment {
+                        id: Id(16),
+                        name: "<parametric min>".into(),
+                        value: Expression::Number(0.0),
+                    },
+                    Assignment {
+                        id: Id(17),
+                        name: "<parametric max>".into(),
+                        value: Expression::Number(1.0),
+                    },
                     // a3 = 5
                     Assignment {
                         id: Id(2),
@@ -2153,6 +2278,16 @@ mod tests {
                         id: Id(5),
                         name: "d".into(),
                         value: Expression::Identifier(Id(4)),
+                    },
+                    Assignment {
+                        id: Id(18),
+                        name: "<parametric min>".into(),
+                        value: Expression::Number(0.0),
+                    },
+                    Assignment {
+                        id: Id(19),
+                        name: "<parametric max>".into(),
+                        value: Expression::Number(1.0),
                     },
                     // with a1 = 6
                     Assignment {
@@ -2225,26 +2360,34 @@ mod tests {
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(1),
-                        parameters: vec![Id(0)]
+                        parameters: vec![Id(0)],
+                        domain: Some(Domain {
+                            min: Ok(Id(16)),
+                            max: Ok(Id(17)),
+                        }),
                     },
                     ExpressionResult::Value(Id(3)),
                     ExpressionResult::Value(Id(2)),
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(5),
-                        parameters: vec![Id(4)]
+                        parameters: vec![Id(4)],
+                        domain: Some(Domain {
+                            min: Ok(Id(18)),
+                            max: Ok(Id(19)),
+                        }),
                     },
                     ExpressionResult::Value(Id(15)),
                 ],
                 HashMap::from([("a2".into(), Id(0)), ("a4".into(), Id(4))]),
-            )
+            ),
         );
     }
 
     #[test]
     fn function_v1_10() {
         // https://www.desmos.com/calculator/1jougp3ykk
-        assert_eq!(
+        assert_eq(
             resolve_names_ti(&[
                 // f(a1, a2, a3, a4) = [a1, b, c, d]
                 ElFunction {
@@ -2295,6 +2438,16 @@ mod tests {
                         name: "b".into(),
                         value: Expression::Identifier(Id(0)),
                     },
+                    Assignment {
+                        id: Id(15),
+                        name: "<parametric min>".into(),
+                        value: Expression::Number(0.0),
+                    },
+                    Assignment {
+                        id: Id(16),
+                        name: "<parametric max>".into(),
+                        value: Expression::Number(1.0),
+                    },
                     // a3 = 5
                     Assignment {
                         id: Id(2),
@@ -2313,6 +2466,16 @@ mod tests {
                         id: Id(5),
                         name: "d".into(),
                         value: Expression::Identifier(Id(4)),
+                    },
+                    Assignment {
+                        id: Id(17),
+                        name: "<parametric min>".into(),
+                        value: Expression::Number(0.0),
+                    },
+                    Assignment {
+                        id: Id(18),
+                        name: "<parametric max>".into(),
+                        value: Expression::Number(1.0),
                     },
                     // with a1 = 6
                     Assignment {
@@ -2379,25 +2542,33 @@ mod tests {
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(1),
-                        parameters: vec![Id(0)]
+                        parameters: vec![Id(0)],
+                        domain: Some(Domain {
+                            min: Ok(Id(15)),
+                            max: Ok(Id(16)),
+                        }),
                     },
                     ExpressionResult::Value(Id(3)),
                     ExpressionResult::Value(Id(2)),
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(5),
-                        parameters: vec![Id(4)]
+                        parameters: vec![Id(4)],
+                        domain: Some(Domain {
+                            min: Ok(Id(17)),
+                            max: Ok(Id(18)),
+                        }),
                     },
                     ExpressionResult::Value(Id(14)),
                 ],
                 HashMap::from([("a2".into(), Id(0)), ("a4".into(), Id(4))]),
-            )
+            ),
         );
     }
 
     #[test]
     fn wackscope() {
-        assert_eq!(
+        assert_eq(
             resolve_names_ti(&[
                 // f(a) = b + b
                 ElFunction {
@@ -2405,19 +2576,19 @@ mod tests {
                     parameters: vec!["a".into()],
                     body: AOp {
                         operation: OpName::Add,
-                        args: vec![AId("b".into()), AId("b".into())]
-                    }
+                        args: vec![AId("b".into()), AId("b".into())],
+                    },
                 },
                 // b = a
                 ElAssign {
                     name: "b".into(),
-                    value: AId("a".into())
+                    value: AId("a".into()),
                 },
                 // f(1)
                 ElExpr(ACallMul {
                     callee: "f".into(),
-                    args: vec![ANum(1.0)]
-                })
+                    args: vec![ANum(1.0)],
+                }),
             ]),
             (
                 vec![
@@ -2442,9 +2613,9 @@ mod tests {
                             operation: OpName::Add,
                             args: vec![
                                 Expression::Identifier(Id(2)),
-                                Expression::Identifier(Id(2))
-                            ]
-                        }
+                                Expression::Identifier(Id(2)),
+                            ],
+                        },
                     },
                     // freevar a: 4
                     // b = a
@@ -2453,17 +2624,27 @@ mod tests {
                         name: "b".into(),
                         value: Expression::Identifier(Id(4)),
                     },
+                    Assignment {
+                        id: Id(9),
+                        name: "<parametric min>".into(),
+                        value: Expression::Number(0.0),
+                    },
+                    Assignment {
+                        id: Id(10),
+                        name: "<parametric max>".into(),
+                        value: Expression::Number(1.0),
+                    },
                     // a = 1
                     Assignment {
                         id: Id(6),
                         name: "a".into(),
-                        value: Expression::Number(1.0)
+                        value: Expression::Number(1.0),
                     },
                     // b = a
                     Assignment {
                         id: Id(7),
                         name: "b".into(),
-                        value: Expression::Identifier(Id(6))
+                        value: Expression::Identifier(Id(6)),
                     },
                     // f(1)
                     Assignment {
@@ -2473,46 +2654,51 @@ mod tests {
                             operation: OpName::Add,
                             args: vec![
                                 Expression::Identifier(Id(7)),
-                                Expression::Identifier(Id(7))
-                            ]
-                        }
+                                Expression::Identifier(Id(7)),
+                            ],
+                        },
                     },
                 ],
                 vec![
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL,
                         value: Id(3),
-                        parameters: vec![Id(0)]
+                        parameters: vec![Id(0)],
+                        domain: None,
                     },
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(5),
-                        parameters: vec![Id(4)]
+                        parameters: vec![Id(4)],
+                        domain: Some(Domain {
+                            min: Ok(Id(9)),
+                            max: Ok(Id(10)),
+                        }),
                     },
-                    ExpressionResult::Value(Id(8))
+                    ExpressionResult::Value(Id(8)),
                 ],
                 HashMap::from([
                     ("<anonymous function argument>".into(), Id(0)),
-                    ("a".into(), Id(4))
+                    ("a".into(), Id(4)),
                 ]),
-            )
+            ),
         );
     }
 
     #[test]
     fn more_function_v1_10() {
-        assert_eq!(
+        assert_eq(
             resolve_names_ti(&[
                 // f(a) = b
                 ElFunction {
                     name: "f".into(),
                     parameters: vec!["a".into()],
-                    body: AId("b".into())
+                    body: AId("b".into()),
                 },
                 // b = a
                 ElAssign {
                     name: "b".into(),
-                    value: AId("a".into())
+                    value: AId("a".into()),
                 },
                 // b + f(1) with a = 2
                 ElExpr(AWith {
@@ -2522,12 +2708,12 @@ mod tests {
                             AId("b".into()),
                             ACallMul {
                                 callee: "f".into(),
-                                args: vec![ANum(1.0)]
-                            }
-                        ]
+                                args: vec![ANum(1.0)],
+                            },
+                        ],
                     }),
-                    substitutions: vec![("a".into(), ANum(2.0))]
-                })
+                    substitutions: vec![("a".into(), ANum(2.0))],
+                }),
             ]),
             (
                 vec![
@@ -2551,28 +2737,39 @@ mod tests {
                         value: Expression::Identifier(Id(2)),
                     },
                     // freevar a: 4
+                    // b = a
                     Assignment {
                         id: Id(5),
                         name: "b".into(),
                         value: Expression::Identifier(Id(4)),
                     },
+                    Assignment {
+                        id: Id(10),
+                        name: "<parametric min>".into(),
+                        value: Expression::Number(0.0),
+                    },
+                    Assignment {
+                        id: Id(11),
+                        name: "<parametric max>".into(),
+                        value: Expression::Number(1.0),
+                    },
                     // with a = 2
                     Assignment {
                         id: Id(6),
                         name: "a".into(),
-                        value: Expression::Number(2.0)
+                        value: Expression::Number(2.0),
                     },
                     // b = a
                     Assignment {
                         id: Id(7),
                         name: "b".into(),
-                        value: Expression::Identifier(Id(6))
+                        value: Expression::Identifier(Id(6)),
                     },
                     // a = 1
                     Assignment {
                         id: Id(8),
                         name: "a".into(),
-                        value: Expression::Number(1.0)
+                        value: Expression::Number(1.0),
                     },
                     // b + f(1) with a = 2
                     Assignment {
@@ -2582,35 +2779,40 @@ mod tests {
                             operation: OpName::Add,
                             args: vec![
                                 Expression::Identifier(Id(7)),
-                                Expression::Identifier(Id(7))
-                            ]
-                        }
+                                Expression::Identifier(Id(7)),
+                            ],
+                        },
                     },
                 ],
                 vec![
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL,
                         value: Id(3),
-                        parameters: vec![Id(0)]
+                        parameters: vec![Id(0)],
+                        domain: None,
                     },
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(5),
-                        parameters: vec![Id(4)]
+                        parameters: vec![Id(4)],
+                        domain: Some(Domain {
+                            min: Ok(Id(10)),
+                            max: Ok(Id(11)),
+                        }),
                     },
-                    ExpressionResult::Value(Id(9))
+                    ExpressionResult::Value(Id(9)),
                 ],
                 HashMap::from([
                     ("<anonymous function argument>".into(), Id(0)),
-                    ("a".into(), Id(4))
+                    ("a".into(), Id(4)),
                 ]),
-            )
+            ),
         );
     }
 
     #[test]
     fn even_more_function_v1_10() {
-        assert_eq!(
+        assert_eq(
             resolve_names_ti(&[
                 // f(a) = b + b
                 ElFunction {
@@ -2618,13 +2820,13 @@ mod tests {
                     parameters: vec!["a".into()],
                     body: AOp {
                         operation: OpName::Add,
-                        args: vec![AId("b".into()), AId("b".into())]
-                    }
+                        args: vec![AId("b".into()), AId("b".into())],
+                    },
                 },
                 // b = a
                 ElAssign {
                     name: "b".into(),
-                    value: AId("a".into())
+                    value: AId("a".into()),
                 },
                 // g(a) = b + f(1) + b
                 ElFunction {
@@ -2639,19 +2841,19 @@ mod tests {
                                     AId("b".into()),
                                     ACallMul {
                                         callee: "f".into(),
-                                        args: vec![ANum(1.0)]
-                                    }
-                                ]
+                                        args: vec![ANum(1.0)],
+                                    },
+                                ],
                             },
                             AId("b".into()),
-                        ]
-                    }
+                        ],
+                    },
                 },
                 // g(2)
                 ElExpr(ACallMul {
                     callee: "g".into(),
-                    args: vec![ANum(2.0)]
-                })
+                    args: vec![ANum(2.0)],
+                }),
             ]),
             (
                 vec![
@@ -2676,9 +2878,9 @@ mod tests {
                             operation: OpName::Add,
                             args: vec![
                                 Expression::Identifier(Id(2)),
-                                Expression::Identifier(Id(2))
-                            ]
-                        }
+                                Expression::Identifier(Id(2)),
+                            ],
+                        },
                     },
                     // freevar a: 4
                     // b = a
@@ -2686,6 +2888,16 @@ mod tests {
                         id: Id(5),
                         name: "b".into(),
                         value: Expression::Identifier(Id(4)),
+                    },
+                    Assignment {
+                        id: Id(16),
+                        name: "<parametric min>".into(),
+                        value: Expression::Number(0.0),
+                    },
+                    Assignment {
+                        id: Id(17),
+                        name: "<parametric max>".into(),
+                        value: Expression::Number(1.0),
                     },
                     // a = <anonymous function argument>
                     Assignment {
@@ -2703,7 +2915,7 @@ mod tests {
                     Assignment {
                         id: Id(8),
                         name: "a".into(),
-                        value: Expression::Number(1.0)
+                        value: Expression::Number(1.0),
                     },
                     // b = a
                     Assignment {
@@ -2726,38 +2938,38 @@ mod tests {
                                             operation: OpName::Add,
                                             args: vec![
                                                 Expression::Identifier(Id(9)),
-                                                Expression::Identifier(Id(9))
-                                            ]
-                                        }
-                                    ]
+                                                Expression::Identifier(Id(9)),
+                                            ],
+                                        },
+                                    ],
                                 },
                                 Expression::Identifier(Id(7)),
-                            ]
+                            ],
                         },
                     },
                     // a = 2
                     Assignment {
                         id: Id(11),
                         name: "a".into(),
-                        value: Expression::Number(2.0)
+                        value: Expression::Number(2.0),
                     },
                     // b = a
                     Assignment {
                         id: Id(12),
                         name: "b".into(),
-                        value: Expression::Identifier(Id(11))
+                        value: Expression::Identifier(Id(11)),
                     },
                     // a = 1
                     Assignment {
                         id: Id(13),
                         name: "a".into(),
-                        value: Expression::Number(1.0)
+                        value: Expression::Number(1.0),
                     },
                     // b = a
                     Assignment {
                         id: Id(14),
                         name: "b".into(),
-                        value: Expression::Identifier(Id(13))
+                        value: Expression::Identifier(Id(13)),
                     },
                     // g(2) = b + f(1) + b
                     Assignment {
@@ -2774,39 +2986,45 @@ mod tests {
                                             operation: OpName::Add,
                                             args: vec![
                                                 Expression::Identifier(Id(14)),
-                                                Expression::Identifier(Id(14))
-                                            ]
-                                        }
-                                    ]
+                                                Expression::Identifier(Id(14)),
+                                            ],
+                                        },
+                                    ],
                                 },
-                                Expression::Identifier(Id(12))
-                            ]
-                        }
+                                Expression::Identifier(Id(12)),
+                            ],
+                        },
                     },
                 ],
                 vec![
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL,
                         value: Id(3),
-                        parameters: vec![Id(0)]
+                        parameters: vec![Id(0)],
+                        domain: None,
                     },
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(5),
-                        parameters: vec![Id(4)]
+                        parameters: vec![Id(4)],
+                        domain: Some(Domain {
+                            min: Ok(Id(16)),
+                            max: Ok(Id(17)),
+                        }),
                     },
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL,
                         value: Id(10),
-                        parameters: vec![Id(0)]
+                        parameters: vec![Id(0)],
+                        domain: None,
                     },
-                    ExpressionResult::Value(Id(15))
+                    ExpressionResult::Value(Id(15)),
                 ],
                 HashMap::from([
                     ("<anonymous function argument>".into(), Id(0)),
-                    ("a".into(), Id(4))
+                    ("a".into(), Id(4)),
                 ]),
-            )
+            ),
         );
     }
 
@@ -2864,7 +3082,7 @@ mod tests {
 
     #[test]
     fn list_comp() {
-        assert_eq!(
+        assert_eq(
             resolve_names_ti(&[
                 // p for j=c, i=[1]
                 ElExpr(AFor {
@@ -2883,9 +3101,9 @@ mod tests {
                             AId("q".into()),
                             AOp {
                                 operation: OpName::Add,
-                                args: vec![AId("i".into()), AId("k".into())]
-                            }
-                        ]
+                                args: vec![AId("i".into()), AId("k".into())],
+                            },
+                        ],
                     },
                 },
                 // c = [2]
@@ -2898,7 +3116,7 @@ mod tests {
                     name: "q".into(),
                     value: AOp {
                         operation: OpName::Mul,
-                        args: vec![AId("j".into()), AId("j".into())]
+                        args: vec![AId("j".into()), AId("j".into())],
                     },
                 },
                 // k = 3
@@ -2936,8 +3154,8 @@ mod tests {
                                             operation: OpName::Mul,
                                             args: vec![
                                                 Expression::Identifier(Id(1)),
-                                                Expression::Identifier(Id(1))
-                                            ]
+                                                Expression::Identifier(Id(1)),
+                                            ],
                                         },
                                     },
                                     // p = (q,i+k)
@@ -2952,9 +3170,9 @@ mod tests {
                                                     operation: OpName::Add,
                                                     args: vec![
                                                         Expression::Identifier(Id(2)),
-                                                        Expression::Identifier(Id(4))
-                                                    ]
-                                                }
+                                                        Expression::Identifier(Id(4)),
+                                                    ],
+                                                },
                                             ],
                                         },
                                     },
@@ -2966,13 +3184,13 @@ mod tests {
                                 Assignment {
                                     id: Id(1),
                                     name: "j".into(),
-                                    value: Expression::Identifier(Id(0))
+                                    value: Expression::Identifier(Id(0)),
                                 },
                                 // i=[1]
                                 Assignment {
                                     id: Id(2),
                                     name: "i".into(),
-                                    value: Expression::List(vec![Expression::Number(1.0)])
+                                    value: Expression::List(vec![Expression::Number(1.0)]),
                                 },
                             ],
                         },
@@ -2986,8 +3204,8 @@ mod tests {
                             operation: OpName::Mul,
                             args: vec![
                                 Expression::Identifier(Id(7)),
-                                Expression::Identifier(Id(7))
-                            ]
+                                Expression::Identifier(Id(7)),
+                            ],
                         },
                     },
                     // freevar i: 9,
@@ -3003,11 +3221,22 @@ mod tests {
                                     operation: OpName::Add,
                                     args: vec![
                                         Expression::Identifier(Id(9)),
-                                        Expression::Identifier(Id(4))
-                                    ]
-                                }
+                                        Expression::Identifier(Id(4)),
+                                    ],
+                                },
                             ],
                         },
+                    },
+                    // parametric bounds for q=jj
+                    Assignment {
+                        id: Id(11),
+                        name: "<parametric min>".into(),
+                        value: Expression::Number(0.0),
+                    },
+                    Assignment {
+                        id: Id(12),
+                        name: "<parametric max>".into(),
+                        value: Expression::Number(1.0),
                     },
                 ],
                 vec![
@@ -3017,7 +3246,11 @@ mod tests {
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(8),
-                        parameters: vec![Id(7)]
+                        parameters: vec![Id(7)],
+                        domain: Some(Domain {
+                            min: Ok(Id(11)),
+                            max: Ok(Id(12)),
+                        }),
                     },
                     ExpressionResult::Value(Id(4)),
                 ],
@@ -3028,7 +3261,7 @@ mod tests {
 
     #[test]
     fn nested_list_comps() {
-        assert_eq!(
+        assert_eq(
             resolve_names_ti(&[
                 // E = C.total + D.total for j=[1...4]
                 ElAssign {
@@ -3044,8 +3277,8 @@ mod tests {
                                 ACall {
                                     callee: "total".into(),
                                     args: vec![AId("D".into())],
-                                }
-                            ]
+                                },
+                            ],
                         }),
                         lists: vec![(
                             "j".into(),
@@ -3079,10 +3312,10 @@ mod tests {
                             args: vec![
                                 AOp {
                                     operation: OpName::Add,
-                                    args: vec![AId("B".into()), AId("A".into())]
+                                    args: vec![AId("B".into()), AId("A".into())],
                                 },
-                                AId("F".into())
-                            ]
+                                AId("F".into()),
+                            ],
                         }),
                         lists: vec![(
                             "i".into(),
@@ -3098,8 +3331,8 @@ mod tests {
                     name: "B".into(),
                     value: AOp {
                         operation: OpName::Pow,
-                        args: vec![AId("i".into()), ANum(2.0)]
-                    }
+                        args: vec![AId("i".into()), ANum(2.0)],
+                    },
                 },
                 // F = i + j
                 ElAssign {
@@ -3107,7 +3340,7 @@ mod tests {
                     name: "F".into(),
                     value: AOp {
                         operation: OpName::Add,
-                        args: vec![AId("i".into()), AId("j".into())]
+                        args: vec![AId("i".into()), AId("j".into())],
                     },
                 },
                 // A = 5
@@ -3133,8 +3366,8 @@ mod tests {
                                             operation: OpName::Pow,
                                             args: vec![
                                                 Expression::Identifier(Id(1)),
-                                                Expression::Number(2.0)
-                                            ]
+                                                Expression::Number(2.0),
+                                            ],
                                         },
                                     },
                                 ],
@@ -3182,8 +3415,8 @@ mod tests {
                                                             operation: OpName::Pow,
                                                             args: vec![
                                                                 Expression::Identifier(Id(4)),
-                                                                Expression::Number(2.0)
-                                                            ]
+                                                                Expression::Number(2.0),
+                                                            ],
                                                         },
                                                     },
                                                     // F = i + j
@@ -3194,7 +3427,7 @@ mod tests {
                                                             operation: OpName::Add,
                                                             args: vec![
                                                                 Expression::Identifier(Id(4)),
-                                                                Expression::Identifier(Id(0))
+                                                                Expression::Identifier(Id(0)),
                                                             ],
                                                         },
                                                     },
@@ -3207,11 +3440,11 @@ mod tests {
                                                             operation: OpName::Add,
                                                             args: vec![
                                                                 Expression::Identifier(Id(5)),
-                                                                Expression::Identifier(Id(6))
+                                                                Expression::Identifier(Id(6)),
                                                             ],
                                                         },
-                                                        Expression::Identifier(Id(7))
-                                                    ]
+                                                        Expression::Identifier(Id(7)),
+                                                    ],
                                                 }),
                                             },
                                             lists: vec![
@@ -3238,13 +3471,13 @@ mod tests {
                                     args: vec![
                                         Expression::Op {
                                             operation: OpName::Total,
-                                            args: vec![Expression::Identifier(Id(3))]
+                                            args: vec![Expression::Identifier(Id(3))],
                                         },
                                         Expression::Op {
                                             operation: OpName::Total,
-                                            args: vec![Expression::Identifier(Id(8))]
-                                        }
-                                    ]
+                                            args: vec![Expression::Identifier(Id(8))],
+                                        },
+                                    ],
                                 }),
                             },
                             lists: vec![
@@ -3276,8 +3509,8 @@ mod tests {
                                             operation: OpName::Pow,
                                             args: vec![
                                                 Expression::Identifier(Id(10)),
-                                                Expression::Number(2.0)
-                                            ]
+                                                Expression::Number(2.0),
+                                            ],
                                         },
                                     },
                                     // F = i + j
@@ -3288,7 +3521,7 @@ mod tests {
                                             operation: OpName::Add,
                                             args: vec![
                                                 Expression::Identifier(Id(10)),
-                                                Expression::Identifier(Id(12))
+                                                Expression::Identifier(Id(12)),
                                             ],
                                         },
                                     },
@@ -3301,11 +3534,11 @@ mod tests {
                                             operation: OpName::Add,
                                             args: vec![
                                                 Expression::Identifier(Id(11)),
-                                                Expression::Identifier(Id(6))
+                                                Expression::Identifier(Id(6)),
                                             ],
                                         },
-                                        Expression::Identifier(Id(13))
-                                    ]
+                                        Expression::Identifier(Id(13)),
+                                    ],
                                 }),
                             },
                             lists: vec![
@@ -3321,6 +3554,16 @@ mod tests {
                             ],
                         },
                     },
+                    Assignment {
+                        id: Id(18),
+                        name: "<parametric min>".into(),
+                        value: Expression::Number(0.0),
+                    },
+                    Assignment {
+                        id: Id(19),
+                        name: "<parametric max>".into(),
+                        value: Expression::Number(1.0),
+                    },
                     // freevar i: 15
                     // B = i^2
                     Assignment {
@@ -3328,8 +3571,18 @@ mod tests {
                         name: "B".into(),
                         value: Expression::Op {
                             operation: OpName::Pow,
-                            args: vec![Expression::Identifier(Id(15)), Expression::Number(2.0)]
+                            args: vec![Expression::Identifier(Id(15)), Expression::Number(2.0)],
                         },
+                    },
+                    Assignment {
+                        id: Id(20),
+                        name: "<parametric min>".into(),
+                        value: Expression::Number(0.0),
+                    },
+                    Assignment {
+                        id: Id(21),
+                        name: "<parametric max>".into(),
+                        value: Expression::Number(1.0),
                     },
                     // F = i + j
                     Assignment {
@@ -3339,7 +3592,7 @@ mod tests {
                             operation: OpName::Add,
                             args: vec![
                                 Expression::Identifier(Id(15)),
-                                Expression::Identifier(Id(12))
+                                Expression::Identifier(Id(12)),
                             ],
                         },
                     },
@@ -3350,12 +3603,20 @@ mod tests {
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(14),
-                        parameters: vec![Id(12)]
+                        parameters: vec![Id(12)],
+                        domain: Some(Domain {
+                            min: Ok(Id(18)),
+                            max: Ok(Id(19)),
+                        }),
                     },
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(16),
-                        parameters: vec![Id(15)]
+                        parameters: vec![Id(15)],
+                        domain: Some(Domain {
+                            min: Ok(Id(20)),
+                            max: Ok(Id(21)),
+                        }),
                     },
                     ExpressionResult::Err(NameError::undefined(["i", "j"])),
                     ExpressionResult::Value(Id(6)),
@@ -3367,21 +3628,21 @@ mod tests {
 
     #[test]
     fn proper_cleanup() {
-        assert_eq!(
+        assert_eq(
             resolve_names_ti(&[
                 // b + c with a = 1
                 ElExpr(AWith {
                     body: bx(AOp {
                         operation: OpName::Add,
-                        args: vec![AId("b".into()), AId("c".into()),]
+                        args: vec![AId("b".into()), AId("c".into())],
                     }),
                     substitutions: vec![("a".into(), ANum(1.0))],
                 }),
                 // b = a
                 ElAssign {
                     name: "b".into(),
-                    value: AId("a".into())
-                }
+                    value: AId("a".into()),
+                },
             ]),
             (
                 vec![
@@ -3406,9 +3667,19 @@ mod tests {
                             operation: OpName::Add,
                             args: vec![
                                 Expression::Identifier(Id(1)),
-                                Expression::Identifier(Id(2))
-                            ]
+                                Expression::Identifier(Id(2)),
+                            ],
                         },
+                    },
+                    Assignment {
+                        id: Id(6),
+                        name: "<parametric min>".into(),
+                        value: Expression::Number(0.0),
+                    },
+                    Assignment {
+                        id: Id(7),
+                        name: "<parametric max>".into(),
+                        value: Expression::Number(1.0),
                     },
                     // freevar a: 4
                     // b = a
@@ -3417,17 +3688,35 @@ mod tests {
                         name: "b".into(),
                         value: Expression::Identifier(Id(4)),
                     },
+                    Assignment {
+                        id: Id(8),
+                        name: "<parametric min>".into(),
+                        value: Expression::Number(0.0),
+                    },
+                    Assignment {
+                        id: Id(9),
+                        name: "<parametric max>".into(),
+                        value: Expression::Number(1.0),
+                    },
                 ],
                 vec![
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::PARAMETRIC,
                         value: Id(3),
-                        parameters: vec![Id(2)]
+                        parameters: vec![Id(2)],
+                        domain: Some(Domain {
+                            min: Ok(Id(6)),
+                            max: Ok(Id(7)),
+                        }),
                     },
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(5),
-                        parameters: vec![Id(4)]
+                        parameters: vec![Id(4)],
+                        domain: Some(Domain {
+                            min: Ok(Id(8)),
+                            max: Ok(Id(9)),
+                        }),
                     },
                 ],
                 HashMap::from([("c".into(), Id(2)), ("a".into(), Id(4))]),
@@ -3437,18 +3726,18 @@ mod tests {
 
     #[test]
     fn cache_errors() {
-        assert_eq!(
+        assert_eq(
             resolve_names_ti(&[
                 // a = c with b = 1
                 ElAssign {
                     name: "a".into(),
                     value: AWith {
                         body: bx(AId("c".into())),
-                        substitutions: vec![("b".into(), ANum(1.0))]
-                    }
+                        substitutions: vec![("b".into(), ANum(1.0))],
+                    },
                 },
                 // a
-                ElExpr(AId("a".into()))
+                ElExpr(AId("a".into())),
             ]),
             (
                 vec![
@@ -3456,36 +3745,64 @@ mod tests {
                     Assignment {
                         id: Id(0),
                         name: "b".into(),
-                        value: Expression::Number(1.0)
+                        value: Expression::Number(1.0),
                     },
                     // freevar c: 1
                     // a = c with b = 1
                     Assignment {
                         id: Id(2),
                         name: "a".into(),
-                        value: Expression::Identifier(Id(1))
+                        value: Expression::Identifier(Id(1)),
+                    },
+                    Assignment {
+                        id: Id(4),
+                        name: "<parametric min>".into(),
+                        value: Expression::Number(0.0),
+                    },
+                    Assignment {
+                        id: Id(5),
+                        name: "<parametric max>".into(),
+                        value: Expression::Number(1.0),
                     },
                     // a
                     Assignment {
                         id: Id(3),
                         name: "<anonymous>".into(),
-                        value: Expression::Identifier(Id(2))
+                        value: Expression::Identifier(Id(2)),
+                    },
+                    Assignment {
+                        id: Id(6),
+                        name: "<parametric min>".into(),
+                        value: Expression::Number(0.0),
+                    },
+                    Assignment {
+                        id: Id(7),
+                        name: "<parametric max>".into(),
+                        value: Expression::Number(1.0),
                     },
                 ],
                 vec![
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(2),
-                        parameters: vec![Id(1)]
+                        parameters: vec![Id(1)],
+                        domain: Some(Domain {
+                            min: Ok(Id(4)),
+                            max: Ok(Id(5)),
+                        }),
                     },
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::PARAMETRIC,
                         value: Id(3),
-                        parameters: vec![Id(1)]
+                        parameters: vec![Id(1)],
+                        domain: Some(Domain {
+                            min: Ok(Id(6)),
+                            max: Ok(Id(7)),
+                        }),
                     },
                 ],
                 HashMap::from([("c".into(), Id(1))]),
-            )
+            ),
         );
     }
 
@@ -3909,7 +4226,8 @@ mod tests {
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL,
                         value: Id(4),
-                        parameters: vec![Id(0)]
+                        parameters: vec![Id(0)],
+                        domain: None,
                     },
                     ExpressionResult::Value(Id(2)),
                     ExpressionResult::Value(Id(3)),
@@ -3917,6 +4235,80 @@ mod tests {
                 ],
                 HashMap::from([("<anonymous function argument>".into(), Id(0))]),
             )
+        );
+    }
+
+    #[test]
+    fn parametric_domain() {
+        let id = |s: &str| AId(s.into());
+        let mut ids = IdGenerator::default();
+        let a = resolve_names(
+            [
+                ExpressionListEntry {
+                    expression: &Statement::Expression(AOp {
+                        operation: OpName::Point,
+                        args: vec![id("t"), id("t")],
+                    }),
+                    parametric_domain: Domain {
+                        min: &id("a"),
+                        max: &AOp {
+                            operation: OpName::Add,
+                            args: vec![id("a"), id("b")],
+                        },
+                    },
+                },
+                ExpressionListEntry {
+                    expression: &Statement::Assignment {
+                        name: "a".into(),
+                        value: ANum(5.0),
+                    },
+                    parametric_domain: Domain::ZERO_TO_ONE,
+                },
+            ]
+            .as_slice()
+            .as_ref(),
+            false,
+        );
+        assert_eq(
+            (a.0, a.1.into(), a.2),
+            (
+                vec![
+                    Assignment {
+                        id: ids.new("1"),
+                        name: "<anonymous>".into(),
+                        value: Expression::Op {
+                            operation: OpName::Point,
+                            args: vec![
+                                Expression::Identifier(ids.new("t")),
+                                Expression::Identifier(ids["t"]),
+                            ],
+                        },
+                    },
+                    Assignment {
+                        id: ids.new("a"),
+                        name: "a".into(),
+                        value: Expression::Number(5.0),
+                    },
+                    Assignment {
+                        id: ids.new("min"),
+                        name: "<parametric min>".into(),
+                        value: Expression::Identifier(ids["a"]),
+                    },
+                ],
+                vec![
+                    ExpressionResult::Plot {
+                        allowed_kinds: PlotKinds::PARAMETRIC,
+                        value: ids["1"],
+                        parameters: vec![ids["t"]],
+                        domain: Some(Domain {
+                            min: Ok(ids["min"]),
+                            max: Err(NameError::Undefined(vec!["b".into()])),
+                        }),
+                    },
+                    ExpressionResult::Value(ids["a"]),
+                ],
+                HashMap::from([("t".into(), ids["t"]), ("b".into(), ids.new("b"))]),
+            ),
         );
     }
 }

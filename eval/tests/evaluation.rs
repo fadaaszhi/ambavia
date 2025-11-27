@@ -3,8 +3,9 @@ use std::iter::zip;
 use eval::{compiler::compile_assignments, vm::Vm};
 use parse::{
     analyze_expression_list::{AnalysisError, ExpressionResult, analyze_expression_list},
-    ast_parser::parse_expression_list_entry,
+    ast_parser::parse_statement,
     latex_parser::parse_latex,
+    name_resolver::{Domain, ExpressionListEntry},
     op::{OpError, OpName},
     type_checker::{Type, TypeError},
 };
@@ -101,8 +102,16 @@ fn polygon<const N: usize>(points: [(i64, i64); N]) -> Value {
 fn assert_expression_eq<'a>(source: &str, value: Value) {
     println!("Expression: {source}");
     let tree = parse_latex(source).unwrap();
-    let entry = parse_expression_list_entry(&tree).unwrap();
-    let analysis = analyze_expression_list([entry].as_slice().as_ref(), false);
+    let statement = parse_statement(&tree).unwrap();
+    let analysis = analyze_expression_list(
+        [ExpressionListEntry {
+            expression: &statement,
+            parametric_domain: Domain::ZERO_TO_ONE,
+        }]
+        .as_slice()
+        .as_ref(),
+        false,
+    );
     let Some(ExpressionResult::Value(id, ty)) = analysis.results.first() else {
         panic!(
             "expected Value but first result was {:#?}",
@@ -171,8 +180,16 @@ fn assert_expression_eq<'a>(source: &str, value: Value) {
 fn assert_type_error(source: &str, error: TypeError) {
     println!("expression: {source}");
     let tree = parse_latex(source).unwrap();
-    let entry = parse_expression_list_entry(&tree).unwrap();
-    let analysis = analyze_expression_list([entry].as_slice().as_ref(), false);
+    let statement = parse_statement(&tree).unwrap();
+    let analysis = analyze_expression_list(
+        [ExpressionListEntry {
+            expression: &statement,
+            parametric_domain: Domain::ZERO_TO_ONE,
+        }]
+        .as_slice()
+        .as_ref(),
+        false,
+    );
     assert_eq!(
         analysis.results.first(),
         Some(&ExpressionResult::Err(AnalysisError::TypeError(error)))

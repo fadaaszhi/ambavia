@@ -23,11 +23,12 @@ use eval::{
     vm::{self, Vm},
 };
 use parse::{
-    analyze_expression_list::{ExpressionResult, analyze_expression_list},
-    ast_parser::parse_expression_list_entry,
+    analyze_expression_list::{ExpressionResult, PlotKind, analyze_expression_list},
+    ast,
+    ast_parser::{parse_standalone_expression, parse_statement},
     latex_parser::parse_latex,
     latex_tree::{self, Bracket},
-    name_resolver::ExpressionIndex,
+    name_resolver::{Domain, ExpressionIndex, ExpressionListEntry},
     type_checker::Type,
 };
 
@@ -35,6 +36,19 @@ use parse::{
 struct Output {
     ui: OutputUi,
     data: OutputData,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum DomainFocusState {
+    None,
+    Hovered,
+    Focussed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct DomainState {
+    state: DomainFocusState,
+    error: bool,
 }
 
 #[derive(Default)]
@@ -49,6 +63,12 @@ enum OutputUi {
         hovered: bool,
     },
     Field(MathField),
+    Domain {
+        name: String,
+        name_field: MathField,
+        min_state: DomainState,
+        max_state: DomainState,
+    },
 }
 
 impl OutputUi {
@@ -61,6 +81,50 @@ impl OutputUi {
         field.bottom_padding = 0.19;
         field.top_padding = 0.25;
         OutputUi::Field(field)
+    }
+
+    fn set_domain(&mut self, name: &str) {
+        if let OutputUi::Domain { name: existing, .. } = self
+            && existing == name
+        {
+            return;
+        }
+
+        use latex_tree::Node;
+
+        let mut latex = vec![];
+        latex.push(Node::CtrlSeq("le"));
+        let mut parts = name.split("_");
+        let a = parts.next().unwrap();
+        if a.chars().count() > 1 {
+            latex.push(Node::CtrlSeq(a));
+        } else {
+            latex.push(Node::Char(a.chars().next().unwrap()));
+        }
+        if let Some(b) = parts.next() {
+            let b = b.strip_prefix("{").unwrap().strip_suffix("}").unwrap();
+            latex.push(Node::SubSup {
+                sub: Some(b.chars().map(Node::Char).collect()),
+                sup: None,
+            });
+        }
+        latex.push(Node::CtrlSeq("le"));
+
+        let mut field = MathField::from(&latex);
+        field.interactiveness = Interactiveness::None;
+        field.scale = 18.0;
+        *self = OutputUi::Domain {
+            name: name.into(),
+            name_field: field,
+            min_state: DomainState {
+                state: DomainFocusState::None,
+                error: false,
+            },
+            max_state: DomainState {
+                state: DomainFocusState::None,
+                error: false,
+            },
+        }
     }
 }
 
@@ -108,6 +172,8 @@ impl Output {
 
     const SLIDER_BAR_RADIUS: f64 = 3.0;
     const SLIDER_POINT_RADIUS: f64 = 11.0;
+    const DOMAIN_VALUE_MIN_WIDTH: f64 = 35.0;
+    const DOMAIN_VALUE_MAX_WIDTH: f64 = 70.0;
 
     fn update(
         &mut self,
@@ -116,9 +182,10 @@ impl Output {
         padding: f64,
         top_left: DVec2,
         width: f64,
-    ) -> (Response, Option<f64>, Bounds) {
+        parametric_domain: &mut Domain<(MathField, Result<ast::Expression, String>)>,
+    ) -> (Response, Option<f64>, Option<Message>, Bounds) {
         match &mut self.ui {
-            OutputUi::None => (Response::default(), None, Bounds::default()),
+            OutputUi::None => (Response::default(), None, None, Bounds::default()),
             OutputUi::Slider {
                 value,
                 min,
@@ -188,7 +255,7 @@ impl Output {
                     size: dvec2(width, point_radius * 2.0),
                 };
 
-                (response, new_value, bounds)
+                (response, new_value, None, bounds)
             }
             OutputUi::Field(field) => {
                 let size = field.expression_size().map(|s| ctx.ceil(s));
@@ -215,7 +282,129 @@ impl Output {
                     field.set_selection((clamp(anchor.clone()), clamp(focus.clone())));
                 }
 
-                (response, None, bounds)
+                (response, None, None, bounds)
+            }
+            OutputUi::Domain {
+                name: _,
+                name_field,
+                min_state,
+                max_state,
+            } => {
+                let mut size1 = parametric_domain
+                    .min
+                    .0
+                    .expression_size()
+                    .map(|s| ctx.ceil(s));
+                let size2 = name_field.expression_size().map(|s| ctx.ceil(s));
+                let mut size3 = parametric_domain
+                    .max
+                    .0
+                    .expression_size()
+                    .map(|s| ctx.ceil(s));
+
+                size1.x = size1
+                    .x
+                    .clamp(Self::DOMAIN_VALUE_MIN_WIDTH, Self::DOMAIN_VALUE_MAX_WIDTH);
+                size3.x = size3
+                    .x
+                    .clamp(Self::DOMAIN_VALUE_MIN_WIDTH, Self::DOMAIN_VALUE_MAX_WIDTH);
+
+                let height = size1.y.max(size2.y).max(size3.y);
+
+                let left1 = top_left.x + padding;
+                let left2 = left1 + size1.x;
+                let left3 = left2 + size2.x;
+
+                let bounds1 = Bounds {
+                    pos: dvec2(left1, top_left.y + (height - size1.y) / 2.0),
+                    size: size1,
+                };
+                let bounds2 = Bounds {
+                    pos: dvec2(left2, top_left.y + (height - size2.y) / 2.0),
+                    size: size2,
+                };
+                let bounds3 = Bounds {
+                    pos: dvec2(left3, top_left.y + (height - size3.y) / 2.0),
+                    size: size3,
+                };
+
+                let (mut response1, mut message1) =
+                    parametric_domain.min.0.update(ctx, event, bounds1);
+                let (response2, _) = name_field.update(ctx, event, bounds2);
+                let (mut response3, mut message3) =
+                    parametric_domain.max.0.update(ctx, event, bounds3);
+
+                match message1 {
+                    Some(Message::ContentsChanged) => {
+                        let mut latex = parametric_domain.min.0.to_latex();
+                        if latex.is_empty() {
+                            latex = parametric_domain.min.0.get_placeholder();
+                        }
+                        parametric_domain.min.1 = parse_standalone_expression(&latex)
+                    }
+                    Some(Message::Left | Message::Remove) => message1 = None,
+                    Some(Message::Right) => {
+                        message1 = None;
+                        parametric_domain.min.0.unfocus();
+                        parametric_domain.max.0.select_all();
+                    }
+                    Some(Message::Up | Message::Down | Message::Add) => {
+                        parametric_domain.min.0.unfocus()
+                    }
+                    None => {}
+                }
+
+                match message3 {
+                    Some(Message::ContentsChanged) => {
+                        let mut latex = parametric_domain.max.0.to_latex();
+                        if latex.is_empty() {
+                            latex = parametric_domain.max.0.get_placeholder();
+                        }
+                        parametric_domain.max.1 = parse_standalone_expression(&latex)
+                    }
+                    Some(Message::Left) => {
+                        message3 = None;
+                        parametric_domain.max.0.unfocus();
+                        parametric_domain.min.0.select_all();
+                    }
+                    Some(Message::Right | Message::Remove) => message3 = None,
+                    Some(Message::Up | Message::Down | Message::Add) => {
+                        parametric_domain.max.0.unfocus()
+                    }
+                    None => {}
+                }
+
+                let f = |f: &MathField, b: Bounds, s: &mut DomainFocusState, r: &mut Response| {
+                    let new = if f.has_focus() {
+                        DomainFocusState::Focussed
+                    } else if b.contains(ctx.cursor) {
+                        DomainFocusState::Hovered
+                    } else {
+                        DomainFocusState::None
+                    };
+                    if new != *s {
+                        *s = new;
+                        r.request_redraw();
+                    }
+                };
+                f(
+                    &parametric_domain.min.0,
+                    bounds1,
+                    &mut min_state.state,
+                    &mut response1,
+                );
+                f(
+                    &parametric_domain.max.0,
+                    bounds3,
+                    &mut max_state.state,
+                    &mut response3,
+                );
+
+                let response = response1.or(response2).or(response3);
+
+                let bounds = bounds1.union(bounds2).union(bounds3);
+
+                (response, None, message1.or(message3), bounds)
             }
         }
     }
@@ -226,6 +415,7 @@ impl Output {
         padding: f64,
         top_left: DVec2,
         width: f64,
+        parametric_domain: &mut Domain<(MathField, Result<ast::Expression, String>)>,
         draw_quad: &mut impl FnMut(DVec2, DVec2, QuadKind),
     ) -> f64 {
         match &mut self.ui {
@@ -285,15 +475,116 @@ impl Output {
                 field.render(ctx, bounds, draw_quad);
                 bounds.size.y
             }
+            OutputUi::Domain {
+                name: _,
+                name_field,
+                min_state,
+                max_state,
+            } => {
+                let mut size1 = parametric_domain
+                    .min
+                    .0
+                    .expression_size()
+                    .map(|s| ctx.ceil(s));
+                let size2 = name_field.expression_size().map(|s| ctx.ceil(s));
+                let mut size3 = parametric_domain
+                    .max
+                    .0
+                    .expression_size()
+                    .map(|s| ctx.ceil(s));
+
+                size1.x = size1
+                    .x
+                    .clamp(Self::DOMAIN_VALUE_MIN_WIDTH, Self::DOMAIN_VALUE_MAX_WIDTH);
+                size3.x = size3
+                    .x
+                    .clamp(Self::DOMAIN_VALUE_MIN_WIDTH, Self::DOMAIN_VALUE_MAX_WIDTH);
+
+                let height = size1.y.max(size2.y).max(size3.y);
+
+                let left1 = top_left.x + padding;
+                let left2 = left1 + size1.x;
+                let left3 = left2 + size2.x;
+
+                let bounds1 = Bounds {
+                    pos: dvec2(left1, top_left.y + (height - size1.y) / 2.0),
+                    size: size1,
+                };
+                let bounds2 = Bounds {
+                    pos: dvec2(left2, top_left.y + (height - size2.y) / 2.0),
+                    size: size2,
+                };
+                let bounds3 = Bounds {
+                    pos: dvec2(left3, top_left.y + (height - size3.y) / 2.0),
+                    size: size3,
+                };
+
+                let mut f = |b: Bounds, s: DomainState| {
+                    draw_quad(
+                        ctx.scale_factor * (b.pos + dvec2(0.0, b.size.y - 1.0)),
+                        ctx.scale_factor
+                            * (b.pos
+                                + b.size
+                                + dvec2(
+                                    0.0,
+                                    if s.state == DomainFocusState::None && !s.error {
+                                        0.0
+                                    } else {
+                                        1.0
+                                    },
+                                )),
+                        match s.state {
+                            _ if s.error => QuadKind::DomainBoundError,
+                            DomainFocusState::None | DomainFocusState::Hovered => {
+                                QuadKind::DomainBoundUnfocussed
+                            }
+                            DomainFocusState::Focussed => QuadKind::DomainBoundFocussed,
+                        },
+                    )
+                };
+
+                f(bounds1, *min_state);
+                f(bounds3, *max_state);
+
+                parametric_domain.min.0.render(ctx, bounds1, draw_quad);
+                name_field.render(ctx, bounds2, draw_quad);
+                parametric_domain.max.0.render(ctx, bounds3, draw_quad);
+
+                let bounds = bounds1.union(bounds2).union(bounds3);
+                bounds.size.y
+            }
         }
     }
 }
 
-#[derive(Default)]
 struct Expression {
     field: MathField,
-    ast: Option<Result<parse::ast::ExpressionListEntry, String>>,
+    parametric_domain: Domain<(MathField, Result<parse::ast::Expression, String>)>,
+    ast: Option<Result<parse::ast::Statement, String>>,
     output: Output,
+}
+
+impl Default for Expression {
+    fn default() -> Self {
+        use latex_tree::Node;
+        let f = |c| {
+            let mut f = MathField::default();
+            f.set_placeholder(&[Node::Char(c)]);
+            f.scale = 15.7;
+            f.bottom_padding = 0.25;
+            f.top_padding = 0.25;
+            f
+        };
+        Self {
+            field: Default::default(),
+            parametric_domain: Domain {
+                min: (f('0'), Ok(ast::Expression::Number(0.0))),
+                max: (f('1'), Ok(ast::Expression::Number(1.0))),
+            },
+            ast: None,
+            output: Default::default(),
+        }
+    }
 }
 
 impl From<&[latex_tree::Node<'_>]> for Expression {
@@ -329,10 +620,16 @@ impl Expression {
         };
         height += field_bounds.size.y;
         height += 0.5 * padding;
-        let (output_response, new_value, output_bounds) =
-            self.output
-                .update(ctx, event, padding, top_left + dvec2(0.0, height), width);
+        let (output_response, new_value, output_message, output_bounds) = self.output.update(
+            ctx,
+            event,
+            padding,
+            top_left + dvec2(0.0, height),
+            width,
+            &mut self.parametric_domain,
+        );
 
+        // Update new value from slider
         if let Some(value) = new_value {
             use latex_tree::Node::Char as C;
             let name = self
@@ -383,6 +680,18 @@ impl Expression {
             r
         }));
 
+        // Maybe the parametric domain got changed
+        if let Some(m) = output_message {
+            message = match m {
+                Message::ContentsChanged | Message::Down | Message::Add => Some(m),
+                Message::Left | Message::Right | Message::Remove => unreachable!(),
+                Message::Up => {
+                    self.focus();
+                    None
+                }
+            };
+        }
+
         (response, message, height)
     }
 
@@ -396,7 +705,7 @@ impl Expression {
         self.ast = latex
             .iter()
             .any(|n| n != &latex_tree::Node::Char(' '))
-            .then(|| parse_expression_list_entry(&latex));
+            .then(|| parse_statement(&latex));
     }
 
     fn focus(&mut self) {
@@ -436,6 +745,7 @@ impl Expression {
             padding,
             top_left + dvec2(0.0, height),
             width,
+            &mut self.parametric_domain,
             draw_quad,
         );
         height += 0.5 * padding;
@@ -798,6 +1108,7 @@ impl ExpressionList {
                             self.expressions_changed = true;
                             self.scroll_into_view(i);
                         }
+                        Message::Left | Message::Right => {}
                         Message::Up => {
                             if i.0 > 0 {
                                 self.expressions[i].unfocus();
@@ -929,7 +1240,7 @@ impl ExpressionList {
                                 _ => None,
                             }
                         }
-                        if let parse::ast::ExpressionListEntry::Assignment { value, .. } = ast {
+                        if let parse::ast::Statement::Assignment { value, .. } = ast {
                             if let Some(value) = get_number(value) {
                                 e.output.set_slider(value, -10.0, 10.0);
                             } else if let parse::ast::Expression::Op {
@@ -953,12 +1264,24 @@ impl ExpressionList {
                                     }),
                                 };
                             } else {
-                                e.output = Output::NONE;
+                                e.output.data = OutputData::None;
                             }
                         } else {
-                            e.output = Output::NONE;
+                            e.output.data = OutputData::None;
                         }
-                        list.push(ast);
+                        list.push(ExpressionListEntry {
+                            expression: ast,
+                            parametric_domain: Domain {
+                                min: match &e.parametric_domain.min.1 {
+                                    Ok(ast) => ast,
+                                    Err(_) => &ast::Expression::Number(0.0),
+                                },
+                                max: match &e.parametric_domain.max.1 {
+                                    Ok(ast) => ast,
+                                    Err(_) => &ast::Expression::Number(1.0),
+                                },
+                            },
+                        });
                         ei_to_oi.push(i);
                     }
 
@@ -990,12 +1313,13 @@ impl ExpressionList {
                     let mut vm = Vm::new(&program, Default::default());
                     vm.run(false);
 
-                    for (ei, r) in analysis.results.into_iter_enumerated() {
+                    'results_loop: for (ei, r) in analysis.results.into_iter_enumerated() {
                         let i = ei_to_oi[ei];
-                        let output = &mut self.expressions[i].output;
+                        let expression = &mut self.expressions[i];
+                        let output = &mut expression.output;
 
                         if let OutputData::Error(_) = output.data {
-                            continue;
+                            continue 'results_loop;
                         }
 
                         match r {
@@ -1022,12 +1346,90 @@ impl ExpressionList {
                                 let list_limit = 10;
 
                                 if let ExpressionResult::Plot {
-                                    kind,
+                                    ref kind,
                                     value,
                                     ref parameters,
                                     ..
                                 } = r
                                 {
+                                    let kind = match kind {
+                                        PlotKind::Normal => PlotKind::Normal,
+                                        PlotKind::Inverse => PlotKind::Inverse,
+                                        PlotKind::Parametric(d) => {
+                                            output
+                                                .ui
+                                                .set_domain(&analysis.freevars[&parameters[0]]);
+
+                                            let min = match &expression.parametric_domain.min.1 {
+                                                Ok(_) => match &d.min {
+                                                    Ok(id) => match vm.vars[var_indices[id]]
+                                                        .clone()
+                                                        .number()
+                                                    {
+                                                        x if x.is_finite() => Ok(x),
+                                                        _ => Err(
+                                                            "value error: domain bound should be finite".into(),
+                                                        ),
+                                                    },
+                                                    Err(e) => Err(format!("analysis error: {e}")),
+                                                },
+                                                Err(e) => Err(format!("parse error: {e}")),
+                                            };
+                                            let max = match &expression.parametric_domain.max.1 {
+                                                Ok(_) => match &d.max {
+                                                    Ok(id) => match vm.vars[var_indices[id]]
+                                                        .clone()
+                                                        .number()
+                                                    {
+                                                        x if x.is_finite() => Ok(x),
+                                                        _ => Err(
+                                                            "value error: domain bound should be finite".into(),
+                                                        ),
+                                                    },
+                                                    Err(e) => Err(format!("analysis error: {e}")),
+                                                },
+                                                Err(e) => Err(format!("parse error: {e}")),
+                                            };
+                                            let OutputUi::Domain {
+                                                min_state,
+                                                max_state,
+                                                ..
+                                            } = &mut output.ui
+                                            else {
+                                                unreachable!()
+                                            };
+                                            min_state.error = min.is_err();
+                                            max_state.error = max.is_err();
+
+                                            let (min, max) = match (min, max) {
+                                                (Ok(min), Ok(max)) => (min, max),
+                                                (min, max) => {
+                                                    output.data = OutputData::Error(
+                                                        [("min", min), ("max", max)]
+                                                            .into_iter()
+                                                            .filter_map(|(n, m)| {
+                                                                m.err().map(|e| {
+                                                                    format!("(parametric {n}) {e}")
+                                                                })
+                                                            })
+                                                            .collect::<Vec<_>>()
+                                                            .join("\n"),
+                                                    );
+                                                    continue 'results_loop;
+                                                }
+                                            };
+
+                                            if min > max {
+                                                output.data = OutputData::Error("invalid domain limits: min should be less than max".into());
+                                                min_state.error = true;
+                                                max_state.error = true;
+                                                continue 'results_loop;
+                                            }
+
+                                            PlotKind::Parametric(Domain { min, max })
+                                        }
+                                        PlotKind::Implicit => PlotKind::Implicit,
+                                    };
                                     output.data = OutputData::Geometry(vec![Geometry {
                                         width: 2.5,
                                         color,
@@ -1144,8 +1546,9 @@ impl ExpressionList {
                                         }),
                                     }
 
-                                    if ty.as_single() != Type::Polygon
-                                        && let OutputUi::None = output.ui
+                                    if ty.as_single() == Type::Polygon {
+                                        output.ui = OutputUi::None;
+                                    } else if let OutputUi::None = output.ui
                                         && !matches!(output.data, OutputData::DraggablePoint(_))
                                     {
                                         output.ui = OutputUi::field_from_latex(&nodes);
@@ -1242,9 +1645,9 @@ impl ExpressionList {
             let p0 = p0.as_vec2();
             let p1 = p1.as_vec2();
             let (uv0, uv1) = match kind {
-                QuadKind::MsdfGlyph(uv0, uv1) | QuadKind::TranslucentMsdfGlyph(uv0, uv1) => {
-                    (uv0, uv1)
-                }
+                QuadKind::MsdfGlyph(uv0, uv1)
+                | QuadKind::TranslucentMsdfGlyph(uv0, uv1)
+                | QuadKind::PlaceholderMsdfGlyph(uv0, uv1) => (uv0, uv1),
                 _ => (DVec2::splat(0.0), DVec2::splat(1.0)),
             };
             let kind = kind.index();

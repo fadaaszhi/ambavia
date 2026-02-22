@@ -1548,9 +1548,13 @@ impl ExpressionList {
 
                                     if ty.as_single() == Type::Polygon {
                                         output.ui = OutputUi::None;
-                                    } else if let OutputUi::None = output.ui
-                                        && !matches!(output.data, OutputData::DraggablePoint(_))
-                                    {
+                                    } else if matches!(
+                                        output.ui,
+                                        OutputUi::None | OutputUi::Field(_)
+                                    ) && !matches!(
+                                        output.data,
+                                        OutputData::DraggablePoint(_)
+                                    ) {
                                         output.ui = OutputUi::field_from_latex(&nodes);
                                     }
                                     if let OutputData::None = output.data {

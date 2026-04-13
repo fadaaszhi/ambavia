@@ -1397,7 +1397,7 @@ mod tests {
     }
 
     impl<T: Eq + Hash + std::fmt::Debug> IdGenerator<T> {
-        fn new(&mut self, name: T) -> Id {
+        fn new_id(&mut self, name: T) -> Id {
             let id = Id(self.0.len());
             assert!(!self.0.contains_key(&name), "id {name:?} already exists");
             self.0.insert(name, id);
@@ -4379,23 +4379,23 @@ mod tests {
             (
                 vec![
                     Assignment {
-                        id: ids.new("1"),
+                        id: ids.new_id("1"),
                         name: "<anonymous>".into(),
                         value: Expression::Op {
                             operation: OpName::Point,
                             args: vec![
-                                Expression::Identifier(ids.new("t")),
+                                Expression::Identifier(ids.new_id("t")),
                                 Expression::Identifier(ids["t"]),
                             ],
                         },
                     },
                     Assignment {
-                        id: ids.new("a"),
+                        id: ids.new_id("a"),
                         name: "a".into(),
                         value: Expression::Number(5.0),
                     },
                     Assignment {
-                        id: ids.new("min"),
+                        id: ids.new_id("min"),
                         name: "<parametric min>".into(),
                         value: Expression::Identifier(ids["a"]),
                     },
@@ -4412,7 +4412,7 @@ mod tests {
                     },
                     ExpressionResult::Value(ids["a"]),
                 ],
-                HashMap::from([("t".into(), ids["t"]), ("b".into(), ids.new("b"))]),
+                HashMap::from([("t".into(), ids["t"]), ("b".into(), ids.new_id("b"))]),
             ),
         );
     }

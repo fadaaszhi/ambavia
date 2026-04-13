@@ -10,6 +10,7 @@ use std::{f64, sync::Arc};
 
 use glam::{DVec2, UVec2, dvec2, vec2};
 use winit::{
+    dpi::PhysicalSize,
     event::{ElementState, MouseButton, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop},
     window::{CursorIcon, Window, WindowAttributes, WindowId},
@@ -53,28 +54,21 @@ struct App {
     events: Vec<WindowEvent>,
     request_redraw: bool,
     window: Arc<Window>,
-    surface: wgpu::Surface<'static>,
-    config: wgpu::SurfaceConfiguration,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    context: Context,
+    graphics: AppGraphics,
     main_thing: MainThing,
+    context: Context,
 }
-
-impl App {
-    fn new(event_loop: &ActiveEventLoop) -> App {
-        let window = Arc::new(
-            event_loop
-                .create_window(
-                    WindowAttributes::default()
-                        .with_title("Ambavia")
-                        .with_theme(Some(winit::window::Theme::Light)),
-                )
-                .unwrap(),
-        );
+pub struct AppGraphics {
+    pub device: wgpu::Device,
+    pub queue: wgpu::Queue,
+    pub config: wgpu::SurfaceConfiguration,
+    pub surface: wgpu::Surface<'static>,
+}
+impl AppGraphics {
+    fn new(window: &Arc<Window>) -> Self {
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        let surface = instance.create_surface(window.clone()).unwrap();
+        let surface = instance.create_surface(Arc::clone(window)).unwrap();
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             compatible_surface: Some(&surface),
             ..Default::default()
@@ -93,19 +87,51 @@ impl App {
             config.present_mode = wgpu::PresentMode::Mailbox;
         }
         surface.configure(&device, &config);
-        let context = Context::new(&window);
-        let main_thing = MainThing::new(&device, &queue, &config);
 
+        Self {
+            device,
+            queue,
+            config,
+            surface,
+        }
+    }
+    fn resize(&mut self, new_size: PhysicalSize<u32>) {
+        self.config.width = new_size.width.max(1);
+        self.config.height = new_size.height.max(1);
+        self.surface.configure(&self.device, &self.config);
+    }
+    fn get_surface_texture(&mut self) -> Option<wgpu::SurfaceTexture> {
+        match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Suboptimal(tex)
+            | wgpu::CurrentSurfaceTexture::Success(tex) => Some(tex),
+            wgpu::CurrentSurfaceTexture::Occluded | wgpu::CurrentSurfaceTexture::Timeout => None,
+            v => todo!("handle wgpu surface error {v:?}"),
+        }
+    }
+}
+impl App {
+    fn new(event_loop: &ActiveEventLoop) -> App {
+        let window = Arc::new(
+            event_loop
+                .create_window(
+                    WindowAttributes::default()
+                        .with_title("Ambavia")
+                        .with_theme(Some(winit::window::Theme::Light)),
+                )
+                .unwrap(),
+        );
+
+        let graphics = AppGraphics::new(&window);
+
+        let main_thing = MainThing::new(&graphics);
+        let context = Context::new(&window);
         App {
             events: vec![],
             request_redraw: false,
             window,
-            surface,
-            config,
-            device,
-            queue,
             context,
             main_thing,
+            graphics,
         }
     }
 
@@ -197,31 +223,20 @@ impl App {
 
         match event {
             WindowEvent::Resized(new_size) => {
-                self.config.width = new_size.width.max(1);
-                self.config.height = new_size.height.max(1);
-                self.surface.configure(&self.device, &self.config);
+                self.graphics.resize(new_size);
             }
             WindowEvent::ScaleFactorChanged { .. } => {
                 self.window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
-                let surface_texture = match self.surface.get_current_texture() {
-                    wgpu::CurrentSurfaceTexture::Success(surface_texture) => surface_texture,
-                    wgpu::CurrentSurfaceTexture::Suboptimal(surface_texture) => surface_texture,
-                    wgpu::CurrentSurfaceTexture::Timeout => return,
-                    wgpu::CurrentSurfaceTexture::Occluded => return,
-                    v => todo!("handle wgpu surface error {v:?}"),
+                let Some(surface_texture) = self.graphics.get_surface_texture() else {
+                    return;
                 };
                 let surface_view = surface_texture.texture.create_view(&Default::default());
-                let command_buffer = self.main_thing.render(
-                    &self.context,
-                    &self.device,
-                    &self.queue,
-                    &surface_view,
-                    &self.config,
-                    bounds,
-                );
-                self.queue.submit(command_buffer);
+                let command_buffer =
+                    self.main_thing
+                        .render(&self.context, &self.graphics, &surface_view, bounds);
+                self.graphics.queue.submit(command_buffer);
                 self.window.pre_present_notify();
                 surface_texture.present();
             }
@@ -239,17 +254,13 @@ struct MainThing {
 }
 
 impl MainThing {
-    fn new(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        config: &wgpu::SurfaceConfiguration,
-    ) -> MainThing {
+    fn new(graphics: &AppGraphics) -> MainThing {
         MainThing {
             resizer_width: 25.0,
             resizer_position: 0.3,
             dragging: None,
-            expression_list: expression_list::ExpressionList::new(device, queue, config),
-            graph_paper: graph::GraphPaper::new(device, config),
+            expression_list: expression_list::ExpressionList::new(graphics),
+            graph_paper: graph::GraphPaper::new(graphics),
         }
     }
 
@@ -331,17 +342,15 @@ impl MainThing {
     fn render(
         &mut self,
         ctx: &Context,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        graphics: &AppGraphics,
         view: &wgpu::TextureView,
-        config: &wgpu::SurfaceConfiguration,
         bounds: Bounds,
     ) -> Option<wgpu::CommandBuffer> {
         if bounds.is_empty() {
             return None;
         }
 
-        let mut encoder = device.create_command_encoder(&Default::default());
+        let mut encoder = graphics.device.create_command_encoder(&Default::default());
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("main_thing_clear"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -368,9 +377,9 @@ impl MainThing {
         // Render graph paper first because it does a fullscreen MSAA resolve
         // which would otherwise overwrite the expression list
         self.graph_paper
-            .render(ctx, device, queue, view, config, &mut encoder, right);
+            .render(ctx, graphics, view, &mut encoder, right);
         self.expression_list
-            .render(ctx, device, queue, view, config, &mut encoder, left);
+            .render(ctx, graphics, view, &mut encoder, left);
         Some(encoder.finish())
     }
 }

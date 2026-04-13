@@ -682,6 +682,7 @@ impl Tree {
         self.nodes.push((Bounds::default(), node));
     }
 
+    #[expect(clippy::match_like_matches_macro, reason = "fad </3 matches!")]
     fn layout_relative(&mut self) {
         self.bounds = Bounds::default();
         self.has_gray_background = false;

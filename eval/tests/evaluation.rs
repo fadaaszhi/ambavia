@@ -133,7 +133,7 @@ fn polygon<const N: usize>(points: [(i64, i64); N]) -> Value {
     Value::Polygon(points.map(|(x, y)| (x as f64, y as f64)).into())
 }
 #[track_caller]
-fn assert_expression_eq<'a>(source: &str, value: Value) {
+fn assert_expression_eq(source: &str, value: Value) {
     println!("Expression: {source}");
     let tree = parse_latex(source).unwrap();
     let statement = parse_statement(&tree).unwrap();

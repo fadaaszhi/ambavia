@@ -73,10 +73,10 @@ pub fn tile_fill(
         let a = a / TILE_SIZE as f64 - bmin;
         let b = b / TILE_SIZE as f64 - bmin;
 
-        let (left, right) = split_segment_at_x(a, b, 0.0);
+        let split = split_segment_at_x(a, b, 0.0);
 
         // Compute backdrop from part of segment left of screen
-        if let Some((a, b)) = left {
+        if let Some((a, b)) = split.left {
             let min_y =
                 (((a.y.min(b.y) * 255.0).round() / 255.0).clamp(0.0, bsize.y)).ceil() as u16;
             let max_y =
@@ -94,7 +94,10 @@ pub fn tile_fill(
         }
 
         // Clip segment to screen
-        let Some((a, b)) = right.and_then(|(a, b)| clip_segment(a, b, DVec2::ZERO, bsize)) else {
+        let Some((a, b)) = split
+            .right
+            .and_then(|(a, b)| clip_segment(a, b, DVec2::ZERO, bsize))
+        else {
             continue;
         };
 
@@ -303,33 +306,47 @@ pub fn tile_fill(
     drop(tile_fill_timer);
     // println!("{}", timer.string());
 }
-
+pub struct SplitSegment {
+    left: Option<(DVec2, DVec2)>,
+    right: Option<(DVec2, DVec2)>,
+}
+impl SplitSegment {
+    fn new(e1: Option<(DVec2, DVec2)>, e2: Option<(DVec2, DVec2)>, e1_left: bool) -> Self {
+        match e1_left {
+            true => Self {
+                left: e1,
+                right: e2,
+            },
+            false => Self {
+                left: e2,
+                right: e1,
+            },
+        }
+    }
+}
 /// Split a line segment at the given x-value and return the parts to the left
 /// and right of it, or `None` if the segment doesn't pass through that side.
 /// Preserves the orientation of the segment.
-fn split_segment_at_x(
-    a: DVec2,
-    b: DVec2,
-    x: f64,
-) -> (Option<(DVec2, DVec2)>, Option<(DVec2, DVec2)>) {
+fn split_segment_at_x(a: DVec2, b: DVec2, x: f64) -> SplitSegment {
     let t = (x - a.x) / (b.x - a.x);
+    let (e1, e2);
     if 0.0 < t && t < 1.0 {
         let m = dvec2(x, mix(a.y, b.y, t));
-        let am = Some((a, m));
-        let mb = Some((m, b));
-        if a.x < x { (am, mb) } else { (mb, am) }
+        e1 = Some((a, m));
+        e2 = Some((m, b));
     } else {
-        let ab = Some((a, b));
-        if a.x < x { (ab, None) } else { (None, ab) }
+        e1 = Some((a, b));
+        e2 = None;
     }
+    SplitSegment::new(e1, e2, a.x < x)
 }
 
 /// Clip the line segment from `a` to `b` against the AABB from `min` to `max`
 fn clip_segment(a: DVec2, b: DVec2, min: DVec2, max: DVec2) -> Option<(DVec2, DVec2)> {
     let f = |a, b, min, max| {
         split_segment_at_x(a, b, min)
-            .1
-            .and_then(|(a, b)| split_segment_at_x(a, b, max).0)
+            .right
+            .and_then(|(a, b)| split_segment_at_x(a, b, max).left)
             .map(|(a, b)| (a.yx(), b.yx()))
     };
     f(a, b, min.x, max.x).and_then(|(a, b)| f(a, b, min.y, max.y))

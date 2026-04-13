@@ -18,7 +18,7 @@ use winit::{
 };
 
 use crate::{
-    Bounds, Context, Event, Response,
+    AppGraphics, Bounds, Context, Event, Response,
     expression_list::ExpressionId,
     graph::{
         sample_explicit::sample_explicit,
@@ -316,7 +316,7 @@ impl GraphPaper {
         queue.write_buffer(&self.segments_buffer, 0, bytemuck::cast_slice(segments));
     }
 
-    pub fn new(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> GraphPaper {
+    pub fn new(AppGraphics { device, config, .. }: &AppGraphics) -> GraphPaper {
         let module = device.create_shader_module(wgpu::include_wgsl!("graph.wgsl"));
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("graph_bind_group_layout"),
@@ -566,10 +566,13 @@ impl GraphPaper {
     pub fn render(
         &mut self,
         ctx: &Context,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        AppGraphics {
+            device,
+            config,
+            queue,
+            ..
+        }: &AppGraphics,
         view: &wgpu::TextureView,
-        config: &wgpu::SurfaceConfiguration,
         encoder: &mut wgpu::CommandEncoder,
         bounds: Bounds,
     ) {

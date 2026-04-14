@@ -5,8 +5,8 @@ edition = "2024"
 
 [dependencies]
 derive_more = { workspace = true }
-bitflags = "2.10.0"
-logos = "0.15.0"
+bitflags = "2.11"
+logos = "0.16"
 typed-index-collections = { workspace = true }
 
 [dev-dependencies]

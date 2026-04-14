@@ -8,8 +8,8 @@ parse = { workspace = true }
 typed-index-collections = { workspace = true }
 derive_more = { workspace = true }
 medians = "3.0.12"
-strum = { version = "0.27", features = ["derive"] }
-ordered-float = "5.0"
+strum = { version = "0.28", features = ["derive"] }
+ordered-float = "5.3"
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }

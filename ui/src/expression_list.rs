@@ -847,8 +847,8 @@ impl ExpressionList {
             layout: Some(
                 &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     label: Some("latex_pipeline_layout"),
-                    bind_group_layouts: &[&layout],
-                    push_constant_ranges: &[],
+                    bind_group_layouts: &[Some(&layout)],
+                    immediate_size: 0,
                 }),
             ),
             vertex: wgpu::VertexState {
@@ -894,8 +894,8 @@ impl ExpressionList {
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
-            multiview: None,
             cache: None,
+            multiview_mask: None,
         });
 
         let index_buffer = create_index_buffer(device, 256);

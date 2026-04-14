@@ -375,8 +375,8 @@ impl GraphPaper {
             layout: Some(
                 &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     label: Some("graph_pipeline_layout"),
-                    bind_group_layouts: &[&layout],
-                    push_constant_ranges: &[],
+                    bind_group_layouts: &[Some(&layout)],
+                    immediate_size: 0,
                 }),
             ),
             vertex: wgpu::VertexState {
@@ -388,8 +388,8 @@ impl GraphPaper {
             primitive: Default::default(),
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: depth_texture.format(),
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Greater,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Greater),
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
@@ -408,7 +408,7 @@ impl GraphPaper {
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
         let uniforms_buffer = device.create_buffer(&wgpu::BufferDescriptor {

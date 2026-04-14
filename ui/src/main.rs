@@ -72,7 +72,8 @@ impl App {
                 )
                 .unwrap(),
         );
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::from_env_or_default());
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
         let surface = instance.create_surface(window.clone()).unwrap();
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             compatible_surface: Some(&surface),
@@ -204,10 +205,13 @@ impl App {
                 self.window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
-                let surface_texture = self
-                    .surface
-                    .get_current_texture()
-                    .expect("Failed to acquire next swap chain texture");
+                let surface_texture = match self.surface.get_current_texture() {
+                    wgpu::CurrentSurfaceTexture::Success(surface_texture) => surface_texture,
+                    wgpu::CurrentSurfaceTexture::Suboptimal(surface_texture) => surface_texture,
+                    wgpu::CurrentSurfaceTexture::Timeout => return,
+                    wgpu::CurrentSurfaceTexture::Occluded => return,
+                    v => todo!("handle wgpu surface error {v:?}"),
+                };
                 let surface_view = surface_texture.texture.create_view(&Default::default());
                 let command_buffer = self.main_thing.render(
                     &self.context,

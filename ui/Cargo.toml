@@ -10,18 +10,18 @@ eval = { workspace = true }
 typed-index-collections = { workspace = true }
 derive_more = { workspace = true, features = ["add"] }
 
-arboard = "3.6.0"
+arboard = "3.6"
 rayon = "1.11.0"
-ryu = "1.0.20"
+ryu = "1"
 bytemuck = { version = "1.23.1", features = ["derive"] }
 image = { version = "0.25.6", default-features = false, features = [
     "png",
     "rayon",
 ] }
 pollster = "0.4.0"
-glam = { version = "0.30.4", features = ["bytemuck"] }
+glam = { version = "0.32", features = ["bytemuck"] }
 # trim some unneeded (for now) features for faster compiles
-wgpu = { version = "27.0.1", default-features = false, features = [
+wgpu = { version = "29.0.1", default-features = false, features = [
     "std",
     "dx12",
     "metal",
@@ -29,4 +29,4 @@ wgpu = { version = "27.0.1", default-features = false, features = [
     "wgsl",
     "parking_lot",
 ] }
-winit = "0.30.11"
+winit = "0.30.13"

@@ -349,7 +349,7 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
                         Op::NegNumber => builder.instr1(Neg, arg()),
                         Op::NegPoint2 => builder.instr1(Neg2, arg()),
                         Op::NegPoint3 => builder.instr1(Neg3, arg()),
-                        Op::Fac => builder.instr1((|| todo!("factorial"))(), arg()),
+                        Op::Fac => todo!("factorial"), // builder.instr1(todo, arg()),
                         Op::Sqrt => builder.instr1(Sqrt, arg()),
                         Op::Mag2 => builder.instr1(Hypot2, arg()),
                         Op::Mag3 => builder.instr1(Hypot3, arg()),

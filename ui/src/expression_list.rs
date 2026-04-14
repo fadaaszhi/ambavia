@@ -10,6 +10,7 @@ use winit::{
 };
 
 use crate::{
+    AppGraphics,
     graph::{Geometry, GeometryKind},
     math_field::{Cursor, Interactiveness, MathField, Message, UserSelection},
     ui::{Bounds, Context, CursorMode, Event, QuadKind, Response},
@@ -806,9 +807,12 @@ fn create_vertex_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
 
 impl ExpressionList {
     pub fn new(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        config: &wgpu::SurfaceConfiguration,
+        AppGraphics {
+            device,
+            queue,
+            config,
+            ..
+        }: &AppGraphics,
     ) -> Self {
         let module = device.create_shader_module(wgpu::include_wgsl!("latex.wgsl"));
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -1707,10 +1711,13 @@ impl ExpressionList {
     pub fn render(
         &mut self,
         ctx: &Context,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        AppGraphics {
+            device,
+            queue,
+            config,
+            ..
+        }: &AppGraphics,
         view: &wgpu::TextureView,
-        config: &wgpu::SurfaceConfiguration,
         encoder: &mut wgpu::CommandEncoder,
         bounds: Bounds,
     ) {

@@ -26,7 +26,7 @@ pub struct Segment {
 }
 
 fn edges(path: &[DVec2]) -> impl Iterator<Item = (DVec2, DVec2)> {
-    (0..path.len()).map(|i| (path[i], path[(i + 1) % path.len()]))
+    (0..if path.len() < 3 { 0 } else { path.len() }).map(|i| (path[i], path[(i + 1) % path.len()]))
 }
 
 // References:
@@ -48,6 +48,30 @@ pub fn tile_fill(
     let bsize = bmax - bmin;
     let n_tiles = bsize.as_u16vec2();
 
+    // 0. Find subpolygons separated by non-finite points
+    // TODO do this via non-allocating iterators
+
+    let polygons_timer = tile_fill_timer.start("subpolygons");
+    let mut polygons = vec![];
+    let mut current = vec![];
+
+    for v in vertices {
+        if v.is_finite() {
+            current.push(*v);
+        } else if !current.is_empty() {
+            polygons.push(std::mem::take(&mut current));
+        }
+    }
+
+    if !current.is_empty() {
+        if vertices.first().is_some_and(|v| v.is_finite()) && !polygons.is_empty() {
+            polygons[0].extend(current);
+        } else {
+            polygons.push(current);
+        }
+    }
+    drop(polygons_timer);
+
     // 1. Find the tiles pierced by each polygon edge (coarse rasterization)
 
     struct TileSegment {
@@ -63,10 +87,8 @@ pub fn tile_fill(
     let mut tile_segments = vec![];
 
     let dda_timer = tile_fill_timer.start("dda");
-    for (a, b) in edges(vertices) {
-        if !a.is_finite() || !b.is_finite() {
-            todo!("handle non-finite points in polygon fill");
-        }
+    for (a, b) in polygons.iter().flat_map(|vs| edges(vs)) {
+        assert!(a.is_finite() && b.is_finite());
 
         // Transform coordinates so that tiles are unit length and the top-left
         // of the screen is at the origin

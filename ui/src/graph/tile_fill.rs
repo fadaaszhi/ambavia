@@ -64,8 +64,10 @@ pub fn tile_fill(
     }
 
     if !current.is_empty() {
-        if vertices.first().is_some_and(|v| v.is_finite()) && !polygons.is_empty() {
-            polygons[0].extend(current);
+        if let Some(polygon) = polygons.first_mut()
+            && vertices[0].is_finite()
+        {
+            polygon.extend(current);
         } else {
             polygons.push(current);
         }

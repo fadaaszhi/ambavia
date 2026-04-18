@@ -163,10 +163,16 @@ impl Vertex {
     };
 
     fn new(position: impl Into<Vec2>, shape: u32) -> Self {
-        Self {
-            position: position.into(),
-            shape,
-            padding: [0; 1],
+        let position = position.into();
+
+        if position.is_finite() {
+            Self {
+                position,
+                shape,
+                padding: [0; 1],
+            }
+        } else {
+            Self::BREAK
         }
     }
 }

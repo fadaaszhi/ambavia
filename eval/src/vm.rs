@@ -309,7 +309,8 @@ pub struct Vm<'a, 'i> {
     pub names: Option<&'a TiSlice<VarIndex, String>>,
 }
 
-pub const UNINITIALIZED: f64 = -9.405704329145218e-291;
+/// The bits of a quiet NaN with a randomly-generated payload
+pub const UNINITIALIZED_BITS: u64 = 0x7ff90a1a42c77dd3;
 
 impl<'a, 'i> Vm<'a, 'i> {
     pub fn new(program: &'i [Instruction], mut vars: Vars) -> Vm<'a, 'i> {
@@ -324,7 +325,7 @@ impl<'a, 'i> Vm<'a, 'i> {
             .max()
             .unwrap_or(0);
         if vars.len() < n_vars {
-            vars.resize(n_vars, Value::Number(UNINITIALIZED));
+            vars.resize(n_vars, Value::Number(f64::from_bits(UNINITIALIZED_BITS)));
         }
         Vm {
             program,
@@ -356,7 +357,9 @@ impl<'a, 'i> Vm<'a, 'i> {
     fn load(&self, index: VarIndex) -> Value {
         let value = self.vars[index].clone();
 
-        if matches!(value, Value::Number(UNINITIALIZED)) {
+        if let Value::Number(x) = value
+            && x.to_bits() == UNINITIALIZED_BITS
+        {
             let mut msg: String = "".into();
             write!(msg, "variable is uninitialized: {index:?}").unwrap();
 

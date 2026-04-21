@@ -1462,6 +1462,10 @@ impl ExpressionList {
                                     }]);
                                 }
 
+                                if matches!(r, ExpressionResult::Plot { .. }) {
+                                    output.ui = OutputUi::None;
+                                }
+
                                 if match r {
                                     ExpressionResult::Plot { parameters, .. } => {
                                         parameters.is_empty()

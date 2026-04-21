@@ -1489,7 +1489,17 @@ impl ExpressionList {
                                     }]);
                                 }
 
-                                if matches!(r, ExpressionResult::Plot { .. }) {
+                                if match r {
+                                    ExpressionResult::Plot {
+                                        ref kind,
+                                        ref parameters,
+                                        ..
+                                    } => {
+                                        !matches!(kind, PlotKind::Parametric(_))
+                                            && !parameters.is_empty()
+                                    }
+                                    _ => false,
+                                } {
                                     output.ui = OutputUi::None;
                                 }
 

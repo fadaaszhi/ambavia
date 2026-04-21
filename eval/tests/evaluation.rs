@@ -144,6 +144,7 @@ fn assert_expression_eq(source: &str, value: Value) {
         }]
         .as_slice()
         .as_ref(),
+        &[],
         false,
     );
     let Some(ExpressionResult::Value(id, ty)) = analysis.results.first() else {
@@ -153,7 +154,7 @@ fn assert_expression_eq(source: &str, value: Value) {
         );
     };
     let (instructions, _, var_indices) =
-        compile_assignments::<std::iter::Empty<_>, &[_]>(&analysis.assignments, []);
+        compile_assignments::<std::iter::Empty<_>, &[_]>(&analysis.assignments, [], []);
 
     println!("Compiled instructions:");
     let width = (instructions.len() - 1).to_string().len();
@@ -163,7 +164,7 @@ fn assert_expression_eq(source: &str, value: Value) {
 
     let v = var_indices[id];
 
-    let mut vm = Vm::new(&instructions, Default::default());
+    let mut vm = Vm::new(&instructions, Default::default(), []);
     vm.run(false);
     assert_eq!(
         match ty {
@@ -240,6 +241,7 @@ fn assert_type_error(source: &str, error: TypeError) {
         }]
         .as_slice()
         .as_ref(),
+        &[],
         false,
     );
     assert_eq!(

@@ -1302,7 +1302,17 @@ impl ExpressionList {
                         ei_to_oi.push(i);
                     }
 
-                    let analysis = analyze_expression_list(&list, false);
+                    let builtin_constants = [
+                        ("pi", std::f64::consts::PI),
+                        ("tau", std::f64::consts::TAU),
+                        ("e", std::f64::consts::E),
+                        ("infty", f64::INFINITY),
+                    ];
+                    let analysis = analyze_expression_list(
+                        &list,
+                        &builtin_constants.map(|(name, _)| name),
+                        false,
+                    );
 
                     let mut function_id_map = HashMap::new();
                     let (program, mut functions, var_indices) = compile_assignments(
@@ -1322,12 +1332,29 @@ impl ExpressionList {
                                 assignments.iter().map(|&i| &analysis.assignments[i]),
                             ))
                         }),
+                        analysis
+                            .builtin_constants
+                            .values()
+                            .map(|&id| (id, Type::Number)),
                     );
                     let mut functions = function_id_map
                         .into_iter()
                         .map(|(id, i)| (id, std::mem::take(&mut functions[i])))
                         .collect::<HashMap<_, _>>();
-                    let mut vm = Vm::new(&program, Default::default());
+                    let mut vm = Vm::new(
+                        &program,
+                        Default::default(),
+                        analysis
+                            .builtin_constants
+                            .values()
+                            .map(|id| var_indices[id]),
+                    );
+
+                    for (name, value) in builtin_constants {
+                        vm.vars[var_indices[&analysis.builtin_constants[name]]] =
+                            vm::Value::Number(value);
+                    }
+
                     vm.run(false);
 
                     'results_loop: for (ei, r) in analysis.results.into_iter_enumerated() {

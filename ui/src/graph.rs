@@ -734,7 +734,7 @@ impl GraphPaper {
                     let shape = shapes.len() as u32;
                     shapes.push(Shape::line(*color, ctx.scale_factor as f32 * width));
 
-                    let mut vm = Vm::new(instructions, std::mem::take(&mut self.vm_vars));
+                    let mut vm = Vm::new(instructions, std::mem::take(&mut self.vm_vars), []);
                     let pixels_per_math = vp.width / physical.size.x;
 
                     let buffer = 0.5 * ctx.scale_factor * *width as f64 * pixels_per_math;

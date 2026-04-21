@@ -1,7 +1,7 @@
 use std::{
     array,
     borrow::Borrow,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt::Display,
     iter::zip,
     ops::{Deref, DerefMut},
@@ -156,7 +156,7 @@ impl Dependency {
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 struct Dependencies<'a>(HashMap<&'a str, Dependency>);
 
 impl<'a> Deref for Dependencies<'a> {
@@ -267,14 +267,18 @@ struct Resolver<'a> {
 pub struct ExpressionIndex(usize);
 
 impl<'a> Resolver<'a> {
-    fn new(list: impl Iterator<Item = &'a Statement>, use_v1_9_scoping_rules: bool) -> Self {
+    fn new(
+        list: impl Iterator<Item = &'a Statement>,
+        undefinable_names: &HashSet<&str>,
+        use_v1_9_scoping_rules: bool,
+    ) -> Self {
         let mut definitions = HashMap::new();
 
         for statement in list {
             match statement {
                 Statement::Assignment { name, .. }
                 | Statement::FunctionDeclaration { name, .. }
-                    if name != "x" && name != "y" =>
+                    if !undefinable_names.contains(name.as_str()) =>
                 {
                     if let Some(result) = definitions.get_mut(name.as_str()) {
                         *result = Err(NameError::MultipleDefinitions(name.into()));
@@ -922,18 +926,39 @@ impl<T> ToVec for Option<T> {
     }
 }
 
+#[derive(Debug)]
+pub struct Output {
+    pub assignments: Vec<Assignment>,
+    pub results: TiVec<ExpressionIndex, ExpressionResult>,
+    pub freevars: HashMap<String, Id>,
+    pub builtin_constants: HashMap<String, Id>,
+}
+
 pub fn resolve_names<'a>(
     list: &TiSlice<ExpressionIndex, impl Borrow<ExpressionListEntry<'a>>>,
+    builtin_constants: &[&str],
     use_v1_9_scoping_rules: bool,
-) -> (
-    Vec<Assignment>,
-    TiVec<ExpressionIndex, ExpressionResult>,
-    HashMap<String, Id>,
-) {
+) -> Output {
+    let mut undefinable_names = HashSet::new();
+    undefinable_names.extend(builtin_constants.iter().cloned().chain(["x", "y"]));
     let mut resolver = Resolver::new(
         list.iter().map(|e| e.borrow().expression),
+        &undefinable_names,
         use_v1_9_scoping_rules,
     );
+
+    let builtin_constants = builtin_constants
+        .iter()
+        .map(|&name| {
+            let id = resolver.next_id();
+            let deps = Dependencies::default();
+            let existing = resolver.scopes[deps.scope_index()]
+                .computed
+                .insert(name, (Ok(id.clone()), deps));
+            assert_eq!(existing, None);
+            (name.to_string(), id)
+        })
+        .collect::<HashMap<_, _>>();
 
     let results = list
         .iter()
@@ -950,7 +975,7 @@ pub fn resolve_names<'a>(
 
             let mut result = match e.expression {
                 Statement::Assignment { name, value } => {
-                    let (id, deps) = if !resolver.freevars.contains_key(name.as_str())
+                    let (id, deps) = if !undefinable_names.contains(name.as_str())
                         && let Some((id, deps)) = resolver.scopes[0].computed.get(name.as_str())
                     {
                         (id.clone(), deps.clone())
@@ -996,7 +1021,9 @@ pub fn resolve_names<'a>(
                                         .to_vec(),
                                     domain: None,
                                 }
-                            } else if freevars.len() == 1 && freevars != [name]
+                            } else if freevars.len() == 1
+                                && freevars != [name]
+                                && (name == "y" || !undefinable_names.contains(name.as_str()))
                                 || name == "y" && freevars.is_empty()
                             {
                                 ExpressionResult::Plot {
@@ -1012,8 +1039,8 @@ pub fn resolve_names<'a>(
                                         .to_vec(),
                                     domain: None,
                                 }
-                            } else if (name == "x" || name == "y")
-                                && matches!(freevars[..], ["x"] | ["y"] | ["x", "y"])
+                            } else if undefinable_names.contains(name.as_str())
+                                && matches!(freevars[..], [] | ["x"] | ["y"] | ["x", "y"])
                             {
                                 let lhs = Expression::Identifier(
                                     resolver.resolve_variable(name).unwrap(),
@@ -1234,7 +1261,12 @@ pub fn resolve_names<'a>(
         .iter()
         .map(|(&k, &v)| (k.into(), v))
         .collect();
-    (assignments, results, freevars)
+    Output {
+        assignments,
+        results,
+        freevars,
+        builtin_constants,
+    }
 }
 
 #[cfg(test)]
@@ -1364,12 +1396,18 @@ mod tests {
     }
 
     type ResolveResult = (Vec<Assignment>, Vec<ExpressionResult>, HashMap<String, Id>);
+    type ResolveResultWithBuiltins = (
+        Vec<Assignment>,
+        Vec<ExpressionResult>,
+        HashMap<String, Id>,
+        HashMap<String, Id>,
+    );
 
     /// Rename `Id`s to be in a canonical order so that tests don't fail just
     /// because `Id`s are different even if they represent the same result
-    fn canonicalize_ids(
-        (mut assignments, mut results, mut freevars): ResolveResult,
-    ) -> ResolveResult {
+    fn canonicalize_ids_with_builtins(
+        (mut assignments, mut results, mut freevars, mut builtin_constants): ResolveResultWithBuiltins,
+    ) -> ResolveResultWithBuiltins {
         let mut old_to_new = HashMap::new();
         let f = &mut |id: &mut Id| {
             let next = Id(old_to_new.len());
@@ -1380,9 +1418,24 @@ mod tests {
         for r in &mut results {
             r.canonicalize_ids(f);
         }
-        freevars.values_mut().for_each(f);
 
-        (assignments, results, freevars)
+        let mut g = |h: &mut HashMap<String, Id>| {
+            let mut kvs = h.iter_mut().collect::<Vec<_>>();
+            kvs.sort_by_key(|(k, _)| *k);
+            kvs.iter_mut().for_each(|(_, v)| f(v));
+        };
+        g(&mut freevars);
+        g(&mut builtin_constants);
+
+        (assignments, results, freevars, builtin_constants)
+    }
+
+    /// Rename `Id`s to be in a canonical order so that tests don't fail just
+    /// because `Id`s are different even if they represent the same result
+    fn canonicalize_ids(result: ResolveResult) -> ResolveResult {
+        let (a, b, c, _) =
+            canonicalize_ids_with_builtins((result.0, result.1, result.2, HashMap::new()));
+        (a, b, c)
     }
 
     #[derive(Default)]
@@ -1420,8 +1473,31 @@ mod tests {
                 },
             })
             .collect::<TiVec<_, _>>();
-        let (a, b, c) = resolve_names(list.as_ref(), false);
-        (a, b.into(), c)
+        let o = resolve_names(list.as_ref(), &[], false);
+        (o.assignments, o.results.into(), o.freevars)
+    }
+
+    fn resolve_names_ti_with_builtins(
+        list: &[Statement],
+        builtin_constants: &[&str],
+    ) -> ResolveResultWithBuiltins {
+        let list = list
+            .iter()
+            .map(|e| ExpressionListEntry {
+                expression: e,
+                parametric_domain: Domain {
+                    min: &ANum(0.0),
+                    max: &ANum(1.0),
+                },
+            })
+            .collect::<TiVec<_, _>>();
+        let o = resolve_names(list.as_ref(), builtin_constants, false);
+        (
+            o.assignments,
+            o.results.into(),
+            o.freevars,
+            o.builtin_constants,
+        )
     }
 
     fn resolve_names_ti_v1_9(list: &[Statement]) -> ResolveResult {
@@ -1435,12 +1511,19 @@ mod tests {
                 },
             })
             .collect::<TiVec<_, _>>();
-        let (a, b, c) = resolve_names(list.as_ref(), true);
-        (a, b.into(), c)
+        let o = resolve_names(list.as_ref(), &[], true);
+        (o.assignments, o.results.into(), o.freevars)
     }
 
     fn assert_eq(a: ResolveResult, b: ResolveResult) {
         assert_eq!(canonicalize_ids(a), canonicalize_ids(b));
+    }
+
+    fn assert_eq_with_builtins(a: ResolveResultWithBuiltins, b: ResolveResultWithBuiltins) {
+        assert_eq!(
+            canonicalize_ids_with_builtins(a),
+            canonicalize_ids_with_builtins(b)
+        );
     }
 
     #[test]
@@ -4349,6 +4432,7 @@ mod tests {
         let mut ids = IdGenerator::default();
         let a = resolve_names(
             [
+                // (t, t); a < t < a + b
                 ExpressionListEntry {
                     expression: &Statement::Expression(AOp {
                         operation: OpName::Point,
@@ -4362,6 +4446,7 @@ mod tests {
                         },
                     },
                 },
+                // a = 5
                 ExpressionListEntry {
                     expression: &Statement::Assignment {
                         name: "a".into(),
@@ -4372,12 +4457,14 @@ mod tests {
             ]
             .as_slice()
             .as_ref(),
+            &[],
             false,
         );
         assert_eq(
-            (a.0, a.1.into(), a.2),
+            (a.assignments, a.results.into(), a.freevars),
             (
                 vec![
+                    // (t, t)
                     Assignment {
                         id: ids.new_id("1"),
                         name: "<anonymous>".into(),
@@ -4389,11 +4476,13 @@ mod tests {
                             ],
                         },
                     },
+                    // a = 5
                     Assignment {
                         id: ids.new_id("a"),
                         name: "a".into(),
                         value: Expression::Number(5.0),
                     },
+                    // min = a
                     Assignment {
                         id: ids.new_id("min"),
                         name: "<parametric min>".into(),
@@ -4401,6 +4490,7 @@ mod tests {
                     },
                 ],
                 vec![
+                    // (t, t); a < t < b undefined
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::PARAMETRIC,
                         value: ids["1"],
@@ -4410,10 +4500,220 @@ mod tests {
                             max: Err(NameError::Undefined(vec!["b".into()])),
                         }),
                     },
+                    // a
                     ExpressionResult::Value(ids["a"]),
                 ],
                 HashMap::from([("t".into(), ids["t"]), ("b".into(), ids.new_id("b"))]),
             ),
         );
     }
+
+    #[test]
+    fn builtins() {
+        let id = |s: &str| AId(s.into());
+        let mut ids = IdGenerator::default();
+        assert_eq_with_builtins(
+            resolve_names_ti_with_builtins(
+                &[
+                    // a = pi + 2
+                    ElAssign {
+                        name: "a".into(),
+                        value: AOp {
+                            operation: OpName::Add,
+                            args: vec![id("pi"), ANum(2.0)],
+                        },
+                    },
+                    // b = a
+                    ElAssign {
+                        name: "b".into(),
+                        value: id("a"),
+                    },
+                    // pi = x
+                    ElAssign {
+                        name: "pi".into(),
+                        value: id("x"),
+                    },
+                    // e = x
+                    ElAssign {
+                        name: "e".into(),
+                        value: id("x"),
+                    },
+                    // d = x
+                    ElAssign {
+                        name: "d".into(),
+                        value: id("x"),
+                    },
+                    // c = e
+                    ElAssign {
+                        name: "c".into(),
+                        value: id("e"),
+                    },
+                    // f(e) = e^2
+                    ElFunction {
+                        name: "f".into(),
+                        parameters: vec!["e".into()],
+                        body: AOp {
+                            operation: OpName::Pow,
+                            args: vec![id("e"), ANum(2.0)],
+                        },
+                    },
+                    // f(3)
+                    ElExpr(ACall {
+                        callee: "f".into(),
+                        args: vec![ANum(3.0)],
+                    }),
+                ],
+                &["pi", "e"],
+            ),
+            (
+                vec![
+                    // a = pi + 2
+                    Assignment {
+                        id: ids.new_id("a"),
+                        name: "a".into(),
+                        value: Expression::Op {
+                            operation: OpName::Add,
+                            args: vec![
+                                Expression::Identifier(ids.new_id("pi")),
+                                Expression::Number(2.0),
+                            ],
+                        },
+                    },
+                    // b = a
+                    Assignment {
+                        id: ids.new_id("b"),
+                        name: "b".into(),
+                        value: Expression::Identifier(ids["a"]),
+                    },
+                    // pi = x RHS
+                    Assignment {
+                        id: ids.new_id("pi = x RHS"),
+                        name: "pi".into(),
+                        value: Expression::Identifier(ids.new_id("x")),
+                    },
+                    // pi = x
+                    Assignment {
+                        id: ids.new_id("pi - x"),
+                        name: "<implicit plot>".into(),
+                        value: Expression::Op {
+                            operation: OpName::Sub,
+                            args: vec![
+                                Expression::Identifier(ids["pi"]),
+                                Expression::Identifier(ids["pi = x RHS"]),
+                            ],
+                        },
+                    },
+                    // e = x RHS
+                    Assignment {
+                        id: ids.new_id("e = x RHS"),
+                        name: "e".into(),
+                        value: Expression::Identifier(ids["x"]),
+                    },
+                    // e = x
+                    Assignment {
+                        id: ids.new_id("e - x"),
+                        name: "<implicit plot>".into(),
+                        value: Expression::Op {
+                            operation: OpName::Sub,
+                            args: vec![
+                                Expression::Identifier(ids.new_id("e")),
+                                Expression::Identifier(ids["e = x RHS"]),
+                            ],
+                        },
+                    },
+                    // d = x
+                    Assignment {
+                        id: ids.new_id("d"),
+                        name: "d".into(),
+                        value: Expression::Identifier(ids["x"]),
+                    },
+                    // c = e
+                    Assignment {
+                        id: ids.new_id("c"),
+                        name: "c".into(),
+                        value: Expression::Identifier(ids["e"]),
+                    },
+                    // e = anonymous from f(e)
+                    Assignment {
+                        id: ids.new_id("e1"),
+                        name: "e".into(),
+                        value: Expression::Identifier(ids.new_id("<anonymous function argument>")),
+                    },
+                    // f(e) = e^2
+                    Assignment {
+                        id: ids.new_id("f(e) plot"),
+                        name: "<anonymous function plot>".into(),
+                        value: Expression::Op {
+                            operation: OpName::Pow,
+                            args: vec![Expression::Identifier(ids["e1"]), Expression::Number(2.0)],
+                        },
+                    },
+                    // e = 3 from f(e=3)
+                    Assignment {
+                        id: ids.new_id("e2"),
+                        name: "e".into(),
+                        value: Expression::Number(3.0),
+                    },
+                    // f(3)
+                    Assignment {
+                        id: ids.new_id("f(3)"),
+                        name: "<anonymous>".into(),
+                        value: Expression::Op {
+                            operation: OpName::Pow,
+                            args: vec![Expression::Identifier(ids["e2"]), Expression::Number(2.0)],
+                        },
+                    },
+                ],
+                vec![
+                    // a = pi + 2
+                    ExpressionResult::Value(ids["a"]),
+                    // b = a
+                    ExpressionResult::Value(ids["b"]),
+                    // pi = x
+                    ExpressionResult::Plot {
+                        allowed_kinds: PlotKinds::IMPLICIT,
+                        value: ids["pi - x"],
+                        parameters: vec![ids["x"], ids.new_id("y")],
+                        domain: None,
+                    },
+                    // e = x
+                    ExpressionResult::Plot {
+                        allowed_kinds: PlotKinds::IMPLICIT,
+                        value: ids["e - x"],
+                        parameters: vec![ids["x"], ids["y"]],
+                        domain: None,
+                    },
+                    // d = x
+                    ExpressionResult::Plot {
+                        allowed_kinds: PlotKinds::NORMAL,
+                        value: ids["d"],
+                        parameters: vec![ids["x"]],
+                        domain: None,
+                    },
+                    // c = e
+                    ExpressionResult::Value(ids["c"]),
+                    // f(e) = e^2
+                    ExpressionResult::Plot {
+                        allowed_kinds: PlotKinds::NORMAL,
+                        value: ids["f(e) plot"],
+                        parameters: vec![ids["<anonymous function argument>"]],
+                        domain: None,
+                    },
+                    // f(3)
+                    ExpressionResult::Value(ids["f(3)"]),
+                ],
+                HashMap::from([
+                    ("x".into(), ids["x"]),
+                    ("y".into(), ids["y"]),
+                    (
+                        "<anonymous function argument>".into(),
+                        ids["<anonymous function argument>"],
+                    ),
+                ]),
+                HashMap::from([("pi".into(), ids["pi"]), ("e".into(), ids["e"])]),
+            ),
+        );
+    }
+
+    // TODO add tests for plot types
 }

@@ -431,12 +431,32 @@ pub fn compile_assignments<
 >(
     constants: impl IntoIterator<Item = &'a Assignment>,
     functions: impl IntoIterator<Item = (I, A)>,
+    builtin_constants: impl IntoIterator<Item = (Id, TcType)>,
 ) -> (
     Vec<Instruction>,
     Vec<Vec<Instruction>>,
     HashMap<Id, VarIndex>,
 ) {
     let mut builder = InstructionBuilder::default();
+
+    for (id, ty) in builtin_constants {
+        builder.define(
+            id,
+            match ty {
+                TcType::Number => IbType::Number,
+                TcType::NumberList => IbType::NumberList,
+                TcType::Point2 => IbType::Point2,
+                TcType::Point2List => IbType::Point2List,
+                TcType::Point3 => IbType::Point3,
+                TcType::Point3List => IbType::Point3List,
+                TcType::Polygon => IbType::Polygon,
+                TcType::PolygonList => IbType::PolygonList,
+                TcType::Bool => IbType::Bool,
+                TcType::BoolList => IbType::BoolList,
+                TcType::EmptyList => panic!(),
+            },
+        );
+    }
 
     for Assignment { id, value, .. } in constants {
         let value = compile_expression(value, &mut builder);

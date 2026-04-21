@@ -929,13 +929,18 @@ impl Display for TypeError {
 pub fn type_check(
     assignments: &[nr::Assignment],
     freevars: &HashMap<String, Id>,
+    builtin_constants: impl IntoIterator<Item = (Id, Type)>,
 ) -> (Vec<Assignment>, HashMap<Id, Result<Type, TypeError>>) {
     let mut tc = TypeChecker::default();
 
     let mut max_id = None;
-    for &id in freevars.values() {
+    for (id, ty) in freevars
+        .values()
+        .map(|&id| (id, Type::Number))
+        .chain(builtin_constants)
+    {
         update_max_id(id, &mut max_id);
-        tc.insert_computed_type(id, Ok(Type::Number));
+        tc.insert_computed_type(id, Ok(ty));
     }
     find_max_id(assignments, &mut max_id);
     tc.id_counter = max_id.map_or(0, |max_id| max_id + 1);
@@ -1024,7 +1029,8 @@ mod tests {
                         value: NNum(9.0)
                     }
                 ],
-                &HashMap::from([])
+                &HashMap::from([]),
+                []
             ),
             (
                 vec![

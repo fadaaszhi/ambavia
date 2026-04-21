@@ -11,7 +11,7 @@ use typed_index_collections::{TiSlice, TiVec};
 use crate::{
     name_resolver::{
         Domain, ExpressionIndex, ExpressionListEntry, ExpressionResult as NrEr, Id, NameError,
-        PlotKinds, resolve_names,
+        Output, PlotKinds, resolve_names,
     },
     type_checker::{Assignment, Type, TypeError, type_check, walk_assignment_ids},
 };
@@ -71,14 +71,25 @@ pub struct AnalysisResult {
     pub assignments: TiVec<AssignmentIndex, Assignment>,
     pub constants: Vec<AssignmentIndex>,
     pub freevars: HashMap<Id, String>,
+    pub builtin_constants: HashMap<String, Id>,
 }
 
 pub fn analyze_expression_list<'a>(
     list: &TiSlice<ExpressionIndex, impl Borrow<ExpressionListEntry<'a>>>,
+    builtin_constants: &[&str],
     use_v1_9_scoping_rules: bool,
 ) -> AnalysisResult {
-    let (assignments, results, freevars) = resolve_names(list, use_v1_9_scoping_rules);
-    let (assignments, types) = type_check(&assignments, &freevars);
+    let Output {
+        assignments,
+        results,
+        freevars,
+        builtin_constants,
+    } = resolve_names(list, &builtin_constants, use_v1_9_scoping_rules);
+    let (assignments, types) = type_check(
+        &assignments,
+        &freevars,
+        builtin_constants.iter().map(|(_, &id)| (id, Type::Number)),
+    );
     let assignments: TiVec<AssignmentIndex, _> = assignments.into();
 
     // We want to find the list of assignments that represent constants in our
@@ -261,5 +272,6 @@ pub fn analyze_expression_list<'a>(
         assignments,
         constants,
         freevars,
+        builtin_constants,
     }
 }

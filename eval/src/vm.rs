@@ -313,7 +313,11 @@ pub struct Vm<'a, 'i> {
 pub const UNINITIALIZED_BITS: u64 = 0x7ff90a1a42c77dd3;
 
 impl<'a, 'i> Vm<'a, 'i> {
-    pub fn new(program: &'i [Instruction], mut vars: Vars) -> Vm<'a, 'i> {
+    pub fn new(
+        program: &'i [Instruction],
+        mut vars: Vars,
+        builtin_constant_indices: impl IntoIterator<Item = VarIndex>,
+    ) -> Vm<'a, 'i> {
         let n_vars = program
             .iter()
             .map(|i| match i {
@@ -322,6 +326,7 @@ impl<'a, 'i> Vm<'a, 'i> {
                 Instruction::Load3(j) | Instruction::Store3(j) => j.0 + 3,
                 _ => 0,
             })
+            .chain(builtin_constant_indices.into_iter().map(|i| i.0 + 3))
             .max()
             .unwrap_or(0);
         if vars.len() < n_vars {

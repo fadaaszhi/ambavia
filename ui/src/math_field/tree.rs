@@ -53,6 +53,7 @@ const EMPTY_WIDTH: f64 = 0.5;
 pub const OPERATORNAMES: &[&str] = &[
     "with",
     "width",
+    "vertices",
     "varp",
     "variance",
     "var",

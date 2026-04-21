@@ -105,6 +105,7 @@ impl OpName {
             "sort" => Sort,
             "sortPerm" => SortPerm,
             "polygon" => Polygon,
+            "vertices" => Vertices,
             "join" => Join,
             _ => return None,
         })

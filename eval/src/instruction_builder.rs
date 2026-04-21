@@ -202,6 +202,7 @@ impl InstructionBuilder {
             UniquePerm3 => (Type::Point3List, Type::NumberList),
             UniquePermPolygon => (Type::PolygonList, Type::NumberList),
             Polygon => (Type::Point2List, Type::Polygon),
+            Vertices => (Type::Polygon, Type::Point2List),
             _ => panic!("instruction '{instr:?}' not unary"),
         };
         self.assert_pop(a, a_type);

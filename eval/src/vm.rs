@@ -151,6 +151,7 @@ pub enum Instruction {
     SortKeyPolygon,
     SortPerm,
     Polygon,
+    Vertices,
     Push,
     Push2,
     Push3,
@@ -1306,6 +1307,9 @@ impl<'a, 'i> Vm<'a, 'i> {
                     )));
                 }
                 Instruction::Polygon => {
+                    // noop
+                }
+                Instruction::Vertices => {
                     // noop
                 }
                 Instruction::Push => {

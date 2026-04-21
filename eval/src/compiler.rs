@@ -324,6 +324,7 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
                         Op::SortKeyPolygon => builder.instr2(SortKeyPolygon, arg(), arg()),
                         Op::SortPerm => builder.instr1(SortPerm, arg()),
                         Op::Polygon => builder.instr1(Polygon, arg()),
+                        Op::Vertices => builder.instr1(Vertices, arg()),
                         Op::AddNumber => builder.instr2(Add, arg(), arg()),
                         Op::AddPoint2 => builder.instr2(Add2, arg(), arg()),
                         Op::AddPoint3 => builder.instr2(Add3, arg(), arg()),

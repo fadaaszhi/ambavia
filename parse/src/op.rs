@@ -119,6 +119,7 @@ pub enum OpName {
     Sort,
     SortPerm,
     Polygon,
+    Vertices,
     Join,
 }
 use Type::{
@@ -248,6 +249,7 @@ declare_ops! {
         SortKeyPolygon(PgL, NL) -> PgL,
         SortPerm(NL) -> NL,
         Polygon(P2L) -> Pg,
+        Vertices(Pg) -> P2L,
         // These have more complicated type signatures than what we can represent (due to potential list of list)
         // and are thus left taking "no" input and handled as a special case
         JoinNumber() -> NL,
@@ -354,6 +356,7 @@ impl OpName {
             ],
             OpName::SortPerm => &[SortPerm],
             OpName::Polygon => &[Polygon],
+            OpName::Vertices => &[Vertices],
             OpName::Join => &[],
         }
     }
@@ -605,6 +608,7 @@ impl OpName {
             OpName::Sort => "sort",
             OpName::SortPerm => "sortPerm",
             OpName::Polygon => "polygon",
+            OpName::Vertices => "vertices",
             OpName::Join => "join",
         }
     }

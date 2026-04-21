@@ -84,7 +84,7 @@ pub fn analyze_expression_list<'a>(
         results,
         freevars,
         builtin_constants,
-    } = resolve_names(list, &builtin_constants, use_v1_9_scoping_rules);
+    } = resolve_names(list, builtin_constants, use_v1_9_scoping_rules);
     let (assignments, types) = type_check(
         &assignments,
         &freevars,

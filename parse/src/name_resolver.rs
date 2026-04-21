@@ -1001,7 +1001,7 @@ pub fn resolve_names<'a>(
             let deps = Dependencies::default();
             let existing = resolver.scopes[deps.scope_index()]
                 .computed
-                .insert(name, (Ok(id.clone()), deps));
+                .insert(name, (Ok(id), deps));
             assert_eq!(existing, None);
             (name.to_string(), id)
         })

@@ -98,7 +98,7 @@ impl OpName {
             "argmax" => Argmax,
             "total" => Total,
             "mean" => Mean,
-            "count" => Count,
+            "count" | "length" => Count,
             "repeat" => Repeat,
             "unique" => Unique,
             "uniquePerm" => UniquePerm,

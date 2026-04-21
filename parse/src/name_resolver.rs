@@ -934,6 +934,53 @@ pub struct Output {
     pub builtin_constants: HashMap<String, Id>,
 }
 
+fn resolve_relation(
+    resolver: &mut Resolver,
+    operands: (Result<Vec<Expression>, NameError>, Dependencies),
+    operators: &[ComparisonOperator],
+) -> ExpressionResult {
+    let [operator] = &operators else {
+        return ExpressionResult::Err(NameError::TodoChainedRelation);
+    };
+    if *operator != ast::ComparisonOperator::Equal {
+        return ExpressionResult::Err(NameError::TodoInequality);
+    }
+    let value = operands.0.map(|args| Expression::Op {
+        operation: OpName::Sub,
+        args,
+    });
+    let deps = operands.1;
+    let level = deps.level();
+    assert_eq!(level, Level(0));
+    let id = value.map(|value| resolver.push_assignment("<anonymous>", level, value));
+    let mut freevars = deps
+        .keys()
+        .cloned()
+        .filter(|name| resolver.freevars.contains_key(name))
+        .collect::<Vec<_>>();
+    freevars.sort();
+    match id {
+        Ok(id) => {
+            if matches!(freevars[..], ["x"] | ["y"] | ["x", "y"]) {
+                ExpressionResult::Plot {
+                    allowed_kinds: PlotKinds::IMPLICIT,
+                    value: id,
+                    parameters: vec![
+                        resolver.resolve_variable("x").unwrap(),
+                        resolver.resolve_variable("y").unwrap(),
+                    ],
+                    domain: None,
+                }
+            } else if freevars.is_empty() {
+                ExpressionResult::None
+            } else {
+                ExpressionResult::Err(NameError::undefined(freevars))
+            }
+        }
+        Err(e) => ExpressionResult::Err(e),
+    }
+}
+
 pub fn resolve_names<'a>(
     list: &TiSlice<ExpressionIndex, impl Borrow<ExpressionListEntry<'a>>>,
     builtin_constants: &[&str],
@@ -1074,9 +1121,28 @@ pub fn resolve_names<'a>(
                     name,
                     parameters,
                     body,
-                    ..
                 } => {
-                    if let [parameter] = parameters.as_slice() {
+                    if let Some(name) = OpName::from_str(name) {
+                        let operands = resolver.resolve_with_dependencies(
+                            |resolver| {
+                                let lhs = Expression::Op {
+                                    operation: name,
+                                    args: parameters
+                                        .iter()
+                                        .map(|p| {
+                                            Ok(Expression::Identifier(
+                                                resolver.resolve_variable(p.as_str())?,
+                                            ))
+                                        })
+                                        .collect::<Result<_, _>>()?,
+                                };
+                                let rhs = resolver.resolve_expression(body)?;
+                                Ok(vec![lhs, rhs])
+                            },
+                            None,
+                        );
+                        resolve_relation(&mut resolver, operands, &[ComparisonOperator::Equal])
+                    } else if let [parameter] = parameters.as_slice() {
                         let arg = "<anonymous function argument>";
                         let (value, deps) = resolver.resolve_with_dependencies(
                             |resolver| {
@@ -1137,51 +1203,16 @@ pub fn resolve_names<'a>(
                     operands,
                     operators,
                 }) => {
-                    let [operator] = &operators[..] else {
-                        return ExpressionResult::Err(NameError::TodoChainedRelation);
-                    };
-                    if *operator != ast::ComparisonOperator::Equal {
-                        return ExpressionResult::Err(NameError::TodoInequality);
-                    }
-                    let (value, deps) = resolver.resolve_with_dependencies(
-                        |this| {
-                            Ok(Expression::Op {
-                                operation: OpName::Sub,
-                                args: this.resolve_expressions(operands)?,
-                            })
+                    let operands = resolver.resolve_with_dependencies(
+                        |resolver| {
+                            operands
+                                .iter()
+                                .map(|e| resolver.resolve_expression(e))
+                                .collect::<Result<_, _>>()
                         },
                         None,
                     );
-                    let level = deps.level();
-                    assert_eq!(level, Level(0));
-                    let id =
-                        value.map(|value| resolver.push_assignment("<anonymous>", level, value));
-                    let mut freevars = deps
-                        .keys()
-                        .cloned()
-                        .filter(|name| resolver.freevars.contains_key(name))
-                        .collect::<Vec<_>>();
-                    freevars.sort();
-                    match id {
-                        Ok(id) => {
-                            if matches!(freevars[..], ["x"] | ["y"] | ["x", "y"]) {
-                                ExpressionResult::Plot {
-                                    allowed_kinds: PlotKinds::IMPLICIT,
-                                    value: id,
-                                    parameters: vec![
-                                        resolver.resolve_variable("x").unwrap(),
-                                        resolver.resolve_variable("y").unwrap(),
-                                    ],
-                                    domain: None,
-                                }
-                            } else if freevars.is_empty() {
-                                ExpressionResult::None
-                            } else {
-                                ExpressionResult::Err(NameError::undefined(freevars))
-                            }
-                        }
-                        Err(e) => ExpressionResult::Err(e),
-                    }
+                    resolve_relation(&mut resolver, operands, operators)
                 }
                 Statement::Expression(value) => {
                     let (value, deps) = resolver.resolve_expression_with_dependencies(value, None);

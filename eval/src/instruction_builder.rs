@@ -222,6 +222,7 @@ impl InstructionBuilder {
             Equal | LessThan | LessThanEqual | GreaterThan | GreaterThanEqual => {
                 (Type::Number, Type::Number, Type::Bool)
             }
+            And => (Type::Bool, Type::Bool, Type::Bool),
             Add2 | Sub2 | Midpoint2 => (Type::Point2, Type::Point2, Type::Point2),
             Add3 | Sub3 | Midpoint3 | Cross => (Type::Point3, Type::Point3, Type::Point3),
             Mul1_2 => (Type::Number, Type::Point2, Type::Point2),

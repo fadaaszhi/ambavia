@@ -108,18 +108,11 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
             operands,
             operators,
         } => {
-            if operands.len() > 2 {
-                todo!();
-            }
+            // TODO make this short circuit
             let mut a = compile_expression(&operands[0], builder);
-            let mut jifs = vec![];
-            let mut old_c = None;
+            let mut result = None;
 
             for (b, op) in zip(&operands[1..], operators) {
-                if let Some(c) = old_c {
-                    builder.pop(c);
-                }
-
                 let mut b = compile_expression(b, builder);
                 builder.swap(&mut b, &mut a);
                 let b_copy = builder.copy(&b);
@@ -134,22 +127,17 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
                     a,
                     b_copy,
                 );
-                let c_copy = builder.copy(&c);
-                jifs.push(builder.jump_if_false(c_copy));
-                old_c = Some(c);
+                result = Some(match result {
+                    Some(prev) => builder.instr2(And, prev, c),
+                    None => c,
+                });
                 a = b;
             }
 
-            let end = builder.label();
-
-            for jif in jifs {
-                builder.set_jump_label(jif, &end);
-            }
-
-            let mut c = old_c.unwrap();
-            builder.swap(&mut c, &mut a);
+            let mut result = result.unwrap();
+            builder.swap(&mut result, &mut a);
             builder.pop(a);
-            c
+            result
         }
         Expression::Piecewise {
             test,

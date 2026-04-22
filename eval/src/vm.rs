@@ -161,6 +161,7 @@ pub enum Instruction {
     Concat3,
     ConcatPolygon,
 
+    And,
     MinInternal,
     Index,
     Index2,
@@ -1352,6 +1353,11 @@ impl<'a, 'i> Vm<'a, 'i> {
                     self.push(Rc::new(a));
                 }
 
+                Instruction::And => {
+                    let b = self.pop().number();
+                    let a = self.pop().number();
+                    self.push(a * b);
+                }
                 Instruction::MinInternal => {
                     let b = self.pop().number();
                     let a = self.pop().number();

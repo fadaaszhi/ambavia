@@ -690,7 +690,11 @@ impl<'a, 'i> Vm<'a, 'i> {
                 Instruction::Hypot2 => {
                     let y = self.pop().number();
                     let x = self.pop().number();
-                    self.push(x.hypot(y));
+                    self.push(if !x.is_nan() && !y.is_nan() {
+                        x.hypot(y)
+                    } else {
+                        f64::NAN
+                    });
                 }
                 Instruction::Hypot3 => {
                     let z = self.pop().number();

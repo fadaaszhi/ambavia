@@ -60,11 +60,31 @@ fn sd_rounded_box(p: vec2f, b: vec2f, r: vec4f) -> f32 {
     return min(max(q.x, q.y), 0.0) + length(max(q, vec2(0.0))) - r.x;
 }
 
+// Calculate the Jacobian matrix for bilinear texture sampling
+fn jacobian(texture: texture_2d<f32>, uv: vec2f) -> mat2x3f {
+    let dimensions = vec2i(textureDimensions(texture, 0));
+    let p = uv * vec2f(dimensions);
+    let q = floor(p - 0.5);
+    let w = p - q - 0.5;
+    let r = vec2i(q);
+    let a = clamp(r, vec2(0), dimensions - 1);
+    let b = clamp(r + 1, vec2(0), dimensions - 1);
+    let f00 = textureLoad(texture, vec2(a.x, a.y), 0).rgb;
+    let f10 = textureLoad(texture, vec2(b.x, a.y), 0).rgb;
+    let f01 = textureLoad(texture, vec2(a.x, b.y), 0).rgb;
+    let f11 = textureLoad(texture, vec2(b.x, b.y), 0).rgb;
+    let dfdu = mix(f10 - f00, f11 - f01, w.y) * f32(dimensions.x);
+    let dfdv = mix(f01 - f00, f11 - f10, w.x) * f32(dimensions.y);
+    return mat2x3(dfdu, dfdv);
+}
+
+fn sqr(x: vec3f) -> vec3f {
+    return x * x;
+}
+
+@diagnostic(off, derivative_uniformity)
 @fragment
 fn fs_latex(in: VertexOutput) -> @location(0) vec4f {
-    // Derivatives must only be called from uniform control flow so we do this here
-    // before the switch statement
-    let fwidth_uv = fwidth(in.uv);
     let size = 1.0 / vec2(dpdx(in.uv.x), dpdy(in.uv.y));
 
     switch in.kind {
@@ -120,13 +140,22 @@ fn fs_latex(in: VertexOutput) -> @location(0) vec4f {
             return color * vec4(1.0, 1.0, 1.0, saturate(0.5 - sd));
         }
         default {
-            // https://github.com/Chlumsky/msdfgen
-            let unit_range = 4.0 / vec2f(textureDimensions(msdf, 0));
-            let screen_tex_size = 1.0 / fwidth_uv;
-            let screen_px_range = max(0.5 * dot(unit_range, screen_tex_size), 1.0);
+            // Based off the example snippet from https://github.com/Chlumsky/msdfgen
+            // but adjusted to handle non-uniform scaling
+            let px_range = 4.0; // set during MSDF atlas creation
+            let unit_range = px_range / vec2f(textureDimensions(msdf, 0));
             let msd = textureSampleLevel(msdf, bilinear, in.uv, 0.0).rgb;
-            let sd = median(msd.r, msd.g, msd.b);
-            let screen_px_distance = screen_px_range * (sd - 0.5);
+            let dmsduv = jacobian(msdf, in.uv);
+            let duvdx = dpdx(in.uv);
+            let duvdy = dpdy(in.uv);
+            let screen_px_range = max(vec3(1.0), select(
+                sqrt((sqr(dmsduv[0] * unit_range.x) + sqr(dmsduv[1] * unit_range.y)) /
+                     (sqr(dmsduv * duvdx) + sqr(dmsduv * duvdy))),
+                vec3(sqrt(2.0) / length(vec4(duvdx, duvdy))),
+                (dmsduv[0] == vec3(0.0)) & (dmsduv[1] == vec3(0.0))
+            ));
+            var msd_screen = screen_px_range * (msd - 0.5);
+            let screen_px_distance = median(msd_screen.r, msd_screen.g, msd_screen.b);
             var opacity = saturate(screen_px_distance + 0.5);
             if in.kind == TRANSLUCENT_MSDF_GLYPH {
                 opacity *= 0.2;

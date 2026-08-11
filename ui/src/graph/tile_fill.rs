@@ -330,24 +330,12 @@ pub fn tile_fill(
     drop(tile_fill_timer);
     // println!("{}", timer.string());
 }
+
 pub struct SplitSegment {
     left: Option<(DVec2, DVec2)>,
     right: Option<(DVec2, DVec2)>,
 }
-impl SplitSegment {
-    fn new(e1: Option<(DVec2, DVec2)>, e2: Option<(DVec2, DVec2)>, e1_left: bool) -> Self {
-        match e1_left {
-            true => Self {
-                left: e1,
-                right: e2,
-            },
-            false => Self {
-                left: e2,
-                right: e1,
-            },
-        }
-    }
-}
+
 /// Split a line segment at the given x-value and return the parts to the left
 /// and right of it, or `None` if the segment doesn't pass through that side.
 /// Preserves the orientation of the segment.
@@ -356,13 +344,23 @@ fn split_segment_at_x(a: DVec2, b: DVec2, x: f64) -> SplitSegment {
     let (e1, e2);
     if 0.0 < t && t < 1.0 {
         let m = dvec2(x, mix(a.y, b.y, t));
-        e1 = Some((a, m));
+        e1 = (a, m);
         e2 = Some((m, b));
     } else {
-        e1 = Some((a, b));
+        e1 = (a, b);
         e2 = None;
     }
-    SplitSegment::new(e1, e2, a.x < x)
+    if e1.0.x < x || e1.1.x < x {
+        SplitSegment {
+            left: Some(e1),
+            right: e2,
+        }
+    } else {
+        SplitSegment {
+            left: e2,
+            right: Some(e1),
+        }
+    }
 }
 
 /// Clip the line segment from `a` to `b` against the AABB from `min` to `max`

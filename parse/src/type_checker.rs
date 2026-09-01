@@ -9,7 +9,7 @@ use derive_more::{From, Into};
 
 pub use crate::name_resolver::{ComparisonOperator, SumProdKind};
 use crate::{
-    name_resolver::{self as nr, Id},
+    name_resolver::{self as nr, Id, Slider},
     op::{Op, OpError, SigSatisfies},
 };
 
@@ -133,6 +133,10 @@ fn te(ty: Type, e: Expression) -> TypedExpression {
 pub enum Expression {
     Number(f64),
     Identifier(Id),
+    Slider {
+        value: Box<TypedExpression>,
+        slider: Slider<Box<TypedExpression>>,
+    },
     List(Vec<TypedExpression>),
     ListRange {
         before_ellipsis: Vec<TypedExpression>,
@@ -222,6 +226,12 @@ impl TypedExpression {
         match &self.e {
             Expression::Number(_) => {}
             Expression::Identifier(id) => f(*id)?,
+            Expression::Slider { value, slider } => {
+                value.walk_ids(f)?;
+                for field in slider.fields() {
+                    field.walk_ids(f)?;
+                }
+            }
             Expression::List(list) => w(list, f)?,
             Expression::ListRange {
                 before_ellipsis,
@@ -328,6 +338,36 @@ impl TypeChecker {
             nr::Expression::Number(x) => Ok(te(Type::Number, Expression::Number(*x))),
             nr::Expression::Identifier(id) => {
                 Ok(te(self.get_type(*id)?, Expression::Identifier(*id)))
+            }
+            nr::Expression::Slider { value, slider } => {
+                let value = self
+                    .check_expression(value)
+                    .expect("value latex should have been a number literal");
+                assert_eq!(value.ty, Type::Number);
+                let mut f = |name, field: &Option<Box<_>>| {
+                    if let Some(field) = field.as_ref() {
+                        let field = self.check_expression(field)?;
+                        if field.ty == Type::Number {
+                            Ok(Some(Box::new(field)))
+                        } else {
+                            Err(TypeError::SliderFieldNotANumber(name, field.ty))
+                        }
+                    } else {
+                        Ok(None)
+                    }
+                };
+                let slider = Slider {
+                    min: f("min", &slider.min)?,
+                    max: f("max", &slider.max)?,
+                    step: f("step", &slider.step)?,
+                };
+                Ok(te(
+                    Type::Number,
+                    Expression::Slider {
+                        value: Box::new(value),
+                        slider,
+                    },
+                ))
             }
             nr::Expression::List(list) => {
                 let list = self.check_expressions(list)?;
@@ -834,6 +874,12 @@ fn find_max_id_in_expression(expression: &nr::Expression, max: &mut Option<usize
     match expression {
         nr::Expression::Number(_) => {}
         nr::Expression::Identifier(id) => update_max_id(*id, max),
+        nr::Expression::Slider { value, slider } => {
+            find_max_id_in_expression(value, max);
+            for field in slider.fields() {
+                find_max_id_in_expression(field, max);
+            }
+        }
         nr::Expression::List(list) => find_max_id_in_expressions(list, max),
         nr::Expression::ListRange {
             before_ellipsis,
@@ -895,6 +941,7 @@ pub enum TypeError {
     NonArithmeticRange,
     PiecewiseBranchMismatch(Type, Type),
     OpError(OpError),
+    SliderFieldNotANumber(&'static str, Type),
 }
 
 impl From<OpError> for TypeError {
@@ -922,6 +969,9 @@ impl Display for TypeError {
                 "cannot use {a} and {b} as the branches in a piecewise, every branch must have the same type"
             ),
             TypeError::OpError(e) => std::fmt::Display::fmt(e, f),
+            TypeError::SliderFieldNotANumber(field, ty) => {
+                write!(f, "slider {field} must be {}, not {ty}", Type::Number)
+            }
         }
     }
 }

@@ -11,7 +11,7 @@ use typed_index_collections::{TiSlice, TiVec};
 use crate::{
     name_resolver::{
         Domain, ExpressionIndex, ExpressionListEntry, ExpressionResult as NrEr, Id, NameError,
-        Output, PlotKinds, resolve_names,
+        Output, PlotKinds, Slider, resolve_names,
     },
     type_checker::{Assignment, Type, TypeError, type_check, walk_assignment_ids},
 };
@@ -35,7 +35,7 @@ pub enum PlotKind<T> {
 pub enum AnalysisError {
     NameError(NameError),
     TypeError(TypeError),
-    DomainBoundNotANumber(Type),
+    DomainBoundNotANumber(&'static str, Type),
     TodoListPlot,
 }
 
@@ -44,8 +44,8 @@ impl Display for AnalysisError {
         match self {
             AnalysisError::NameError(e) => e.fmt(f),
             AnalysisError::TypeError(e) => e.fmt(f),
-            AnalysisError::DomainBoundNotANumber(ty) => {
-                write!(f, "domain bound should be {}, not {ty}", Type::Number)
+            AnalysisError::DomainBoundNotANumber(bound, ty) => {
+                write!(f, "domain {bound} must be {}, not {ty}", Type::Number)
             }
             AnalysisError::TodoListPlot => write!(f, "todo: plotting lists is not implemented yet"),
         }
@@ -57,6 +57,12 @@ pub enum ExpressionResult {
     None,
     Err(AnalysisError),
     Value(Id, Type),
+    Slider {
+        /// `value` is `None` when there's an error in the slider fields.
+        /// When it's `Some`, its type is `Type::Number`
+        value: Option<Id>,
+        slider: Slider<Result<Id, AnalysisError>>,
+    },
     Plot {
         kind: PlotKind<Result<Id, AnalysisError>>,
         value: Id,
@@ -66,6 +72,7 @@ pub enum ExpressionResult {
     },
 }
 
+#[derive(Debug)]
 pub struct AnalysisResult {
     pub results: TiVec<ExpressionIndex, ExpressionResult>,
     pub assignments: TiVec<AssignmentIndex, Assignment>,
@@ -133,6 +140,38 @@ pub fn analyze_expression_list<'a>(
                 Ok(ty) => ExpressionResult::Value(id, ty),
                 Err(e) => ExpressionResult::Err(AnalysisError::TypeError(e)),
             },
+            NrEr::Slider { value, slider } => {
+                if let Some(id) = value {
+                    assert_eq!(
+                        types[&id],
+                        Ok(Type::Number),
+                        "a slider should have only been created if its latex was a number literal"
+                    );
+                }
+                let f = |name, field: Result<Id, NameError>| match field {
+                    Ok(id) => match types[&id].clone() {
+                        Ok(ty) => {
+                            if ty != Type::Number {
+                                Err(AnalysisError::TypeError(TypeError::SliderFieldNotANumber(
+                                    name, ty,
+                                )))
+                            } else {
+                                Ok(id)
+                            }
+                        }
+                        Err(e) => Err(AnalysisError::TypeError(e)),
+                    },
+                    Err(e) => Err(AnalysisError::NameError(e)),
+                };
+                ExpressionResult::Slider {
+                    value,
+                    slider: Slider {
+                        min: slider.min.map(|x| f("min", x)),
+                        max: slider.max.map(|x| f("max", x)),
+                        step: slider.step.map(|x| f("step", x)),
+                    },
+                }
+            }
             NrEr::Plot {
                 allowed_kinds,
                 value,
@@ -184,17 +223,17 @@ pub fn analyze_expression_list<'a>(
                                 return ExpressionResult::Value(value, ty);
                             }
                             let d = domain.unwrap();
-                            let f = |m: Result<Id, NameError>| match m {
+                            let f = |name, m: Result<Id, NameError>| match m {
                                 Ok(id) => match types[&id].clone() {
                                     Ok(Type::Number) => Ok(id),
-                                    Ok(ty) => Err(AnalysisError::DomainBoundNotANumber(ty)),
+                                    Ok(ty) => Err(AnalysisError::DomainBoundNotANumber(name, ty)),
                                     Err(e) => Err(AnalysisError::TypeError(e)),
                                 },
                                 Err(e) => Err(AnalysisError::NameError(e)),
                             };
                             PlotKind::Parametric(Domain {
-                                min: f(d.min),
-                                max: f(d.max),
+                                min: f("min", d.min),
+                                max: f("max", d.max),
                             })
                         } else {
                             // f(t) = (t,t)

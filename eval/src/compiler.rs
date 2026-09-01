@@ -33,6 +33,20 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
     match expression {
         Expression::Number(x) => builder.load_const(*x),
         Expression::Identifier(name) => builder.load(*name),
+        Expression::Slider { value, slider } => {
+            let value = compile_expression(value, builder);
+            let mut f = |field: &Option<Box<_>>| {
+                if let Some(field) = field {
+                    compile_expression(field, builder)
+                } else {
+                    builder.load_const(f64::NAN)
+                }
+            };
+            let min = f(&slider.min);
+            let max = f(&slider.max);
+            let step = f(&slider.step);
+            builder.instr4(Slider, value, min, max, step)
+        }
         Expression::List(list) => {
             let list = list
                 .iter()

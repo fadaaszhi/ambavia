@@ -21,6 +21,10 @@ use crate::{
 pub enum Expression {
     Number(f64),
     Identifier(Id),
+    Slider {
+        value: Box<Expression>,
+        slider: Slider<Box<Expression>>,
+    },
     List(Vec<Expression>),
     ListRange {
         before_ellipsis: Vec<Expression>,
@@ -220,7 +224,14 @@ enum ScopeKind {
 struct Scope<'a> {
     kind: ScopeKind,
     substitutions: HashMap<&'a str, SubstitutionInfo>,
-    computed: HashMap<&'a str, (Result<Id, NameError>, Dependencies<'a>)>,
+    computed: HashMap<
+        &'a str,
+        (
+            Result<Id, NameError>,
+            Option<Slider<(Result<Id, NameError>, Dependencies<'a>)>>,
+            Dependencies<'a>,
+        ),
+    >,
 }
 
 #[derive(Debug, Default)]
@@ -256,7 +267,8 @@ struct Resolver<'a> {
     use_v1_9_scoping_rules: bool,
     scopes: Vec<Scope<'a>>,
     line_count: usize,
-    definitions: HashMap<&'a str, Result<&'a Statement, NameError>>,
+    definitions:
+        HashMap<&'a str, Result<(&'a Statement, Option<Slider<&'a ast::Expression>>), NameError>>,
     dependencies_being_tracked: Option<Dependencies<'a>>,
     assignments: TiVec<Level, Vec<Assignment>>,
     freevars: HashMap<&'a str, Id>,
@@ -269,13 +281,13 @@ pub struct ExpressionIndex(usize);
 
 impl<'a> Resolver<'a> {
     fn new(
-        list: impl Iterator<Item = &'a Statement>,
+        list: impl Iterator<Item = (&'a Statement, Option<Slider<&'a ast::Expression>>)>,
         undefinable_names: &HashSet<&str>,
         use_v1_9_scoping_rules: bool,
     ) -> Self {
         let mut definitions = HashMap::new();
 
-        for statement in list {
+        for (statement, slider) in list {
             match statement {
                 Statement::Assignment { name, .. }
                 | Statement::FunctionDeclaration { name, .. }
@@ -284,7 +296,7 @@ impl<'a> Resolver<'a> {
                     if let Some(result) = definitions.get_mut(name.as_str()) {
                         *result = Err(NameError::MultipleDefinitions(name.into()));
                     } else {
-                        definitions.insert(name.as_str(), Ok(statement));
+                        definitions.insert(name.as_str(), Ok((statement, slider)));
                     }
                 }
                 _ => continue,
@@ -437,6 +449,67 @@ impl<'a> Resolver<'a> {
         None
     }
 
+    /// Resolves a variable with an optional slider definition.
+    fn resolve_value_slider(
+        &mut self,
+        name: &'a str,
+        value: &'a ast::Expression,
+        slider: Option<Slider<&'a ast::Expression>>,
+    ) -> (
+        Result<Id, NameError>,
+        Option<Slider<(Result<Id, NameError>, Dependencies<'a>)>>,
+        Dependencies<'a>,
+    ) {
+        let ((value, slider), deps) = self.resolve_with_dependencies(
+            |this| {
+                let value = this.resolve_expression(value);
+                let slider =
+                    slider.map(|s| s.map(|e| this.resolve_expression_with_dependencies(e, None)));
+                (value, slider)
+            },
+            None,
+        );
+        let level = deps.level();
+
+        let Some(slider) = slider else {
+            let id = value.map(|value| self.push_assignment(name, level, value));
+            return (id, None, deps);
+        };
+
+        let mut slider_error = None;
+        let mut f = |name, x: Option<(Result<_, NameError>, _)>| {
+            x.map(|x| {
+                (
+                    x.0.map(|x| self.push_assignment(name, level, x))
+                        .inspect_err(|e| slider_error = Some(e.clone())),
+                    x.1,
+                )
+            })
+        };
+        let slider_id = Slider {
+            min: f("<slider min>", slider.min),
+            max: f("<slider max>", slider.max),
+            step: f("<slider step>", slider.step),
+        };
+
+        let value_id = match slider_error {
+            Some(e) => Err(e),
+            None => {
+                let value =
+                    value.expect("slider latex should have just been number literal so no error");
+                let value = Expression::Slider {
+                    value: Box::new(value),
+                    slider: slider_id
+                        .clone()
+                        .map(|id| Box::new(Expression::Identifier(id.0.expect("slider_error")))),
+                };
+                Ok(self.push_assignment(name, level, value))
+            }
+        };
+
+        (value_id, Some(slider_id), deps)
+    }
+
     /// Computes a variable or finds an existing assignment ID if it's already been resolved before.
     fn resolve_variable(&mut self, name: &'a str) -> Result<Id, NameError> {
         if let Some(i) = self.find_substitution(name, true) {
@@ -449,7 +522,7 @@ impl<'a> Resolver<'a> {
 
         // Check scopes to see if it's already available without having to compute it again
         for scope in self.scopes.iter().rev() {
-            if let Some((id, deps)) = scope.computed.get(name) {
+            if let Some((id, _, deps)) = scope.computed.get(name) {
                 // now check if deps are up to date so we can use this id
                 let mut up_to_date = true;
                 for (dep_name, &recorded) in deps.iter() {
@@ -477,10 +550,10 @@ impl<'a> Resolver<'a> {
         }
 
         // It hasn't been computed before so we'll have to compute it again
-        let (id, deps) = if let Some(statement) = self.definitions.get(name) {
-            let expr = match statement.as_ref().map_err(Clone::clone)? {
-                Statement::Assignment { value, .. } => value,
-                Statement::FunctionDeclaration { .. } => {
+        let (id, slider, deps) = if let Some(statement) = self.definitions.get(name) {
+            let (expr, slider) = match statement.as_ref().map_err(Clone::clone)? {
+                (Statement::Assignment { value, .. }, slider) => (value, slider.clone()),
+                (Statement::FunctionDeclaration { .. }, None) => {
                     return Err(NameError::FunctionAsVariable(name.into()));
                 }
                 _ => unreachable!(),
@@ -488,19 +561,22 @@ impl<'a> Resolver<'a> {
 
             self.cycle_detector.push(name)?;
             self.line_count += 1;
-            let (value, deps) = self.resolve_expression_with_dependencies(expr, None);
+            let result = self.resolve_value_slider(name, expr, slider);
             self.line_count -= 1;
             self.cycle_detector.pop();
-            let level = deps.level();
-            let id = value.map(|value| self.push_assignment(name, level, value));
-            (id, deps)
+
+            result
         } else {
-            (Ok(self.create_new_freevar(name)), Dependencies::default())
+            (
+                Ok(self.create_new_freevar(name)),
+                None,
+                Dependencies::default(),
+            )
         };
 
         let _existing = self.scopes[deps.scope_index()]
             .computed
-            .insert(name, (id.clone(), deps));
+            .insert(name, (id.clone(), slider, deps));
         // TODO this assert doesn't work because of our hacky cycle detector requiring two counts
         // assert_eq!(
         //     existing, None,
@@ -579,9 +655,12 @@ impl<'a> Resolver<'a> {
         }
 
         let (parameters, body) = match self.definitions.get(callee) {
-            Some(Ok(Statement::FunctionDeclaration {
-                parameters, body, ..
-            })) => (parameters, body),
+            Some(Ok((
+                Statement::FunctionDeclaration {
+                    parameters, body, ..
+                },
+                _,
+            ))) => (parameters, body),
             Some(Ok(_)) => return Err(NameError::VariableAsFunction(callee.into())),
             Some(Err(e)) => return Err(e.clone()),
             None => return Err(NameError::undefined([callee])),
@@ -624,7 +703,7 @@ impl<'a> Resolver<'a> {
                 if OpName::from_str(callee).is_some()
                     || matches!(
                         self.definitions.get(callee.as_str()),
-                        Some(Ok(Statement::FunctionDeclaration { .. }))
+                        Some(Ok((Statement::FunctionDeclaration { .. }, _)))
                     )
                 {
                     self.resolve_call(callee, args)
@@ -892,10 +971,50 @@ impl Domain<&'static ast::Expression> {
     };
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct Slider<T> {
+    pub min: Option<T>,
+    pub max: Option<T>,
+    pub step: Option<T>,
+}
+
+impl<T> Slider<T> {
+    pub const NONE: Self = Slider {
+        min: None,
+        max: None,
+        step: None,
+    };
+
+    pub fn is_some(&self) -> bool {
+        self.min.is_some() || self.max.is_some() || self.step.is_some()
+    }
+
+    pub fn map<U>(self, mut f: impl FnMut(T) -> U) -> Slider<U> {
+        Slider {
+            min: self.min.map(&mut f),
+            max: self.max.map(&mut f),
+            step: self.step.map(&mut f),
+        }
+    }
+
+    pub fn fields(&self) -> impl Iterator<Item = &T> {
+        [&self.min, &self.max, &self.step].into_iter().flatten()
+    }
+
+    pub fn fields_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        [&mut self.min, &mut self.max, &mut self.step]
+            .into_iter()
+            .flatten()
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub struct ExpressionListEntry<'a> {
     pub expression: &'a Statement,
     pub parametric_domain: Domain<&'a ast::Expression>,
+    // TODO design better types so that `slider` can only be
+    // provided when `expression` is `Statement::Assignment`
+    pub slider: Slider<&'a ast::Expression>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -903,6 +1022,11 @@ pub enum ExpressionResult {
     None,
     Err(NameError),
     Value(Id),
+    Slider {
+        /// `value` is `None` when there's an error in the slider fields
+        value: Option<Id>,
+        slider: Slider<Result<Id, NameError>>,
+    },
     Plot {
         allowed_kinds: PlotKinds,
         value: Id,
@@ -990,7 +1114,10 @@ pub fn resolve_names<'a>(
     let mut undefinable_names = HashSet::new();
     undefinable_names.extend(builtin_constants.iter().cloned().chain(["x", "y"]));
     let mut resolver = Resolver::new(
-        list.iter().map(|e| e.borrow().expression),
+        list.iter().map(|e| {
+            let e = e.borrow();
+            (e.expression, e.slider.is_some().then_some(e.slider.clone()))
+        }),
         &undefinable_names,
         use_v1_9_scoping_rules,
     );
@@ -1002,7 +1129,7 @@ pub fn resolve_names<'a>(
             let deps = Dependencies::default();
             let existing = resolver.scopes[deps.scope_index()]
                 .computed
-                .insert(name, (Ok(id), deps));
+                .insert(name, (Ok(id), None, deps));
             assert_eq!(existing, None);
             (name.to_string(), id)
         })
@@ -1023,27 +1150,31 @@ pub fn resolve_names<'a>(
 
             let mut result = match e.expression {
                 Statement::Assignment { name, value } => {
-                    let (id, deps) = if !undefinable_names.contains(name.as_str())
-                        && let Some((id, deps)) = resolver.scopes[0].computed.get(name.as_str())
+                    let (id, slider_id, deps) = if !undefinable_names.contains(name.as_str())
+                        && let Some((id, slider_id, deps)) =
+                            resolver.scopes[0].computed.get(name.as_str())
                     {
-                        (id.clone(), deps.clone())
+                        (id.clone(), slider_id.clone(), deps.clone())
                     } else {
                         resolver
                             .cycle_detector
                             .push(name)
                             .expect("can't have a cycle before you even begin");
-                        let (value, deps) =
-                            resolver.resolve_expression_with_dependencies(value, None);
+                        let (id, slider_id, deps) = resolver.resolve_value_slider(
+                            name,
+                            value,
+                            e.slider.is_some().then_some(e.slider.clone()),
+                        );
                         resolver.cycle_detector.pop();
-                        let level = deps.level();
-                        assert_eq!(level, Level(0));
-                        let id = value.map(|value| resolver.push_assignment(name, level, value));
+                        assert_eq!(deps.level(), Level(0));
+
                         if let Some(Ok(_)) = resolver.definitions.get(name.as_str()) {
                             resolver.scopes[0]
                                 .computed
-                                .insert(name, (id.clone(), deps.clone()));
+                                .insert(name, (id.clone(), slider_id.clone(), deps.clone()));
                         }
-                        (id, deps)
+
+                        (id, slider_id, deps)
                     };
                     let mut freevars = deps
                         .keys()
@@ -1051,8 +1182,8 @@ pub fn resolve_names<'a>(
                         .filter(|name| resolver.freevars.contains_key(name))
                         .collect::<Vec<_>>();
                     freevars.sort();
-                    match id {
-                        Ok(id) => {
+                    match (id, slider_id) {
+                        (Ok(id), None) => {
                             if name == "x" && freevars.len() <= 1 && freevars != ["x"]
                                 || name != "y" && freevars == ["y"]
                             {
@@ -1115,7 +1246,31 @@ pub fn resolve_names<'a>(
                                 ExpressionResult::Err(NameError::undefined(freevars))
                             }
                         }
-                        Err(e) => ExpressionResult::Err(e),
+                        (Err(e), None) => ExpressionResult::Err(e),
+                        (id, Some(slider)) => {
+                            // Check if slider depends on any freevars. If so then error,
+                            // because sliders shouldn't depend on undefined variables
+                            let mut had_error = false;
+                            let slider = slider.map(|(id, deps)| {
+                                id.and_then(|id| {
+                                    let mut freevars = deps
+                                        .keys()
+                                        .cloned()
+                                        .filter(|name| resolver.freevars.contains_key(name))
+                                        .peekable();
+                                    if freevars.peek().is_none() {
+                                        Ok(id)
+                                    } else {
+                                        had_error = true;
+                                        Err(NameError::undefined(freevars))
+                                    }
+                                })
+                            });
+                            ExpressionResult::Slider {
+                                value: if had_error { None } else { id.ok() },
+                                slider,
+                            }
+                        }
                     }
                 }
                 Statement::FunctionDeclaration {
@@ -1350,6 +1505,12 @@ mod tests {
             match self {
                 Expression::Number(_) => {}
                 Expression::Identifier(id) => f(id),
+                Expression::Slider { value, slider } => {
+                    value.canonicalize_ids(f);
+                    for field in slider.fields_mut() {
+                        field.canonicalize_ids(f);
+                    }
+                }
                 Expression::List(list) => canonicalize_list(list, f),
                 Expression::ListRange {
                     before_ellipsis,
@@ -1404,6 +1565,16 @@ mod tests {
                 ExpressionResult::None => {}
                 ExpressionResult::Err(_) => {}
                 ExpressionResult::Value(id) => f(id),
+                ExpressionResult::Slider { value, slider } => {
+                    if let Some(id) = value {
+                        f(id);
+                    }
+                    for field in slider.fields_mut() {
+                        if let Ok(id) = field {
+                            f(id);
+                        }
+                    }
+                }
                 ExpressionResult::Plot {
                     allowed_kinds: _,
                     value,
@@ -1503,6 +1674,11 @@ mod tests {
                     min: &ANum(0.0),
                     max: &ANum(1.0),
                 },
+                slider: Slider {
+                    min: None,
+                    max: None,
+                    step: None,
+                },
             })
             .collect::<TiVec<_, _>>();
         let o = resolve_names(list.as_ref(), &[], false);
@@ -1520,6 +1696,11 @@ mod tests {
                 parametric_domain: Domain {
                     min: &ANum(0.0),
                     max: &ANum(1.0),
+                },
+                slider: Slider {
+                    min: None,
+                    max: None,
+                    step: None,
                 },
             })
             .collect::<TiVec<_, _>>();
@@ -1540,6 +1721,11 @@ mod tests {
                 parametric_domain: Domain {
                     min: &ANum(0.0),
                     max: &ANum(1.0),
+                },
+                slider: Slider {
+                    min: None,
+                    max: None,
+                    step: None,
                 },
             })
             .collect::<TiVec<_, _>>();
@@ -4477,6 +4663,7 @@ mod tests {
                             args: vec![id("a"), id("b")],
                         },
                     },
+                    slider: Slider::NONE,
                 },
                 // a = 5
                 ExpressionListEntry {
@@ -4485,6 +4672,7 @@ mod tests {
                         value: ANum(5.0),
                     },
                     parametric_domain: Domain::ZERO_TO_ONE,
+                    slider: Slider::NONE,
                 },
             ]
             .as_slice()
@@ -4536,6 +4724,328 @@ mod tests {
                     ExpressionResult::Value(ids["a"]),
                 ],
                 HashMap::from([("t".into(), ids["t"]), ("b".into(), ids.new_id("b"))]),
+            ),
+        );
+    }
+
+    #[test]
+    fn slider() {
+        let id = |s: &str| AId(s.into());
+        let mut ids = IdGenerator::default();
+        let a = resolve_names(
+            [
+                // a = 4; min = b, max = none, step: 1
+                ExpressionListEntry {
+                    expression: &Statement::Assignment {
+                        name: "a".into(),
+                        value: ANum(4.0),
+                    },
+                    parametric_domain: Domain::ZERO_TO_ONE,
+                    slider: Slider {
+                        min: Some(&id("b")),
+                        max: None,
+                        step: Some(&ANum(1.0)),
+                    },
+                },
+                // b = 3
+                ExpressionListEntry {
+                    expression: &Statement::Assignment {
+                        name: "b".into(),
+                        value: ANum(3.0),
+                    },
+                    parametric_domain: Domain::ZERO_TO_ONE,
+                    slider: Slider::NONE,
+                },
+                // a with b = 5
+                ExpressionListEntry {
+                    expression: &Statement::Expression(AWith {
+                        body: bx(id("a")),
+                        substitutions: vec![("b".into(), ANum(5.0))],
+                    }),
+                    parametric_domain: Domain::ZERO_TO_ONE,
+                    slider: Slider::NONE,
+                },
+                // c
+                ExpressionListEntry {
+                    expression: &Statement::Expression(id("c")),
+                    parametric_domain: Domain::ZERO_TO_ONE,
+                    slider: Slider::NONE,
+                },
+                // c with d = 6
+                ExpressionListEntry {
+                    expression: &Statement::Expression(AWith {
+                        body: bx(id("c")),
+                        substitutions: vec![("d".into(), ANum(6.0))],
+                    }),
+                    parametric_domain: Domain::ZERO_TO_ONE,
+                    slider: Slider::NONE,
+                },
+                // c = 1; min = none, max = d, step = none
+                ExpressionListEntry {
+                    expression: &Statement::Assignment {
+                        name: "c".into(),
+                        value: ANum(1.0),
+                    },
+                    parametric_domain: Domain::ZERO_TO_ONE,
+                    slider: Slider {
+                        min: None,
+                        max: Some(&id("d")),
+                        step: None,
+                    },
+                },
+                // d = 2; min = none, max = c, step = none
+                ExpressionListEntry {
+                    expression: &Statement::Assignment {
+                        name: "d".into(),
+                        value: ANum(2.0),
+                    },
+                    parametric_domain: Domain::ZERO_TO_ONE,
+                    slider: Slider {
+                        min: None,
+                        max: Some(&id("c")),
+                        step: None,
+                    },
+                },
+                // e = 6; min = none, max = f, step = none
+                ExpressionListEntry {
+                    expression: &Statement::Assignment {
+                        name: "e".into(),
+                        value: ANum(6.0),
+                    },
+                    parametric_domain: Domain::ZERO_TO_ONE,
+                    slider: Slider {
+                        min: None,
+                        max: Some(&id("f")),
+                        step: None,
+                    },
+                },
+                // e with f = 5
+                ExpressionListEntry {
+                    expression: &Statement::Expression(AWith {
+                        body: bx(id("e")),
+                        substitutions: vec![("f".into(), ANum(5.0))],
+                    }),
+                    parametric_domain: Domain::ZERO_TO_ONE,
+                    slider: Slider::NONE,
+                },
+            ]
+            .as_slice()
+            .as_ref(),
+            &[],
+            false,
+        );
+        assert_eq(
+            (a.assignments, a.results.into(), a.freevars),
+            (
+                vec![
+                    // b = 3
+                    Assignment {
+                        id: ids.new_id("b"),
+                        name: "b".into(),
+                        value: Expression::Number(3.0),
+                    },
+                    // a.min = b
+                    Assignment {
+                        id: ids.new_id("a.min"),
+                        name: "<slider min>".into(),
+                        value: Expression::Identifier(ids["b"]),
+                    },
+                    // a.step = 1
+                    Assignment {
+                        id: ids.new_id("a.step"),
+                        name: "<slider step>".into(),
+                        value: Expression::Number(1.0),
+                    },
+                    // a = 4; min = b, max = none, step: 1
+                    Assignment {
+                        id: ids.new_id("a"),
+                        name: "a".into(),
+                        value: Expression::Slider {
+                            value: bx(Expression::Number(4.0)),
+                            slider: Slider {
+                                min: Some(bx(Expression::Identifier(ids["a.min"]))),
+                                max: None,
+                                step: Some(bx(Expression::Identifier(ids["a.step"]))),
+                            },
+                        },
+                    },
+                    // with b = 5
+                    Assignment {
+                        id: ids.new_id("b1"),
+                        name: "b".into(),
+                        value: Expression::Number(5.0),
+                    },
+                    // a.min = b
+                    Assignment {
+                        id: ids.new_id("a.min1"),
+                        name: "<slider min>".into(),
+                        value: Expression::Identifier(ids["b1"]),
+                    },
+                    // a.step = 1
+                    Assignment {
+                        id: ids.new_id("a.step1"),
+                        name: "<slider step>".into(),
+                        value: Expression::Number(1.0),
+                    },
+                    // a = 4; min = b, max = none, step: 1
+                    Assignment {
+                        id: ids.new_id("a1"),
+                        name: "a".into(),
+                        value: Expression::Slider {
+                            value: bx(Expression::Number(4.0)),
+                            slider: Slider {
+                                min: Some(bx(Expression::Identifier(ids["a.min1"]))),
+                                max: None,
+                                step: Some(bx(Expression::Identifier(ids["a.step1"]))),
+                            },
+                        },
+                    },
+                    // a with b = 5
+                    Assignment {
+                        id: ids.new_id("a with b = 5"),
+                        name: "<anonymous>".into(),
+                        value: Expression::Identifier(ids["a1"]),
+                    },
+                    // with d = 6
+                    Assignment {
+                        id: ids.new_id("d"),
+                        name: "d".into(),
+                        value: Expression::Number(6.0),
+                    },
+                    // c.max = d
+                    Assignment {
+                        id: ids.new_id("c.max"),
+                        name: "<slider max>".into(),
+                        value: Expression::Identifier(ids["d"]),
+                    },
+                    // c = 1; min = none, max = d, step = none
+                    Assignment {
+                        id: ids.new_id("c"),
+                        name: "c".into(),
+                        value: Expression::Slider {
+                            value: bx(Expression::Number(1.0)),
+                            slider: Slider {
+                                min: None,
+                                max: Some(bx(Expression::Identifier(ids["c.max"]))),
+                                step: None,
+                            },
+                        },
+                    },
+                    // c with d = 6
+                    Assignment {
+                        id: ids.new_id("c with d = 6"),
+                        name: "<anonymous>".into(),
+                        value: Expression::Identifier(ids["c"]),
+                    },
+                    // e.max = f
+                    Assignment {
+                        id: ids.new_id("e.max"),
+                        name: "<slider max>".into(),
+                        value: Expression::Identifier(ids.new_id("f")),
+                    },
+                    // e = 6; min = none, max = f, step = none
+                    Assignment {
+                        id: ids.new_id("e"),
+                        name: "e".into(),
+                        value: Expression::Slider {
+                            value: bx(Expression::Number(6.0)),
+                            slider: Slider {
+                                min: None,
+                                max: Some(bx(Expression::Identifier(ids["e.max"]))),
+                                step: None,
+                            },
+                        },
+                    },
+                    // with f = 5
+                    Assignment {
+                        id: ids.new_id("f1"),
+                        name: "f".into(),
+                        value: Expression::Number(5.0),
+                    },
+                    // e.max = f
+                    Assignment {
+                        id: ids.new_id("e1.max"),
+                        name: "<slider max>".into(),
+                        value: Expression::Identifier(ids["f1"]),
+                    },
+                    // e = 6; min = none, max = f, step = none
+                    Assignment {
+                        id: ids.new_id("e1"),
+                        name: "e".into(),
+                        value: Expression::Slider {
+                            value: bx(Expression::Number(6.0)),
+                            slider: Slider {
+                                min: None,
+                                max: Some(bx(Expression::Identifier(ids["e1.max"]))),
+                                step: None,
+                            },
+                        },
+                    },
+                    // e with f = 5
+                    Assignment {
+                        id: ids.new_id("e with f = 5"),
+                        name: "<anonymous>".into(),
+                        value: Expression::Identifier(ids["e1"]),
+                    },
+                ],
+                vec![
+                    // a = 4; min = b, max = none, step: 1
+                    ExpressionResult::Slider {
+                        value: Some(ids["a"]),
+                        slider: Slider {
+                            min: Some(Ok(ids["a.min"])),
+                            max: None,
+                            step: Some(Ok(ids["a.step"])),
+                        },
+                    },
+                    // b = 3
+                    ExpressionResult::Value(ids["b"]),
+                    // a with b = 5
+                    ExpressionResult::Value(ids["a with b = 5"]),
+                    // c
+                    ExpressionResult::Err(NameError::CyclicDefinition(vec![
+                        "c".into(),
+                        "d".into(),
+                    ])),
+                    // c with d = 6
+                    ExpressionResult::Value(ids["c with d = 6"]),
+                    // c = 1; min = none, max = d, step = none
+                    ExpressionResult::Slider {
+                        value: None,
+                        slider: Slider {
+                            min: None,
+                            max: Some(Err(NameError::CyclicDefinition(vec![
+                                "c".into(),
+                                "d".into(),
+                            ]))),
+                            step: None,
+                        },
+                    },
+                    // d = 2; min = none, max = c, step = none
+                    ExpressionResult::Slider {
+                        value: None,
+                        slider: Slider {
+                            min: None,
+                            max: Some(Err(NameError::CyclicDefinition(vec![
+                                "c".into(),
+                                "d".into(),
+                            ]))),
+                            step: None,
+                        },
+                    },
+                    // e = 6; min = none, max = f, step = none
+                    ExpressionResult::Slider {
+                        value: None,
+                        slider: Slider {
+                            min: None,
+                            max: Some(Err(NameError::Undefined(vec!["f".into()]))),
+                            step: None,
+                        },
+                    },
+                    // e with f = 5
+                    ExpressionResult::Value(ids["e with f = 5"]),
+                ],
+                HashMap::from([("f".into(), ids["f"])]),
             ),
         );
     }
@@ -4748,4 +5258,6 @@ mod tests {
     }
 
     // TODO add tests for plot types
+
+    // TODO add test for f(f(f(f(f(x)))))
 }

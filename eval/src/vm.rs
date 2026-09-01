@@ -182,6 +182,7 @@ pub enum Instruction {
     CountSpecific2(usize),
     CountSpecific3(usize),
     CountSpecificPolygonList(usize),
+    Slider,
 
     StartArgs,
     EndArgs(usize),
@@ -1512,6 +1513,34 @@ impl<'a, 'i> Vm<'a, 'i> {
                 Instruction::CountSpecificPolygonList(index) => {
                     let a = self.peek(index).polygon_list();
                     self.push(a.borrow().len() as f64);
+                }
+                Instruction::Slider => {
+                    let step = self.pop().number();
+                    let max = self.pop().number();
+                    let min = self.pop().number();
+                    let mut value = self.pop().number();
+                    self.push('clamp: {
+                        if max.is_finite() && value >= max {
+                            if min.is_finite() {
+                                break 'clamp max.max(min);
+                            }
+                            break 'clamp max;
+                        }
+                        if step.is_finite() && step != 0.0 {
+                            if min.is_finite() {
+                                value = f64::round((value - min) / step) * step + min;
+                            } else {
+                                value = f64::round(value / step) * step;
+                            }
+                        }
+                        if max.is_finite() {
+                            value = f64::min(value, max);
+                        }
+                        if min.is_finite() {
+                            value = f64::max(value, min);
+                        }
+                        value
+                    });
                 }
 
                 Instruction::StartArgs => {

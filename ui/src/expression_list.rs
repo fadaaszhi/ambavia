@@ -26,7 +26,7 @@ use parse::{
     ast_parser::{parse_standalone_expression, parse_statement},
     latex_parser::parse_latex,
     latex_tree::{self, Bracket},
-    name_resolver::{Domain, ExpressionIndex, ExpressionListEntry},
+    name_resolver::{Domain, ExpressionIndex, ExpressionListEntry, Slider},
     type_checker::Type,
 };
 
@@ -972,26 +972,7 @@ impl ExpressionList {
             ],
         });
 
-        let expressions = [
-            // "n=10",
-            // "p_{00}=\\left(-1.6,-5.35\\right)",
-            // "p_{10}=\\left(6.05,0.15\\right)",
-            // "p_{01}=\\left(-5.5,2.73\\right)",
-            // "p_{11}=\\left(2.3,4.62\\right)",
-            // "",
-            // "q_{1}=p_{10}-p_{00}",
-            // "q_{2}=p_{11}-p_{01}",
-            // "q_{3}=p_{01}-p_{00}",
-            // "q_{4}=p_{11}-p_{10}",
-            // "W\\left(x,y\\right)=x.xy.y-x.yy.x",
-            // "u=0.52",
-            // "v=0.7",
-            // "\\alpha_{1}=\\frac{W\\left(p_{11}-p_{00},q_{2}\\right)}{W\\left(uq_{1}+q_{4},q_{2}\\right)}q_{1}",
-            // "\\alpha_{2}=\\frac{W\\left(p_{10}-p_{01},q_{1}\\right)}{W\\left(uq_{2}-q_{4},q_{1}\\right)}q_{2}",
-            // "\\alpha=\\alpha_{2}-\\alpha_{1}",
-            // "p=p_{00}+u\\alpha_{1}+v\\frac{W\\left(\\alpha_{1},q_{3}\\right)}{W\\left(\\alpha_{2}-v\\alpha,q_{3}\\right)}\\left(q_{3}+u\\alpha\\right)",
-            // "p\\operatorname{for}u=\\frac{\\left[0...n\\right]}{n},v=\\frac{\\left[0...n\\right]}{n}",
-        ];
+        let expressions = [];
         Self {
             expressions: expressions
                 .iter()
@@ -1298,6 +1279,7 @@ impl ExpressionList {
                                     Err(_) => &ast::Expression::Number(1.0),
                                 },
                             },
+                            slider: Slider::NONE,
                         });
                         ei_to_oi.push(i);
                     }
@@ -1666,6 +1648,7 @@ impl ExpressionList {
                                     }
                                 }
                             }
+                            ExpressionResult::Slider { .. } => todo!(),
                         }
                     }
 

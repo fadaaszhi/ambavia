@@ -285,6 +285,24 @@ impl InstructionBuilder {
         self.create_and_push_value(return_type)
     }
 
+    pub fn instr4(&mut self, instr: Instruction, a: Value, b: Value, c: Value, d: Value) -> Value {
+        let (a_type, b_type, c_type, d_type, return_type) = match instr {
+            Slider => (
+                Type::Number,
+                Type::Number,
+                Type::Number,
+                Type::Number,
+                Type::Number,
+            ),
+            _ => panic!("instruction '{instr:?}' not 4-ary"),
+        };
+        self.assert_pop(d, d_type);
+        self.assert_pop(c, c_type);
+        self.assert_pop(b, b_type);
+        self.assert_pop(a, a_type);
+        self.create_and_push_value(return_type)
+    }
+
     pub fn instr2_in_place(&mut self, instr: Instruction, a: &Value, b: Value) {
         let c = self.instr2(instr, a.clone_private(), b);
         assert_eq!(c.ty, a.ty);

@@ -5,7 +5,7 @@ use parse::{
     analyze_expression_list::{AnalysisError, ExpressionResult, analyze_expression_list},
     ast_parser::parse_statement,
     latex_parser::parse_latex,
-    name_resolver::{Domain, ExpressionListEntry},
+    name_resolver::{Domain, ExpressionListEntry, Slider},
     op::{OpError, OpName},
     type_checker::{Type, TypeError},
 };
@@ -141,6 +141,7 @@ fn assert_expression_eq(source: &str, value: Value) {
         [ExpressionListEntry {
             expression: &statement,
             parametric_domain: Domain::ZERO_TO_ONE,
+            slider: Slider::NONE,
         }]
         .as_slice()
         .as_ref(),
@@ -238,6 +239,7 @@ fn assert_type_error(source: &str, error: TypeError) {
         [ExpressionListEntry {
             expression: &statement,
             parametric_domain: Domain::ZERO_TO_ONE,
+            slider: Slider::NONE,
         }]
         .as_slice()
         .as_ref(),

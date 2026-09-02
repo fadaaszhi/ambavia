@@ -517,6 +517,10 @@ impl Output {
                     size: size3,
                 };
 
+                parametric_domain.min.0.render(ctx, bounds1, draw_quad);
+                name_field.render(ctx, bounds2, draw_quad);
+                parametric_domain.max.0.render(ctx, bounds3, draw_quad);
+
                 let mut f = |b: Bounds, s: DomainState| {
                     draw_quad(
                         ctx.scale_factor * (b.pos + dvec2(0.0, b.size.y - 1.0)),
@@ -544,10 +548,6 @@ impl Output {
                 f(bounds1, *min_state);
                 f(bounds3, *max_state);
 
-                parametric_domain.min.0.render(ctx, bounds1, draw_quad);
-                name_field.render(ctx, bounds2, draw_quad);
-                parametric_domain.max.0.render(ctx, bounds3, draw_quad);
-
                 let bounds = bounds1.union(bounds2).union(bounds3);
                 bounds.size.y
             }
@@ -569,6 +569,7 @@ impl Default for Expression {
             let mut f = MathField::default();
             f.set_placeholder(&[Node::Char(c)]);
             f.scale = 15.7;
+            f.left_padding = 0.22;
             f.bottom_padding = 0.25;
             f.top_padding = 0.25;
             f

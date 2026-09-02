@@ -2282,6 +2282,8 @@ impl MathField {
         bounds: Bounds,
         draw_quad: &mut impl FnMut(DVec2, DVec2, QuadKind),
     ) {
+        self.width = bounds.size.x;
+        self.scroll(0.0);
         let top_left = bounds.pos * ctx.scale_factor;
         let bottom_right = (bounds.pos + bounds.size) * ctx.scale_factor;
         let use_placeholder = self.tree.is_empty() && !self.has_focus();

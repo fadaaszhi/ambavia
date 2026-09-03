@@ -983,8 +983,8 @@ impl Output {
                     };
 
                     draw_quad(
-                        ctx.scale_factor * (dvec2(slider_bar_left, point.y) - bar_radius),
-                        ctx.scale_factor * (dvec2(slider_bar_right, point.y) + bar_radius),
+                        ctx.scale_factor * (dvec2(slider_bar_left, point.y - bar_radius)),
+                        ctx.scale_factor * (dvec2(slider_bar_right, point.y + bar_radius)),
                         QuadKind::SliderBar,
                     );
 

@@ -1309,6 +1309,9 @@ impl Expression {
                 false => &mut self.field,
             };
             let (r, m) = field.update(ctx, event, field_bounds);
+            if !field.has_focus() && use_fake_field {
+                self.field.unfocus();
+            }
             if m == Some(Message::ContentsChanged) {
                 if use_fake_field {
                     self.field = self.slider.fake_field.clone();

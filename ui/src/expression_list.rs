@@ -1370,6 +1370,13 @@ impl Expression {
     fn set_latex(&mut self, latex: &[latex_tree::Node]) {
         self.field = MathField::from(latex);
         self.parse_ast();
+
+        if let Some(Ok(ast::Statement::Assignment { value, .. })) = &self.ast
+            && let Some(value) = get_numeric_literal(value)
+        {
+            self.slider.fake_field_value = value;
+            self.slider.fake_field = self.field.clone();
+        }
     }
 
     fn parse_ast(&mut self) {

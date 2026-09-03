@@ -979,16 +979,6 @@ pub struct Slider<T> {
 }
 
 impl<T> Slider<T> {
-    pub const NONE: Self = Slider {
-        min: None,
-        max: None,
-        step: None,
-    };
-
-    pub fn is_some(&self) -> bool {
-        self.min.is_some() || self.max.is_some() || self.step.is_some()
-    }
-
     pub fn map<U>(self, mut f: impl FnMut(T) -> U) -> Slider<U> {
         Slider {
             min: self.min.map(&mut f),
@@ -1014,7 +1004,7 @@ pub struct ExpressionListEntry<'a> {
     pub parametric_domain: Domain<&'a ast::Expression>,
     // TODO design better types so that `slider` can only be
     // provided when `expression` is `Statement::Assignment`
-    pub slider: Slider<&'a ast::Expression>,
+    pub slider: Option<Slider<&'a ast::Expression>>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -1022,6 +1012,8 @@ pub enum ExpressionResult {
     None,
     Err(NameError),
     Value(Id),
+    // TODO `Slider` probably shouldn't be mutually exclusive to `Plot` because
+    // of cases like x=1 needing to both showing a slider and plot a line
     Slider {
         /// `value` is `None` when there's an error in the slider fields
         value: Option<Id>,
@@ -1116,7 +1108,7 @@ pub fn resolve_names<'a>(
     let mut resolver = Resolver::new(
         list.iter().map(|e| {
             let e = e.borrow();
-            (e.expression, e.slider.is_some().then_some(e.slider.clone()))
+            (e.expression, e.slider.clone())
         }),
         &undefinable_names,
         use_v1_9_scoping_rules,
@@ -1160,11 +1152,8 @@ pub fn resolve_names<'a>(
                             .cycle_detector
                             .push(name)
                             .expect("can't have a cycle before you even begin");
-                        let (id, slider_id, deps) = resolver.resolve_value_slider(
-                            name,
-                            value,
-                            e.slider.is_some().then_some(e.slider.clone()),
-                        );
+                        let (id, slider_id, deps) =
+                            resolver.resolve_value_slider(name, value, e.slider.clone());
                         resolver.cycle_detector.pop();
                         assert_eq!(deps.level(), Level(0));
 
@@ -1674,11 +1663,7 @@ mod tests {
                     min: &ANum(0.0),
                     max: &ANum(1.0),
                 },
-                slider: Slider {
-                    min: None,
-                    max: None,
-                    step: None,
-                },
+                slider: None,
             })
             .collect::<TiVec<_, _>>();
         let o = resolve_names(list.as_ref(), &[], false);
@@ -1697,11 +1682,7 @@ mod tests {
                     min: &ANum(0.0),
                     max: &ANum(1.0),
                 },
-                slider: Slider {
-                    min: None,
-                    max: None,
-                    step: None,
-                },
+                slider: None,
             })
             .collect::<TiVec<_, _>>();
         let o = resolve_names(list.as_ref(), builtin_constants, false);
@@ -1722,11 +1703,7 @@ mod tests {
                     min: &ANum(0.0),
                     max: &ANum(1.0),
                 },
-                slider: Slider {
-                    min: None,
-                    max: None,
-                    step: None,
-                },
+                slider: None,
             })
             .collect::<TiVec<_, _>>();
         let o = resolve_names(list.as_ref(), &[], true);
@@ -4663,7 +4640,7 @@ mod tests {
                             args: vec![id("a"), id("b")],
                         },
                     },
-                    slider: Slider::NONE,
+                    slider: None,
                 },
                 // a = 5
                 ExpressionListEntry {
@@ -4672,7 +4649,7 @@ mod tests {
                         value: ANum(5.0),
                     },
                     parametric_domain: Domain::ZERO_TO_ONE,
-                    slider: Slider::NONE,
+                    slider: None,
                 },
             ]
             .as_slice()
@@ -4741,11 +4718,11 @@ mod tests {
                         value: ANum(4.0),
                     },
                     parametric_domain: Domain::ZERO_TO_ONE,
-                    slider: Slider {
+                    slider: Some(Slider {
                         min: Some(&id("b")),
                         max: None,
                         step: Some(&ANum(1.0)),
-                    },
+                    }),
                 },
                 // b = 3
                 ExpressionListEntry {
@@ -4754,7 +4731,7 @@ mod tests {
                         value: ANum(3.0),
                     },
                     parametric_domain: Domain::ZERO_TO_ONE,
-                    slider: Slider::NONE,
+                    slider: None,
                 },
                 // a with b = 5
                 ExpressionListEntry {
@@ -4763,13 +4740,13 @@ mod tests {
                         substitutions: vec![("b".into(), ANum(5.0))],
                     }),
                     parametric_domain: Domain::ZERO_TO_ONE,
-                    slider: Slider::NONE,
+                    slider: None,
                 },
                 // c
                 ExpressionListEntry {
                     expression: &Statement::Expression(id("c")),
                     parametric_domain: Domain::ZERO_TO_ONE,
-                    slider: Slider::NONE,
+                    slider: None,
                 },
                 // c with d = 6
                 ExpressionListEntry {
@@ -4778,7 +4755,7 @@ mod tests {
                         substitutions: vec![("d".into(), ANum(6.0))],
                     }),
                     parametric_domain: Domain::ZERO_TO_ONE,
-                    slider: Slider::NONE,
+                    slider: None,
                 },
                 // c = 1; min = none, max = d, step = none
                 ExpressionListEntry {
@@ -4787,11 +4764,11 @@ mod tests {
                         value: ANum(1.0),
                     },
                     parametric_domain: Domain::ZERO_TO_ONE,
-                    slider: Slider {
+                    slider: Some(Slider {
                         min: None,
                         max: Some(&id("d")),
                         step: None,
-                    },
+                    }),
                 },
                 // d = 2; min = none, max = c, step = none
                 ExpressionListEntry {
@@ -4800,11 +4777,11 @@ mod tests {
                         value: ANum(2.0),
                     },
                     parametric_domain: Domain::ZERO_TO_ONE,
-                    slider: Slider {
+                    slider: Some(Slider {
                         min: None,
                         max: Some(&id("c")),
                         step: None,
-                    },
+                    }),
                 },
                 // e = 6; min = none, max = f, step = none
                 ExpressionListEntry {
@@ -4813,11 +4790,11 @@ mod tests {
                         value: ANum(6.0),
                     },
                     parametric_domain: Domain::ZERO_TO_ONE,
-                    slider: Slider {
+                    slider: Some(Slider {
                         min: None,
                         max: Some(&id("f")),
                         step: None,
-                    },
+                    }),
                 },
                 // e with f = 5
                 ExpressionListEntry {
@@ -4826,7 +4803,7 @@ mod tests {
                         substitutions: vec![("f".into(), ANum(5.0))],
                     }),
                     parametric_domain: Domain::ZERO_TO_ONE,
-                    slider: Slider::NONE,
+                    slider: None,
                 },
             ]
             .as_slice()

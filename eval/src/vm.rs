@@ -299,6 +299,40 @@ fn hypot3(x: f64, y: f64, z: f64) -> f64 {
     max * ((x / max).powi(2) + (y / max).powi(2) + (z / max).powi(2)).sqrt()
 }
 
+pub fn apply_slider_step(value: f64, step: f64, round: fn(f64) -> f64) -> f64 {
+    let step = step.abs();
+    let result = round(value / step) * step;
+    if result.is_finite() { result } else { value }
+}
+
+pub fn apply_slider(mut value: f64, min: f64, max: f64, step: f64) -> f64 {
+    if max.is_finite() && value >= max {
+        if min.is_finite() {
+            return max.max(min);
+        }
+        return max;
+    }
+
+    if step.is_finite() && step != 0.0 {
+        // TODO rational arithmetic? value=1.9 and step=0.1 gives bad FP error
+        if min.is_finite() {
+            value = apply_slider_step(value - min, step, f64::round) + min;
+        } else {
+            value = apply_slider_step(value, step, f64::round);
+        }
+    }
+
+    if max.is_finite() {
+        value = f64::min(value, max);
+    }
+
+    if min.is_finite() {
+        value = f64::max(value, min);
+    }
+
+    value
+}
+
 #[derive(Debug, Copy, Clone, From, Into, PartialEq, Add)]
 pub struct VarIndex(pub usize);
 pub type Vars = TiVec<VarIndex, Value>;
@@ -1518,29 +1552,8 @@ impl<'a, 'i> Vm<'a, 'i> {
                     let step = self.pop().number();
                     let max = self.pop().number();
                     let min = self.pop().number();
-                    let mut value = self.pop().number();
-                    self.push('clamp: {
-                        if max.is_finite() && value >= max {
-                            if min.is_finite() {
-                                break 'clamp max.max(min);
-                            }
-                            break 'clamp max;
-                        }
-                        if step.is_finite() && step != 0.0 {
-                            if min.is_finite() {
-                                value = f64::round((value - min) / step) * step + min;
-                            } else {
-                                value = f64::round(value / step) * step;
-                            }
-                        }
-                        if max.is_finite() {
-                            value = f64::min(value, max);
-                        }
-                        if min.is_finite() {
-                            value = f64::max(value, min);
-                        }
-                        value
-                    });
+                    let value = self.pop().number();
+                    self.push(apply_slider(value, min, max, step));
                 }
 
                 Instruction::StartArgs => {

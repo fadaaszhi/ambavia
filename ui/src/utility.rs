@@ -51,7 +51,8 @@ impl Mix<DVec2> for DVec2 {
 }
 
 pub fn unmix(t: f64, x: f64, y: f64) -> f64 {
-    (t - x) / (y - x)
+    let z = (t - x) / (y - x);
+    if z.is_finite() { z } else { 0.0 }
 }
 
 pub fn snap(x: f64, w: u32) -> f64 {

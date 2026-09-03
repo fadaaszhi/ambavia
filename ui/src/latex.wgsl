@@ -16,15 +16,20 @@ const GRAY_BOX = 5u;
 const TRANSPARENT_TO_WHITE_GRADIENT = 6u;
 const OUTPUT_VALUE_BOX = 7u;
 const SLIDER_BAR = 8u;
-const SLIDER_POINT_OUTER = 9u;
-const SLIDER_POINT_INNER = 10u;
-const PLACEHOLDER_MSDF_GLYPH = 11u;
-const PLACEHOLDER_BLACK_BOX = 12u;
-const DOMAIN_BOUND_UNFOCUSSED = 13u;
-const DOMAIN_BOUND_FOCUSSED = 14u;
-const DOMAIN_BOUND_ERROR = 15u;
+const SLIDER_STEP_TICK = 9u;
+const SLIDER_ZERO_TICK = 10u;
+const SLIDER_POINT_OUTER = 11u;
+const SLIDER_POINT_INNER = 12u;
+const PLACEHOLDER_MSDF_GLYPH = 13u;
+const PLACEHOLDER_BLACK_BOX = 14u;
+const DOMAIN_BOUND_UNFOCUSSED = 15u;
+const DOMAIN_BOUND_FOCUSSED = 16u;
+const DOMAIN_BOUND_ERROR = 17u;
+const GRAYED_MSDF_GLYPH = 18u;
+const GRAYED_BLACK_BOX = 19u;
 
 const PLACEHOLDER_OPACITY = 0.47;
+const GRAYED_OPACITY = 0.6;
 
 struct Vertex {
     @location(0) position: vec2f,
@@ -97,6 +102,9 @@ fn fs_latex(in: VertexOutput) -> @location(0) vec4f {
         case PLACEHOLDER_BLACK_BOX {
             return vec4(0.0, 0.0, 0.0, PLACEHOLDER_OPACITY);
         }
+        case GRAYED_BLACK_BOX {
+            return vec4(0.0, 0.0, 0.0, GRAYED_OPACITY);
+        }
         case DOMAIN_BOUND_UNFOCUSSED {
             return vec4(0.8, 0.8, 0.8, 1.0);
         }
@@ -128,14 +136,16 @@ fn fs_latex(in: VertexOutput) -> @location(0) vec4f {
             let color = mix(STROKE_COLOR, FILL_COLOR, saturate(0.5 - (sd + stroke_width)));
             return vec4(color, saturate(0.5 - sd));
         }
-        case SLIDER_BAR, SLIDER_POINT_OUTER, SLIDER_POINT_INNER {
+        case SLIDER_BAR, SLIDER_STEP_TICK, SLIDER_ZERO_TICK, SLIDER_POINT_OUTER, SLIDER_POINT_INNER {
             var color: vec4f;
-            if in.kind == SLIDER_BAR {
-                color = vec4(0.898, 0.898, 0.898, 1.0);
-            } else {
-                color = vec4(0.184, 0.447, 0.863, select(1.0, 0.35, in.kind == SLIDER_POINT_OUTER));
+            switch in.kind {
+                case SLIDER_BAR         { color = vec4(0.898, 0.898, 0.898, 1.000); }
+                case SLIDER_STEP_TICK   { color = vec4(1.000, 1.000, 1.000, 1.000); }
+                case SLIDER_ZERO_TICK   { color = vec4(0.000, 0.000, 0.000, 0.353); }
+                case SLIDER_POINT_OUTER { color = vec4(0.184, 0.447, 0.863, 0.350); }
+                case SLIDER_POINT_INNER { color = vec4(0.184, 0.447, 0.863, 1.000); }
+                default {}
             }
-
             let sd = sd_rounded_box(size * (in.uv - 0.5), size / 2.0, vec4(size.y / 2.0));
             return color * vec4(1.0, 1.0, 1.0, saturate(0.5 - sd));
         }
@@ -161,6 +171,8 @@ fn fs_latex(in: VertexOutput) -> @location(0) vec4f {
                 opacity *= 0.2;
             } else if in.kind == PLACEHOLDER_MSDF_GLYPH {
                 opacity *= PLACEHOLDER_OPACITY;
+            } else if in.kind == GRAYED_MSDF_GLYPH {
+                opacity *= GRAYED_OPACITY;
             }
             return vec4(0.0, 0.0, 0.0, opacity);
         }

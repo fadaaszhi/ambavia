@@ -170,7 +170,7 @@ impl From<&str> for BigOp {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct TexturedQuad {
     advance: f64,
     pub position: DVec2,
@@ -188,7 +188,7 @@ impl TexturedQuad {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Bounds {
     pub position: DVec2,
     pub width: f64,
@@ -259,8 +259,9 @@ impl Bounds {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Tree {
+    pub no_italic: bool,
     pub bounds: Bounds,
     pub nodes: Vec<(Bounds, Node)>,
     pub has_gray_background: bool,
@@ -275,7 +276,7 @@ impl From<Vec<(Bounds, Node)>> for Tree {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Line {
     pub x_min: f64,
     pub x_max: f64,
@@ -290,7 +291,7 @@ impl Line {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Node {
     Bracket {
         left: Option<Bracket>,
@@ -973,6 +974,7 @@ impl Tree {
                         c => c,
                     };
                     let font = match c {
+                        _ if self.no_italic => Font::MainRegular,
                         'A'..='Z' | 'a'..='z' | 'α'..='ω' | 'ϑ' | 'ϕ' | 'ϖ' | 'ϱ' | 'ϵ' => {
                             Font::MathItalic
                         }

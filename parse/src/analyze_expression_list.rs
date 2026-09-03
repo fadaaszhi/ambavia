@@ -141,10 +141,12 @@ pub fn analyze_expression_list<'a>(
                 Err(e) => ExpressionResult::Err(AnalysisError::TypeError(e)),
             },
             NrEr::Slider { value, slider } => {
-                if let Some(id) = value {
+                if let Some(id) = value
+                    && let Ok(ty) = types[&id]
+                {
                     assert_eq!(
-                        types[&id],
-                        Ok(Type::Number),
+                        ty,
+                        Type::Number,
                         "a slider should have only been created if its latex was a number literal"
                     );
                 }

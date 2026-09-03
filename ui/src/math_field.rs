@@ -94,7 +94,7 @@ impl SelectionSpan {
 
 /// Represents the user's actual selection before normalization. The
 /// `anchor` and `focus` may be at different tree depths and in any order.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct UserSelection {
     /// Where the selection started (e.g., mouse down position or
     /// `Shift`+`Arrow` start)
@@ -886,7 +886,7 @@ impl TexturedQuad {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Interactiveness {
     /// The user can edit the contents of the field
     Edit,
@@ -915,10 +915,12 @@ impl Interactiveness {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MathField {
     tree: Tree,
     placeholder: Tree,
+    pub use_placeholder_if_empty: bool,
+    pub grayed: bool,
     pub interactiveness: Interactiveness,
     /// Applied before scaling
     pub left_padding: f64,
@@ -948,6 +950,8 @@ impl Default for MathField {
         Self {
             tree: Default::default(),
             placeholder: Default::default(),
+            use_placeholder_if_empty: true,
+            grayed: false,
             interactiveness: Interactiveness::Edit,
             left_padding: -j_glyph.plane.left,
             right_padding: v_glyph.plane.right - v_glyph.advance,
@@ -1002,9 +1006,34 @@ impl MathField {
         to_latex(&self.placeholder)
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.tree.is_empty()
+    }
+
+    fn use_placeholder(&self) -> bool {
+        self.use_placeholder_if_empty && self.is_empty() && !self.has_focus()
+    }
+
+    pub fn no_italic(&mut self, no_italic: bool) {
+        if self.tree.no_italic != no_italic {
+            self.tree.no_italic = no_italic;
+            self.tree.layout();
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.tree.nodes.clear();
+        self.tree.layout();
+    }
+
     /// Logical
     pub fn expression_size(&self) -> DVec2 {
-        let b = &self.tree.bounds;
+        let tree = if self.use_placeholder() {
+            &self.placeholder
+        } else {
+            &self.tree
+        };
+        let b = &tree.bounds;
         self.scale
             * dvec2(
                 self.left_padding + b.width + self.right_padding,
@@ -2286,7 +2315,7 @@ impl MathField {
         self.scroll(0.0);
         let top_left = bounds.pos * ctx.scale_factor;
         let bottom_right = (bounds.pos + bounds.size) * ctx.scale_factor;
-        let use_placeholder = self.tree.is_empty() && !self.has_focus();
+        let use_placeholder = self.use_placeholder();
         let tree = if use_placeholder {
             &mut self.placeholder
         } else {
@@ -2295,7 +2324,22 @@ impl MathField {
         let draw_quad = &mut |p0: DVec2, p1: DVec2, mut kind: QuadKind| {
             let q0 = p0.clamp(top_left, bottom_right);
             let q1 = p1.clamp(top_left, bottom_right);
-            if use_placeholder {
+            match &mut kind {
+                QuadKind::MsdfGlyph(uv0, uv1) | QuadKind::TranslucentMsdfGlyph(uv0, uv1) => {
+                    *uv0 = mix(*uv0, *uv1, (q0 - p0) / (p1 - p0));
+                    *uv1 = mix(*uv0, *uv1, (q1 - p0) / (p1 - p0));
+                }
+                _ => {}
+            }
+            if self.grayed {
+                if let QuadKind::MsdfGlyph(uv0, uv1) | QuadKind::TranslucentMsdfGlyph(uv0, uv1) =
+                    kind
+                {
+                    kind = QuadKind::GrayedMsdfGlyph(uv0, uv1);
+                } else if let QuadKind::BlackBox = kind {
+                    kind = QuadKind::GrayedBlackBox;
+                }
+            } else if use_placeholder {
                 if let QuadKind::MsdfGlyph(uv0, uv1) | QuadKind::TranslucentMsdfGlyph(uv0, uv1) =
                     kind
                 {
@@ -2303,15 +2347,6 @@ impl MathField {
                 } else if let QuadKind::BlackBox = kind {
                     kind = QuadKind::PlaceholderBlackBox;
                 }
-            }
-            match &mut kind {
-                QuadKind::MsdfGlyph(uv0, uv1)
-                | QuadKind::TranslucentMsdfGlyph(uv0, uv1)
-                | QuadKind::PlaceholderMsdfGlyph(uv0, uv1) => {
-                    *uv0 = mix(*uv0, *uv1, (q0 - p0) / (p1 - p0));
-                    *uv1 = mix(*uv0, *uv1, (q1 - p0) / (p1 - p0));
-                }
-                _ => {}
             }
             draw_quad(q0, q1, kind)
         };

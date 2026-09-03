@@ -141,7 +141,7 @@ fn assert_expression_eq(source: &str, value: Value) {
         [ExpressionListEntry {
             expression: &statement,
             parametric_domain: Domain::ZERO_TO_ONE,
-            slider: Slider::NONE,
+            slider: None,
         }]
         .as_slice()
         .as_ref(),
@@ -239,7 +239,7 @@ fn assert_type_error(source: &str, error: TypeError) {
         [ExpressionListEntry {
             expression: &statement,
             parametric_domain: Domain::ZERO_TO_ONE,
-            slider: Slider::NONE,
+            slider: None,
         }]
         .as_slice()
         .as_ref(),

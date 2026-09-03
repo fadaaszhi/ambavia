@@ -300,6 +300,7 @@ impl InstructionBuilder {
         self.assert_pop(c, c_type);
         self.assert_pop(b, b_type);
         self.assert_pop(a, a_type);
+        self.instructions.push(instr);
         self.create_and_push_value(return_type)
     }
 

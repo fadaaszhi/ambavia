@@ -165,13 +165,18 @@ pub fn analyze_expression_list<'a>(
                     },
                     Err(e) => Err(AnalysisError::NameError(e)),
                 };
+                let slider = Slider {
+                    min: slider.min.map(|x| f("min", x)),
+                    max: slider.max.map(|x| f("max", x)),
+                    step: slider.step.map(|x| f("step", x)),
+                };
                 ExpressionResult::Slider {
-                    value,
-                    slider: Slider {
-                        min: slider.min.map(|x| f("min", x)),
-                        max: slider.max.map(|x| f("max", x)),
-                        step: slider.step.map(|x| f("step", x)),
+                    value: if slider.fields().any(Result::is_err) {
+                        None
+                    } else {
+                        value
                     },
+                    slider,
                 }
             }
             NrEr::Plot {

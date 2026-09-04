@@ -366,11 +366,14 @@ impl Tree {
                     }
                 )
             };
-            if i > 0 && is_letter(&self[i - 1].1) && !ends_in_operatorname(&self[..i])
-                || i > 1
-                    && is_letter(&self[i - 2].1)
-                    && !ends_in_operatorname(&self[..i - 1])
-                    && matches!(&self[i - 1].1, Script { upper: None, .. })
+            if path
+                .last()
+                .is_none_or(|(_, field)| *field != NodeField::ScriptLower)
+                && (i > 0 && is_letter(&self[i - 1].1) && !ends_in_operatorname(&self[..i])
+                    || i > 1
+                        && is_letter(&self[i - 2].1)
+                        && !ends_in_operatorname(&self[..i - 1])
+                        && matches!(&self[i - 1].1, Script { upper: None, .. }))
             {
                 self.insert(i, new_script_lower(vec![bd(new_char(ch))]));
                 return (path, i + 1).into();
@@ -1003,7 +1006,7 @@ impl MathField {
     }
 
     pub fn get_placeholder(&mut self) -> Vec<latex_tree::Node<'static>> {
-        to_latex(&self.placeholder)
+        to_latex(&self.placeholder, true)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -1948,7 +1951,7 @@ impl MathField {
                         {
                             hide_cursor = false;
                             if let SelectionSpan::Range(r) = span {
-                                let latex = to_latex(&self.tree.walk(&path)[r]).to_string();
+                                let latex = to_latex(&self.tree.walk(&path)[r], true).to_string();
                                 if let Err(e) = ctx.set_clipboard_text(latex) {
                                     eprintln!("failed to set clipboard contents: {e}");
                                 }
@@ -1962,7 +1965,7 @@ impl MathField {
                             hide_cursor = false;
                             if let SelectionSpan::Range(r) = span {
                                 let nodes = self.tree.walk_mut(&path);
-                                let latex = to_latex(&nodes[r.clone()]).to_string();
+                                let latex = to_latex(&nodes[r.clone()], true).to_string();
                                 if let Err(e) = ctx.set_clipboard_text(latex) {
                                     eprintln!("failed to set clipboard contents: {e}");
                                 } else if write {
@@ -2302,7 +2305,7 @@ impl MathField {
     }
 
     pub fn to_latex(&self) -> latex_tree::Nodes<'static> {
-        to_latex(&self.tree)
+        to_latex(&self.tree, true)
     }
 
     pub fn render(

@@ -421,12 +421,16 @@ pub fn new_char(ch: char) -> Node {
     }
 }
 
-pub fn to_latex(tree: &[(Bounds, Node)]) -> latex_tree::Nodes<'static> {
+pub fn to_latex(tree: &[(Bounds, Node)], allow_operatornames: bool) -> latex_tree::Nodes<'static> {
     let mut nodes = vec![];
     let mut i = 0;
 
     'outer: while i < tree.len() {
-        for &name in OPERATORNAMES {
+        for &name in if allow_operatornames {
+            OPERATORNAMES
+        } else {
+            &[]
+        } {
             let count = name.chars().count();
             if tree.len() - i >= count
                 && zip(name.chars(), &tree[i..]).all(|(c, (_, n))| n.is_char(c))
@@ -445,25 +449,25 @@ pub fn to_latex(tree: &[(Bounds, Node)]) -> latex_tree::Nodes<'static> {
                 left, right, inner, ..
             } => {
                 let (left, right) = (left.or(*right).unwrap(), right.or(*left).unwrap());
-                let inner = to_latex(inner);
+                let inner = to_latex(inner, allow_operatornames);
                 nodes.push(LNode::DelimitedGroup { left, right, inner });
             }
             Node::Script { lower, upper } => {
                 nodes.push(LNode::SubSup {
-                    sub: lower.as_ref().map(|x| to_latex(x)),
-                    sup: upper.as_ref().map(|x| to_latex(x)),
+                    sub: lower.as_ref().map(|x| to_latex(x, false)),
+                    sup: upper.as_ref().map(|x| to_latex(x, allow_operatornames)),
                 });
             }
             Node::Radical { root, arg, .. } => {
                 nodes.push(LNode::Sqrt {
-                    root: root.as_ref().map(|x| to_latex(x)),
-                    arg: to_latex(arg),
+                    root: root.as_ref().map(|x| to_latex(x, allow_operatornames)),
+                    arg: to_latex(arg, allow_operatornames),
                 });
             }
             Node::Frac { num, den, .. } => {
                 nodes.push(LNode::Frac {
-                    num: to_latex(num),
-                    den: to_latex(den),
+                    num: to_latex(num, allow_operatornames),
+                    den: to_latex(den, allow_operatornames),
                 });
             }
             Node::BigOp {
@@ -476,8 +480,8 @@ pub fn to_latex(tree: &[(Bounds, Node)]) -> latex_tree::Nodes<'static> {
                 };
                 nodes.push(LNode::CtrlSeq(op));
                 nodes.push(LNode::SubSup {
-                    sub: Some(to_latex(lower)),
-                    sup: Some(to_latex(upper)),
+                    sub: Some(to_latex(lower, allow_operatornames)),
+                    sup: Some(to_latex(upper, allow_operatornames)),
                 });
             }
             Node::Char { ch, .. } => {
@@ -685,7 +689,7 @@ impl Tree {
     }
 
     #[expect(clippy::match_like_matches_macro, reason = "fad </3 matches!")]
-    fn layout_relative(&mut self) {
+    fn layout_relative(&mut self, allow_operatornames: bool) {
         self.bounds = Bounds::default();
         self.has_gray_background = false;
 
@@ -713,7 +717,11 @@ impl Tree {
         }
 
         'outer: while i < self.nodes.len() {
-            for &name in OPERATORNAMES {
+            for &name in if allow_operatornames {
+                OPERATORNAMES
+            } else {
+                &[]
+            } {
                 let count = name.chars().count();
                 if self.nodes.len() - i >= count
                     && zip(name.chars(), &self.nodes[i..]).all(|(c, (_, n))| n.is_char(c))
@@ -815,7 +823,7 @@ impl Tree {
                     };
                     left_quad.gray = left.is_none();
                     right_quad.gray = right.is_none();
-                    inner.layout_relative();
+                    inner.layout_relative(allow_operatornames);
                     inner.has_gray_background = false;
                     inner.bounds.position.x = left_quad.advance;
                     let top = inner.bounds.top() - BRACKET_JUT;
@@ -831,13 +839,13 @@ impl Tree {
                 }
                 Node::Script { lower, upper } => {
                     if let Some(lower) = lower {
-                        lower.layout_relative();
+                        lower.layout_relative(false);
                         lower.bounds.scale(SCRIPT_LOWER_SCALE);
                         lower.bounds.position.y = SCRIPT_MIDDLE + lower.bounds.height;
                         bounds.union(&lower.bounds);
                     }
                     if let Some(upper) = upper {
-                        upper.layout_relative();
+                        upper.layout_relative(allow_operatornames);
                         upper.bounds.scale(SCRIPT_UPPER_SCALE);
                         upper.bounds.position.y = SCRIPT_MIDDLE - upper.bounds.depth;
                         bounds.union(&upper.bounds);
@@ -852,10 +860,10 @@ impl Tree {
                     radical,
                     line,
                 } => {
-                    arg.layout_relative();
+                    arg.layout_relative(allow_operatornames);
                     *radical = get_quad(Font::Size1Regular, '√');
                     if let Some(root) = root {
-                        root.layout_relative();
+                        root.layout_relative(allow_operatornames);
                         root.bounds.scale(RADICAL_ROOT_SCALE);
                         root.bounds.position.y = RADICAL_ROOT_MIDDLE;
                         let offset = (root.bounds.right() - RADICAL_ROOT_RIGHT).max(0.0);
@@ -881,8 +889,8 @@ impl Tree {
                     });
                 }
                 Node::Frac { num, den, line } => {
-                    num.layout_relative();
-                    den.layout_relative();
+                    num.layout_relative(allow_operatornames);
+                    den.layout_relative(allow_operatornames);
                     num.bounds.scale(FRAC_SCALE);
                     den.bounds.scale(FRAC_SCALE);
                     let max_width = num.bounds.width.max(den.bounds.width);
@@ -917,8 +925,8 @@ impl Tree {
                         BigOp::Int => '∫',
                     };
                     *op_quad = get_quad(Font::Size2Regular, c);
-                    lower.layout_relative();
-                    upper.layout_relative();
+                    lower.layout_relative(allow_operatornames);
+                    upper.layout_relative(allow_operatornames);
                     if *op == BigOp::Int {
                         lower.bounds.scale(INT_SUB_SUP_SCALE);
                         upper.bounds.scale(INT_SUB_SUP_SCALE);
@@ -1053,7 +1061,7 @@ impl Tree {
     }
 
     pub fn layout(&mut self) {
-        self.layout_relative();
+        self.layout_relative(true);
         self.has_gray_background = false;
         self.make_absolute(DVec2::ZERO, 1.0);
     }

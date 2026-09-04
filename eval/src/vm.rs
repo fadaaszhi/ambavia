@@ -13,6 +13,8 @@ use ordered_float::OrderedFloat;
 use strum::{Display, EnumCount, EnumDiscriminants, FromRepr};
 use typed_index_collections::{TiSlice, TiVec};
 
+use crate::math;
+
 #[derive(Debug, Clone, Copy, PartialEq, EnumCount, EnumDiscriminants)]
 #[strum_discriminants(derive(FromRepr, Display))]
 pub enum Instruction {
@@ -277,60 +279,6 @@ impl std::fmt::Display for Value {
             }
         }
     }
-}
-
-fn sort_perm(list: &[f64]) -> Vec<usize> {
-    let mut indices = (0..list.len()).collect::<Vec<_>>();
-    indices.sort_by(|a, b| list[*a].total_cmp(&list[*b]));
-    indices
-}
-
-fn hypot3(x: f64, y: f64, z: f64) -> f64 {
-    let max = x.abs().max(y.abs()).max(z.abs());
-
-    if max == 0.0 {
-        return if x.is_nan() || y.is_nan() || z.is_nan() {
-            f64::NAN
-        } else {
-            0.0
-        };
-    }
-
-    max * ((x / max).powi(2) + (y / max).powi(2) + (z / max).powi(2)).sqrt()
-}
-
-pub fn apply_slider_step(value: f64, step: f64, round: fn(f64) -> f64) -> f64 {
-    let step = step.abs();
-    let result = round(value / step) * step;
-    if result.is_finite() { result } else { value }
-}
-
-pub fn apply_slider(mut value: f64, min: f64, max: f64, step: f64) -> f64 {
-    if max.is_finite() && value >= max {
-        if min.is_finite() {
-            return max.max(min);
-        }
-        return max;
-    }
-
-    if step.is_finite() && step != 0.0 {
-        // TODO rational arithmetic? value=1.9 and step=0.1 gives bad FP error
-        if min.is_finite() {
-            value = apply_slider_step(value - min, step, f64::round) + min;
-        } else {
-            value = apply_slider_step(value, step, f64::round);
-        }
-    }
-
-    if max.is_finite() {
-        value = f64::min(value, max);
-    }
-
-    if min.is_finite() {
-        value = f64::max(value, min);
-    }
-
-    value
 }
 
 #[derive(Debug, Copy, Clone, From, Into, PartialEq, Add)]
@@ -735,7 +683,7 @@ impl<'a, 'i> Vm<'a, 'i> {
                     let z = self.pop().number();
                     let y = self.pop().number();
                     let x = self.pop().number();
-                    self.push(hypot3(x, y, z));
+                    self.push(math::hypot3(x, y, z));
                 }
                 Instruction::Sqrt => {
                     let a = self.pop().number();
@@ -924,7 +872,7 @@ impl<'a, 'i> Vm<'a, 'i> {
                     let az = self.pop().number();
                     let ay = self.pop().number();
                     let ax = self.pop().number();
-                    self.push(hypot3(bx - ax, by - ay, bz - az));
+                    self.push(math::hypot3(bx - ax, by - ay, bz - az));
                 }
                 Instruction::Min => {
                     let a = self.pop().list();
@@ -1294,7 +1242,7 @@ impl<'a, 'i> Vm<'a, 'i> {
                     let list = self.pop().list();
                     let list = list.borrow();
                     self.push(Rc::new(RefCell::new(
-                        sort_perm(&key[..key.len().min(list.len())])
+                        math::sort_perm(&key[..key.len().min(list.len())])
                             .iter()
                             .map(|&i| list[i])
                             .collect::<Vec<_>>(),
@@ -1306,7 +1254,7 @@ impl<'a, 'i> Vm<'a, 'i> {
                     let list = self.pop().list();
                     let list = list.borrow();
                     self.push(Rc::new(RefCell::new(
-                        sort_perm(&key[..key.len().min(list.len() / 2)])
+                        math::sort_perm(&key[..key.len().min(list.len() / 2)])
                             .iter()
                             .flat_map(|&i| [list[2 * i], list[2 * i + 1]])
                             .collect::<Vec<_>>(),
@@ -1318,7 +1266,7 @@ impl<'a, 'i> Vm<'a, 'i> {
                     let list = self.pop().list();
                     let list = list.borrow();
                     self.push(Rc::new(RefCell::new(
-                        sort_perm(&key[..key.len().min(list.len() / 3)])
+                        math::sort_perm(&key[..key.len().min(list.len() / 3)])
                             .iter()
                             .flat_map(|&i| [list[3 * i], list[3 * i + 1], list[3 * i + 2]])
                             .collect::<Vec<_>>(),
@@ -1330,7 +1278,7 @@ impl<'a, 'i> Vm<'a, 'i> {
                     let list = self.pop().polygon_list();
                     let list = list.borrow();
                     self.push(Rc::new(RefCell::new(
-                        sort_perm(&key[..key.len().min(list.len())])
+                        math::sort_perm(&key[..key.len().min(list.len())])
                             .iter()
                             .map(|&i| Rc::clone(&list[i]))
                             .collect::<Vec<_>>(),
@@ -1340,7 +1288,7 @@ impl<'a, 'i> Vm<'a, 'i> {
                     let key = self.pop().list();
                     let key = key.borrow();
                     self.push(Rc::new(RefCell::new(
-                        sort_perm(&key)
+                        math::sort_perm(&key)
                             .iter()
                             .map(|i| *i as f64)
                             .collect::<Vec<_>>(),
@@ -1553,7 +1501,7 @@ impl<'a, 'i> Vm<'a, 'i> {
                     let max = self.pop().number();
                     let min = self.pop().number();
                     let value = self.pop().number();
-                    self.push(apply_slider(value, min, max, step));
+                    self.push(math::apply_slider(value, min, max, step));
                 }
 
                 Instruction::StartArgs => {

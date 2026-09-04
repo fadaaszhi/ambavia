@@ -19,7 +19,8 @@ use crate::{
 };
 use eval::{
     compiler::compile_assignments,
-    vm::{self, Vm, apply_slider, apply_slider_step},
+    math::{apply_slider, apply_slider_step},
+    vm::{self, Vm},
 };
 use parse::{
     analyze_expression_list::{ExpressionResult, PlotKind, analyze_expression_list},
@@ -1355,7 +1356,7 @@ impl Expression {
                         }
                         if max.is_none_or(|max| value != max)
                             && let Some(step) = step
-                            && value != apply_slider_step(value - offset, step, f64::round) + offset
+                            && value != apply_slider_step(value, offset, step, f64::round)
                         {
                             self.slider.step.0.clear();
                         }
@@ -2426,6 +2427,7 @@ impl ExpressionList {
                                 let slider_min = min.ok().map(|min| {
                                     min.unwrap_or(apply_slider_step(
                                         value.unwrap_or(0.0).min(expression.slider.soft_min),
+                                        0.0,
                                         step.ok().flatten().unwrap_or(SLIDER_STEP_DEFAULT),
                                         f64::floor,
                                     ))
@@ -2436,8 +2438,7 @@ impl ExpressionList {
                                             value.unwrap_or(0.0).max(expression.slider.soft_max);
                                         if let Ok(Some(step)) = step {
                                             let offset = min.ok().flatten().unwrap_or(0.0);
-                                            apply_slider_step(max - offset, step, f64::ceil)
-                                                + offset
+                                            apply_slider_step(max, offset, step, f64::ceil)
                                         } else {
                                             max
                                         }

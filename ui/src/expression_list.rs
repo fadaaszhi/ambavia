@@ -57,10 +57,10 @@ enum OutputUi {
     #[default]
     None,
     Slider {
-        value: f64,
-        min: f64,
-        max: f64,
-        step: f64,
+        value: Option<f64>,
+        min: Option<f64>,
+        max: Option<f64>,
+        step: Option<f64>,
         dragging: Option<f64>,
         hovered: bool,
         name: String,
@@ -231,10 +231,10 @@ impl Output {
         step_label_field.right_padding = -0.15;
         step_label_field.interactiveness = Interactiveness::None;
         self.ui = OutputUi::Slider {
-            value: 0.0,
-            min: SLIDER_SOFT_MIN_DEFAULT,
-            max: SLIDER_SOFT_MAX_DEFAULT,
-            step: SLIDER_STEP_DEFAULT,
+            value: Some(0.0),
+            min: Some(SLIDER_SOFT_MIN_DEFAULT),
+            max: Some(SLIDER_SOFT_MAX_DEFAULT),
+            step: Some(SLIDER_STEP_DEFAULT),
             dragging: None,
             hovered: false,
             name: new_name.into(),
@@ -250,8 +250,8 @@ impl Output {
         &mut self,
         slider: &mut Slider,
         new_value: Option<f64>,
-        new_min: f64,
-        new_max: f64,
+        new_min: Option<f64>,
+        new_max: Option<f64>,
         new_step: Option<f64>,
     ) {
         let OutputUi::Slider {
@@ -264,22 +264,24 @@ impl Output {
         else {
             unreachable!("slider UI should've already been created before");
         };
-        if let Some(new_value) = new_value {
-            *value = new_value;
-        }
+
+        *value = new_value;
+
         for (old, field, new) in [
             (min, &mut slider.hard_min, new_min),
             (max, &mut slider.hard_max, new_max),
         ] {
             if *old != new {
                 *old = new;
-                let mut latex = vec![];
-                number_to_latex(&mut latex, new);
-                field.0.set_placeholder(&latex);
+                if let Some(new) = new {
+                    let mut latex = vec![];
+                    number_to_latex(&mut latex, new);
+                    field.0.set_placeholder(&latex);
+                }
             }
         }
 
-        *step = new_step.unwrap_or(SLIDER_STEP_DEFAULT);
+        *step = new_step;
     }
 
     const SLIDER_BAR_RADIUS: f64 = 3.0;
@@ -535,6 +537,10 @@ impl Output {
                         bounds,
                     )
                 } else {
+                    let [value, min, max, step] = [value, min, max, step].map(|x| {
+                        x.as_mut()
+                            .expect("only None if error in which case slider edit shown")
+                    });
                     let point_radius = ctx.round_nonzero(Self::SLIDER_POINT_RADIUS);
                     let height = (point_radius * 2.0)
                         .max(slider_min_size.y)
@@ -946,6 +952,10 @@ impl Output {
                         .union(slider_step_bounds);
                     bounds.size.y
                 } else {
+                    let [value, min, max, step] = [value, min, max, step].map(|x| {
+                        x.as_mut()
+                            .expect("only None if error in which case slider edit shown")
+                    });
                     let bar_radius = ctx.round_nonzero(Self::SLIDER_BAR_RADIUS);
                     let tick_radius = ctx.round_nonzero(Self::SLIDER_TICK_RADIUS);
                     let point_radius = ctx.round_nonzero(Self::SLIDER_POINT_RADIUS);
@@ -1329,19 +1339,22 @@ impl Expression {
                     if let OutputUi::Slider { min, max, step, .. } = self.output.ui {
                         // maybe using `offset` instead of unconditionally
                         // using `min` reduces floating-point error?
-                        let offset = if self.slider.hard_min.0.is_empty() {
-                            0.0
-                        } else {
+                        let offset = if !self.slider.hard_min.0.is_empty()
+                            && let Some(min) = min
+                        {
                             min
+                        } else {
+                            0.0
                         };
 
-                        if value < min {
+                        if min.is_some_and(|min| value < min) {
                             self.slider.hard_min.0.clear();
                         }
-                        if value > max {
+                        if max.is_some_and(|max| value > max) {
                             self.slider.hard_max.0.clear();
                         }
-                        if value != max
+                        if max.is_none_or(|max| value != max)
+                            && let Some(step) = step
                             && value != apply_slider_step(value - offset, step, f64::round) + offset
                         {
                             self.slider.step.0.clear();
@@ -2353,7 +2366,7 @@ impl ExpressionList {
                                 .map(
                                     |(name, field, result, state)| {
                                         if field.0.is_empty() {
-                                            return None;
+                                            return Ok(None);
                                         }
 
                                         let nl = if error_msg.is_empty() { "" } else { "\n" };
@@ -2365,7 +2378,7 @@ impl ExpressionList {
                                             )
                                             .unwrap();
                                             state.error = true;
-                                            return None;
+                                            return Err(());
                                         }
 
                                         let id = match result.as_ref().unwrap() {
@@ -2377,7 +2390,7 @@ impl ExpressionList {
                                                 )
                                                 .unwrap();
                                                 state.error = true;
-                                                return None;
+                                                return Err(());
                                             }
                                         };
 
@@ -2389,16 +2402,16 @@ impl ExpressionList {
                                             )
                                             .unwrap();
                                             state.error = true;
-                                            return None;
+                                            return Err(());
                                         }
 
-                                        Some(value)
+                                        Ok(Some(value))
                                     },
                                 );
 
                                 if !error_msg.is_empty() {
                                     output.data = OutputData::Error(error_msg);
-                                } else if let (Some(min), Some(max)) = (min, max)
+                                } else if let (Ok(Some(min)), Ok(Some(max))) = (min, max)
                                     && min > max
                                 {
                                     output.data = OutputData::Error(
@@ -2410,19 +2423,25 @@ impl ExpressionList {
 
                                 let value =
                                     value.map(|id| vm.vars[var_indices[&id]].clone().number());
-                                let slider_min = min.unwrap_or(apply_slider_step(
-                                    value.unwrap_or(0.0).min(expression.slider.soft_min),
-                                    step.unwrap_or(SLIDER_STEP_DEFAULT),
-                                    f64::floor,
-                                ));
-                                let slider_max = max.unwrap_or({
-                                    let max = value.unwrap_or(0.0).max(expression.slider.soft_max);
-                                    if let Some(step) = step {
-                                        let offset = min.unwrap_or(0.0);
-                                        apply_slider_step(max - offset, step, f64::ceil) + offset
-                                    } else {
-                                        max
-                                    }
+                                let slider_min = min.ok().map(|min| {
+                                    min.unwrap_or(apply_slider_step(
+                                        value.unwrap_or(0.0).min(expression.slider.soft_min),
+                                        step.ok().flatten().unwrap_or(SLIDER_STEP_DEFAULT),
+                                        f64::floor,
+                                    ))
+                                });
+                                let slider_max = max.ok().map(|max| {
+                                    max.unwrap_or({
+                                        let max =
+                                            value.unwrap_or(0.0).max(expression.slider.soft_max);
+                                        if let Ok(Some(step)) = step {
+                                            let offset = min.ok().flatten().unwrap_or(0.0);
+                                            apply_slider_step(max - offset, step, f64::ceil)
+                                                + offset
+                                        } else {
+                                            max
+                                        }
+                                    })
                                 });
 
                                 output.set_slider_fields(
@@ -2430,7 +2449,7 @@ impl ExpressionList {
                                     value,
                                     slider_min,
                                     slider_max,
-                                    step,
+                                    step.ok().map(|step| step.unwrap_or(SLIDER_STEP_DEFAULT)),
                                 );
                             }
                         }
@@ -2454,6 +2473,7 @@ impl ExpressionList {
 
         for expression in &mut self.expressions {
             if let OutputUi::Slider { value, .. } = expression.output.ui
+                && let Some(value) = value
                 && expression.slider.fake_field_value != value
                 && !expression.slider.fake_field.has_focus()
             {

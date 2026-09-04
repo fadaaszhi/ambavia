@@ -5,7 +5,7 @@ use parse::{
     analyze_expression_list::{AnalysisError, ExpressionResult, analyze_expression_list},
     ast_parser::parse_statement,
     latex_parser::parse_latex,
-    name_resolver::{Domain, ExpressionListEntry, Slider},
+    name_resolver::{Domain, ExpressionListEntry},
     op::{OpError, OpName},
     type_checker::{Type, TypeError},
 };

@@ -10,8 +10,9 @@ struct Uniforms {
 
 const LINE = 0u;
 const POINT = 1u;
-const RECTANGLE = 2u;
-const TILE = 3u;
+const LEFT_SHADOW = 2u;
+const RECTANGLE = 3u;
+const TILE = 4u;
 
 struct Shape {
     color: vec4f,
@@ -102,6 +103,10 @@ fn vs_graph(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
         p = select(p0 - a0 * t, p1 + a1 * t, corner.x) + select(-n, n, corner.y);
     } else if shape.kind == POINT {
         p = vertex.position + 0.5 * shape.width * select(vec2(-1.0), vec2(1.0), corner);
+    } else if shape.kind == LEFT_SHADOW {
+        let h = uniforms.resolution.y;
+        let w = shape.width;
+        p = vertex.position + select(vec2(0.0), vec2(w, h), corner);
     } else /* if shape.kind == RECTANGLE || shape.kind == TILE */ {
         let h = f32(uniforms.tile_size);
         let w = select(shape.width, h, shape.kind == TILE);
@@ -139,6 +144,9 @@ fn fs_graph(in: VertexOutput) -> @location(0) vec4f {
         if d > shape.width * 0.5 {
             discard;
         }
+    } else if shape.kind == LEFT_SHADOW {
+        let t = 1.0 - (in.p.x - vertex.position.x) / shape.width;
+        return vec4(shape.color.rgb, t * t * shape.color.a);
     } else if shape.kind == RECTANGLE {
         // no-op
     } else /* if shape.kind == TILE */ {

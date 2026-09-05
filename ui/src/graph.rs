@@ -107,8 +107,9 @@ struct Shape {
 impl Shape {
     const LINE: u32 = 0;
     const POINT: u32 = 1;
-    const RECTANGLE: u32 = 2;
-    const TILE: u32 = 3;
+    const LEFT_SHADOW: u32 = 2;
+    const RECTANGLE: u32 = 3;
+    const TILE: u32 = 4;
 
     fn line(color: [f32; 4], width: f32) -> Self {
         Self {
@@ -124,6 +125,15 @@ impl Shape {
             color,
             width,
             kind: Shape::POINT,
+            ..Shape::zeroed()
+        }
+    }
+
+    fn left_shadow(color: [f32; 4], width: f32) -> Self {
+        Self {
+            color,
+            width,
+            kind: Shape::LEFT_SHADOW,
             ..Shape::zeroed()
         }
     }
@@ -684,7 +694,13 @@ impl GraphPaper {
                 + physical.pos;
 
             for i in 0..n.x {
-                let x = snap(i as f64 * b.x + c.x, width) as f32;
+                let x = i as f64 * b.x + c.x;
+                if x <= physical.left() || physical.right() <= x {
+                    // The default home viewport with sidebar shadow looks weird
+                    // if you draw the edge lines so skip them
+                    continue;
+                }
+                let x = snap(x, width) as f32;
                 vertices.push(Vertex::BREAK);
                 vertices.push(Vertex::new((x, physical.top() as f32), shape));
                 vertices.push(Vertex::new((x, physical.bottom() as f32), shape));
@@ -931,6 +947,15 @@ impl GraphPaper {
         // The vertex shader will check an extra vertex when drawing lines, so
         // we push this to avoid an out-of-bounds access in the shader
         vertices.push(Vertex::BREAK);
+
+        // Draw sidebar shadow only if sidebar isn't closed
+        if physical.left() > 0.0 {
+            vertices.push(Vertex::new(physical.pos.as_vec2(), shapes.len() as u32));
+            shapes.push(Shape::left_shadow(
+                [0.0, 0.0, 0.0, 0.11],
+                6.0 * ctx.scale_factor as f32,
+            ));
+        }
 
         (shapes, vertices, segments)
     }

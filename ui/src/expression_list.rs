@@ -1,5 +1,6 @@
-use std::collections::HashMap;
 use std::fmt::Write;
+use std::ops::DerefMut;
+use std::{collections::HashMap, ops::Deref};
 
 use bytemuck::{Zeroable, offset_of};
 use derive_more::{Add, From, Into, Sub};
@@ -15,7 +16,7 @@ use crate::{
     graph::{Geometry, GeometryKind},
     math_field::{Cursor, Interactiveness, MathField, Message, UserSelection},
     ui::{Bounds, Context, CursorMode, Event, QuadKind, Response},
-    utility::{mix, unmix},
+    utility::{max, mix, set, union, unmix},
 };
 use eval::{
     compiler::compile_assignments,
@@ -32,15 +33,8 @@ use parse::{
     type_checker::Type,
 };
 
-#[derive(Default)]
-struct Output {
-    ui: OutputUi,
-    data: OutputData,
-}
-
-// TODO rename this since its used for sliders as well
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
-enum DomainFocusState {
+enum UnderlineState {
     #[default]
     None,
     Hovered,
@@ -48,36 +42,910 @@ enum DomainFocusState {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
-struct DomainState {
-    state: DomainFocusState,
+struct Underline {
+    state: UnderlineState,
     error: bool,
+}
+
+impl Underline {
+    fn update(
+        &mut self,
+        ctx: &Context,
+        field: &MathField,
+        field_bounds: Bounds,
+        response: &mut Response,
+    ) {
+        let new = if field.has_focus() {
+            UnderlineState::Focussed
+        } else if field_bounds.contains(ctx.cursor) {
+            UnderlineState::Hovered
+        } else {
+            UnderlineState::None
+        };
+        if set(&mut self.state, new) {
+            response.request_redraw();
+        }
+    }
+
+    fn render(
+        &self,
+        ctx: &Context,
+        field_bounds: Bounds,
+        draw_quad: &mut impl FnMut(DVec2, DVec2, QuadKind),
+    ) {
+        let thickness = if self.state != UnderlineState::None || self.error {
+            2.0
+        } else {
+            1.0
+        };
+        let top_left = field_bounds.pos + dvec2(0.0, field_bounds.size.y - 1.0);
+        let bottom_right = top_left + dvec2(field_bounds.size.x, thickness);
+
+        draw_quad(
+            ctx.scale_factor * top_left,
+            ctx.scale_factor * bottom_right,
+            match self.state {
+                _ if self.error => QuadKind::DomainBoundError,
+                UnderlineState::None | UnderlineState::Hovered => QuadKind::DomainBoundUnfocussed,
+                UnderlineState::Focussed => QuadKind::DomainBoundFocussed,
+            },
+        );
+    }
+}
+
+struct InlineField {
+    field: MathField,
+    underline: Underline,
+    do_underline: bool,
+    min_width: f64,
+    max_width: f64,
+}
+
+impl Deref for InlineField {
+    type Target = MathField;
+
+    fn deref(&self) -> &Self::Target {
+        &self.field
+    }
+}
+
+impl DerefMut for InlineField {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.field
+    }
+}
+
+impl InlineField {
+    const DEFAULT_FIELD_SCALE: f64 = 15.7;
+
+    fn new(placeholder: &str) -> Self {
+        let mut field = MathField::default();
+        field.set_placeholder(
+            &placeholder
+                .chars()
+                .map(latex_tree::Node::Char)
+                .collect::<Vec<_>>(),
+        );
+        field.scale = Self::DEFAULT_FIELD_SCALE;
+        field.left_padding = 0.22;
+        field.bottom_padding = 0.25;
+        field.top_padding = 0.25;
+        Self {
+            field,
+            underline: Default::default(),
+            do_underline: true,
+            min_width: 35.0,
+            max_width: 70.0,
+        }
+    }
+
+    // TODO think about whether we should be accepting `ctx` and doing the ceiling
+    // ourselves or if we should instead leave it as the caller's responsibility
+    fn expression_size(&self, ctx: &Context, clamp: bool) -> DVec2 {
+        let mut size = self.field.expression_size().map(|s| ctx.ceil(s));
+        if clamp {
+            size.x = size.x.clamp(self.min_width, self.max_width);
+        }
+        size
+    }
+
+    fn update(
+        &mut self,
+        ctx: &Context,
+        event: &Event,
+        bounds: Bounds,
+    ) -> (Response, Option<Message>) {
+        let (mut response, message) = self.field.update(ctx, event, bounds);
+        self.underline
+            .update(ctx, &self.field, bounds, &mut response);
+        (response, message)
+    }
+
+    fn render(
+        &mut self,
+        ctx: &Context,
+        bounds: Bounds,
+        draw_quad: &mut impl FnMut(DVec2, DVec2, QuadKind),
+    ) {
+        if self.do_underline {
+            self.underline.state = if self.field.has_focus() {
+                UnderlineState::Focussed
+            } else if bounds.contains(ctx.cursor) {
+                UnderlineState::Hovered
+            } else {
+                UnderlineState::None
+            };
+            self.underline.render(ctx, bounds, draw_quad);
+        }
+        self.field.render(ctx, bounds, draw_quad);
+    }
+}
+
+const SLIDER_SOFT_MIN_DEFAULT: f64 = -10.0;
+const SLIDER_SOFT_MAX_DEFAULT: f64 = 10.0;
+const SLIDER_STEP_DEFAULT: f64 = 0.0;
+const PARAMETRIC_DOMAIN_MIN_DEFAULT: f64 = 0.0;
+const PARAMETRIC_DOMAIN_MAX_DEFAULT: f64 = 1.0;
+
+struct SliderUi {
+    value: Option<f64>,
+    min: Option<f64>,
+    max: Option<f64>,
+    step: Option<f64>,
+    dragging: Option<f64>,
+    point_hovered: bool,
+    name: String,
+    name_field: MathField,
+    step_label_field: MathField,
+}
+
+struct SliderEditLayout {
+    min_field: Bounds,
+    name: Bounds,
+    max_field: Bounds,
+    step_label: Bounds,
+    step_field: Bounds,
+    bounds: Bounds,
+}
+
+struct SliderBarLayout {
+    min_field: Bounds,
+    max_field: Bounds,
+    bar_left: f64,
+    bar_right: f64,
+    point_bounds: Bounds,
+    point: DVec2,
+    point_radius: f64,
+    bounds: Bounds,
+}
+
+enum SliderLayout {
+    Edit(SliderEditLayout),
+    Bar(SliderBarLayout),
+}
+
+impl SliderUi {
+    const SLIDER_BAR_RADIUS: f64 = 3.0;
+    const SLIDER_TICK_RADIUS: f64 = Self::SLIDER_BAR_RADIUS / 3.0;
+    const SLIDER_STEP_TICKS_THRESHOLD: f64 = 0.03;
+    const SLIDER_POINT_RADIUS: f64 = 11.0;
+
+    fn new(name: String) -> Self {
+        let mut step_label_field = MathField::from(
+            &"Step:"
+                .chars()
+                .map(latex_tree::Node::Char)
+                .collect::<Vec<_>>(),
+        );
+        step_label_field.no_italic(true);
+        step_label_field.scale = 15.7;
+        step_label_field.left_padding = 0.69;
+        step_label_field.right_padding = -0.15;
+        step_label_field.interactiveness = Interactiveness::None;
+        SliderUi {
+            value: Some(0.0),
+            min: Some(SLIDER_SOFT_MIN_DEFAULT),
+            max: Some(SLIDER_SOFT_MAX_DEFAULT),
+            step: Some(SLIDER_STEP_DEFAULT),
+            dragging: None,
+            point_hovered: false,
+            name_field: create_le_name_le(&name),
+            name,
+            step_label_field,
+        }
+    }
+
+    fn set_fields(
+        &mut self,
+        slider: &mut Slider,
+        new_name: &str,
+        new_value: Option<f64>,
+        new_min: Option<f64>,
+        new_max: Option<f64>,
+        new_step: Option<f64>,
+    ) {
+        if set(&mut self.name, new_name) {
+            self.name_field = create_le_name_le(new_name);
+        }
+
+        self.value = new_value;
+        self.step = new_step;
+
+        for (old, field, new) in [
+            (&mut self.min, &mut slider.hard_min, new_min),
+            (&mut self.max, &mut slider.hard_max, new_max),
+        ] {
+            if set(old, new)
+                && let Some(new) = new
+            {
+                let mut latex = vec![];
+                number_to_latex(&mut latex, new);
+                field.0.set_placeholder(&latex);
+            }
+        }
+    }
+
+    fn layout(
+        &mut self,
+        ctx: &Context,
+        padding: f64,
+        top_left: DVec2,
+        width: f64,
+        field_has_focus: bool,
+        slider: &mut Slider,
+    ) -> SliderLayout {
+        let is_slider_edit_shown = field_has_focus
+            || slider.hard_min.0.has_focus()
+            || slider.hard_max.0.has_focus()
+            || slider.step.0.has_focus()
+            || slider.hard_min.0.underline.error
+            || slider.hard_max.0.underline.error
+            || slider.step.0.underline.error;
+
+        for field in [&mut slider.hard_max, &mut slider.hard_min] {
+            field.0.use_placeholder_if_empty = !is_slider_edit_shown;
+            field.0.grayed = !is_slider_edit_shown;
+            field.0.do_underline = is_slider_edit_shown;
+            field.0.scale = if is_slider_edit_shown {
+                InlineField::DEFAULT_FIELD_SCALE
+            } else {
+                12.9
+            };
+        }
+
+        let min_field_size = slider.hard_min.0.expression_size(ctx, is_slider_edit_shown);
+        let max_field_size = slider.hard_max.0.expression_size(ctx, is_slider_edit_shown);
+
+        if is_slider_edit_shown {
+            let name_size = self.name_field.expression_size().map(|s| ctx.ceil(s));
+            let step_label_size = self.step_label_field.expression_size().map(|s| ctx.ceil(s));
+            let step_field_size = slider.step.0.expression_size(ctx, true);
+
+            let height = max([
+                min_field_size.y,
+                name_size.y,
+                max_field_size.y,
+                step_label_size.y,
+                step_field_size.y,
+            ]);
+
+            let min_field = Bounds {
+                pos: dvec2(
+                    top_left.x + padding,
+                    top_left.y + (height - min_field_size.y) / 2.0,
+                ),
+                size: min_field_size,
+            };
+            let name = Bounds {
+                pos: dvec2(min_field.right(), top_left.y + (height - name_size.y) / 2.0),
+                size: name_size,
+            };
+            let max_field = Bounds {
+                pos: dvec2(name.right(), top_left.y + (height - max_field_size.y) / 2.0),
+                size: max_field_size,
+            };
+            let step_label = Bounds {
+                pos: dvec2(
+                    max_field.right(),
+                    top_left.y + (height - step_label_size.y) / 2.0,
+                ),
+                size: step_label_size,
+            };
+            let step_field = Bounds {
+                pos: dvec2(
+                    step_label.right(),
+                    top_left.y + (height - step_field_size.y) / 2.0,
+                ),
+                size: step_field_size,
+            };
+
+            let bounds = union([min_field, name, max_field, step_label, step_field]);
+
+            SliderLayout::Edit(SliderEditLayout {
+                min_field,
+                name,
+                max_field,
+                step_label,
+                step_field,
+                bounds,
+            })
+        } else {
+            let point_radius = ctx.round_nonzero(Self::SLIDER_POINT_RADIUS);
+            let height = max([point_radius * 2.0, min_field_size.y, max_field_size.y]);
+
+            let min_field = Bounds {
+                pos: top_left + dvec2(0.5 * padding, height / 2.0 - min_field_size.y / 2.0),
+                size: min_field_size,
+            };
+            let max_field = Bounds {
+                pos: top_left
+                    + dvec2(
+                        width - 0.5 * padding - max_field_size.x,
+                        height / 2.0 - max_field_size.y / 2.0,
+                    ),
+                size: max_field_size,
+            };
+
+            let bar_left = min_field.right() + 0.8 * padding;
+            let bar_right = max_field.left() - 0.8 * padding;
+
+            let (Some(ref mut value), Some(ref mut min), Some(ref mut max)) =
+                (self.value, self.min, self.max)
+            else {
+                unreachable!("only None if error in which case slider edit shown")
+            };
+
+            let point = dvec2(
+                mix(
+                    bar_left,
+                    bar_right,
+                    unmix(*value, *min, *max).clamp(0.0, 1.0),
+                ),
+                top_left.y + height / 2.0,
+            );
+            let point_bounds = Bounds {
+                pos: point - point_radius,
+                size: DVec2::splat(2.0 * point_radius),
+            };
+            let bounds = Bounds {
+                pos: top_left,
+                size: dvec2(width, height),
+            };
+
+            SliderLayout::Bar(SliderBarLayout {
+                min_field,
+                max_field,
+                bar_left,
+                bar_right,
+                point_bounds,
+                point,
+                point_radius,
+                bounds,
+            })
+        }
+    }
+
+    fn update(
+        &mut self,
+        ctx: &Context,
+        event: &Event,
+        padding: f64,
+        top_left: DVec2,
+        width: f64,
+        field_has_focus: bool,
+        slider: &mut Slider,
+    ) -> (Response, Option<f64>, Option<Message>, Bounds) {
+        match self.layout(ctx, padding, top_left, width, field_has_focus, slider) {
+            SliderLayout::Edit(layout) => self.update_slider_edit(ctx, event, slider, layout),
+            SliderLayout::Bar(layout) => self.update_slider_bar(ctx, event, slider, layout),
+        }
+    }
+
+    fn update_slider_edit(
+        &mut self,
+        ctx: &Context,
+        event: &Event,
+        slider: &mut Slider,
+        l: SliderEditLayout,
+    ) -> (Response, Option<f64>, Option<Message>, Bounds) {
+        let (min_response, mut min_message) = slider.hard_min.0.update(ctx, event, l.min_field);
+        let (max_response, mut max_message) = slider.hard_max.0.update(ctx, event, l.max_field);
+        let (step_response, mut step_message) = slider.step.0.update(ctx, event, l.step_field);
+
+        match min_message {
+            Some(Message::ContentsChanged) => {
+                slider.soft_min = SLIDER_SOFT_MIN_DEFAULT;
+                if !slider.hard_min.0.is_empty() {
+                    slider.hard_min.1 = parse_standalone_expression(&slider.hard_min.0.to_latex());
+                }
+            }
+            Some(Message::Left) => min_message = None,
+            Some(Message::Right) => {
+                min_message = None;
+                slider.hard_min.0.unfocus();
+                slider.hard_max.0.select_all();
+            }
+            Some(Message::Up | Message::Down | Message::Add) => {
+                slider.hard_min.0.unfocus();
+            }
+            Some(Message::Remove) => {
+                min_message = None;
+                if set(&mut slider.soft_min, SLIDER_SOFT_MIN_DEFAULT) {
+                    min_message = Some(Message::ContentsChanged);
+                }
+            }
+            None => {}
+        }
+
+        match max_message {
+            Some(Message::ContentsChanged) => {
+                slider.soft_max = SLIDER_SOFT_MAX_DEFAULT;
+                if !slider.hard_max.0.is_empty() {
+                    slider.hard_max.1 = parse_standalone_expression(&slider.hard_max.0.to_latex());
+                }
+            }
+            Some(Message::Left) => {
+                max_message = None;
+                slider.hard_max.0.unfocus();
+                slider.hard_min.0.select_all();
+            }
+            Some(Message::Right) => {
+                max_message = None;
+                slider.hard_max.0.unfocus();
+                slider.step.0.select_all();
+            }
+            Some(Message::Up | Message::Down | Message::Add) => {
+                slider.hard_max.0.unfocus();
+            }
+            Some(Message::Remove) => {
+                max_message = None;
+                if set(&mut slider.soft_max, SLIDER_SOFT_MAX_DEFAULT) {
+                    max_message = Some(Message::ContentsChanged);
+                }
+            }
+            None => {}
+        }
+
+        match step_message {
+            Some(Message::ContentsChanged) => {
+                if slider.step.0.is_empty() {
+                    slider.step.1 = Ok(ast::Expression::Number(0.0));
+                } else {
+                    slider.step.1 = parse_standalone_expression(&slider.step.0.to_latex());
+                }
+            }
+            Some(Message::Left) => {
+                step_message = None;
+                slider.step.0.unfocus();
+                slider.hard_max.0.select_all();
+            }
+            Some(Message::Right | Message::Remove) => step_message = None,
+            Some(Message::Up | Message::Down | Message::Add) => {
+                slider.step.0.unfocus();
+            }
+            None => {}
+        }
+
+        let response = min_response.or(max_response).or(step_response);
+        let message = min_message.or(max_message).or(step_message);
+        (response, None, message, l.bounds)
+    }
+
+    fn update_slider_bar(
+        &mut self,
+        ctx: &Context,
+        event: &Event,
+        slider: &mut Slider,
+        l: SliderBarLayout,
+    ) -> (Response, Option<f64>, Option<Message>, Bounds) {
+        let (Some(ref mut value), Some(ref mut min), Some(ref mut max), Some(ref mut step)) =
+            (self.value, self.min, self.max, self.step)
+        else {
+            unreachable!("only None if error in which case slider edit shown")
+        };
+        let mut response = Response::default();
+        let new_point_hovered = l.point_bounds.contains(ctx.cursor);
+        let new_slider_min_hovered = l.min_field.contains(ctx.cursor);
+        let new_slider_max_hovered = l.max_field.contains(ctx.cursor);
+
+        let mut new_value = None;
+        let mut slider_touched = false;
+
+        match event {
+            // drag point
+            Event::CursorMoved { .. } if self.dragging.is_some() => {
+                let offset = self.dragging.unwrap();
+                // Not using `.clamp()` because it panics if sidebar is resized too small
+                let point_x = (ctx.cursor.x + offset).max(l.bar_left).min(l.bar_right);
+                *value = mix(*min, *max, unmix(point_x, l.bar_left, l.bar_right));
+                *value = apply_slider(*value, *min, *max, *step);
+                new_value = Some(*value);
+                slider_touched = true;
+                response.consume_event();
+                response.request_redraw();
+            }
+            Event::MouseInput(ElementState::Pressed, MouseButton::Left) => {
+                if new_point_hovered {
+                    // start dragging point
+                    self.dragging = Some(l.point.x - ctx.cursor.x);
+                    slider_touched = true;
+                    response.consume_event();
+                } else if new_slider_min_hovered {
+                    // select min field
+                    slider.hard_min.0.select_all();
+                    response.consume_event();
+                    response.request_redraw()
+                } else if new_slider_max_hovered {
+                    // select max field
+                    slider.hard_max.0.select_all();
+                    response.consume_event();
+                    response.request_redraw()
+                }
+            }
+            Event::MouseInput(ElementState::Released, MouseButton::Left)
+                if self.dragging.is_some() =>
+            {
+                self.dragging = None;
+                response.consume_event();
+            }
+            _ => {}
+        }
+
+        // update soft min/max if slider was interacted with
+        if slider_touched {
+            slider.soft_min = slider.soft_min.min(*value);
+            slider.soft_max = slider.soft_max.max(*value);
+        }
+
+        if set(
+            &mut self.point_hovered,
+            new_point_hovered || self.dragging.is_some(),
+        ) {
+            response.request_redraw();
+        }
+
+        #[cfg(not(windows))]
+        let (grab, grabbing) = (CursorIcon::Grab, CursorIcon::Grabbing);
+
+        // https://github.com/rust-windowing/winit/issues/1043
+        #[cfg(windows)]
+        let (grab, grabbing) = (CursorIcon::EwResize, CursorIcon::EwResize);
+
+        if self.dragging.is_some() {
+            response.cursor_mode = CursorMode::Icon(grabbing);
+        } else if self.point_hovered {
+            response.cursor_mode = CursorMode::Icon(grab);
+        } else if new_slider_min_hovered || new_slider_max_hovered {
+            response.cursor_mode = CursorMode::Icon(CursorIcon::Pointer);
+        }
+
+        (response, new_value, None, l.bounds)
+    }
+
+    fn render(
+        &mut self,
+        ctx: &Context,
+        padding: f64,
+        top_left: DVec2,
+        width: f64,
+        field_has_focus: bool,
+        slider: &mut Slider,
+        draw_quad: &mut impl FnMut(DVec2, DVec2, QuadKind),
+    ) -> f64 {
+        match self.layout(ctx, padding, top_left, width, field_has_focus, slider) {
+            SliderLayout::Edit(layout) => self.render_edit(ctx, slider, draw_quad, layout),
+            SliderLayout::Bar(layout) => self.render_bar(ctx, slider, draw_quad, layout),
+        }
+    }
+
+    fn render_edit(
+        &mut self,
+        ctx: &Context,
+        slider: &mut Slider,
+        draw_quad: &mut impl FnMut(DVec2, DVec2, QuadKind),
+        l: SliderEditLayout,
+    ) -> f64 {
+        slider.hard_min.0.render(ctx, l.min_field, draw_quad);
+        self.name_field.render(ctx, l.name, draw_quad);
+        slider.hard_max.0.render(ctx, l.max_field, draw_quad);
+        self.step_label_field.render(ctx, l.step_label, draw_quad);
+        slider.step.0.render(ctx, l.step_field, draw_quad);
+
+        l.bounds.size.y
+    }
+
+    fn render_bar(
+        &mut self,
+        ctx: &Context,
+        slider: &mut Slider,
+        draw_quad: &mut impl FnMut(DVec2, DVec2, QuadKind),
+        l: SliderBarLayout,
+    ) -> f64 {
+        let (Some(min), Some(max), Some(step)) = (self.min, self.max, self.step) else {
+            unreachable!("only None if error in which case slider edit shown")
+        };
+        let bar_radius = ctx.round_nonzero(Self::SLIDER_BAR_RADIUS);
+        let tick_radius = ctx.round_nonzero(Self::SLIDER_TICK_RADIUS);
+
+        // slider bar
+        draw_quad(
+            ctx.scale_factor * (dvec2(l.bar_left, l.point.y - bar_radius)),
+            ctx.scale_factor * (dvec2(l.bar_right, l.point.y + bar_radius)),
+            QuadKind::SliderBar,
+        );
+
+        // step ticks on slider bar
+        if step.abs() >= (max - min) * Self::SLIDER_STEP_TICKS_THRESHOLD {
+            let n = (((max - min) / step.abs()).ceil() as u32).max(1) - 1;
+            for i in 1..=n {
+                let value = min + step * i as f64;
+                let tick = dvec2(
+                    mix(l.bar_left, l.bar_right, unmix(value, min, max)),
+                    l.point.y,
+                );
+                draw_quad(
+                    ctx.scale_factor * (tick - tick_radius),
+                    ctx.scale_factor * (tick + tick_radius),
+                    QuadKind::SliderStepTick,
+                );
+            }
+        }
+
+        // zero tick on slider bar
+        if (min..=max).contains(&0.0) {
+            let tick = dvec2(
+                mix(l.bar_left, l.bar_right, unmix(0.0, min, max)),
+                l.point.y,
+            );
+            draw_quad(
+                ctx.scale_factor * (tick - tick_radius),
+                ctx.scale_factor * (tick + tick_radius),
+                QuadKind::SliderZeroTick,
+            );
+        }
+
+        // slider point
+        draw_quad(
+            ctx.scale_factor * (l.point - l.point_radius),
+            ctx.scale_factor * (l.point + l.point_radius),
+            QuadKind::SliderPointOuter,
+        );
+        let inner_radius = if self.point_hovered {
+            l.point_radius
+        } else {
+            bar_radius
+        };
+        draw_quad(
+            ctx.scale_factor * (l.point - inner_radius),
+            ctx.scale_factor * (l.point + inner_radius),
+            QuadKind::SliderPointInner,
+        );
+
+        // min/max field
+        slider.hard_min.0.render(ctx, l.min_field, draw_quad);
+        slider.hard_max.0.render(ctx, l.max_field, draw_quad);
+
+        l.bounds.size.y
+    }
+}
+
+struct FieldUi(MathField);
+
+impl FieldUi {
+    fn new(latex: &[latex_tree::Node]) -> FieldUi {
+        let mut field = MathField::from(latex);
+        field.interactiveness = Interactiveness::Select;
+        field.scale = 18.0;
+        field.left_padding = 0.22;
+        field.right_padding = 0.4;
+        field.bottom_padding = 0.19;
+        field.top_padding = 0.25;
+        FieldUi(field)
+    }
+
+    fn layout(&self, ctx: &Context, top_left: DVec2, width: f64, padding: f64) -> Bounds {
+        let size = self.0.expression_size().map(|s| ctx.ceil(s));
+        let right = top_left.x + width - 0.5 * padding;
+        let left = (right - size.x).max(top_left.x + padding);
+        Bounds {
+            pos: dvec2(left, top_left.y),
+            size: dvec2(right - left, size.y),
+        }
+    }
+
+    fn update(
+        &mut self,
+        ctx: &Context,
+        event: &Event,
+        top_left: DVec2,
+        width: f64,
+        padding: f64,
+    ) -> (Response, Option<f64>, Option<Message>, Bounds) {
+        let bounds = self.layout(ctx, top_left, width, padding);
+        let (mut response, _) = self.0.update(ctx, event, bounds);
+
+        if let Some(UserSelection { anchor, focus }) = self.0.get_selection() {
+            let mut clamp = |mut cursor: Cursor| {
+                let index = cursor
+                    .path
+                    .first_mut()
+                    .map_or(&mut cursor.index, |(index, _)| index);
+                if *index == 0 {
+                    *index = 1;
+                    response.request_redraw();
+                }
+                cursor
+            };
+            self.0
+                .set_selection((clamp(anchor.clone()), clamp(focus.clone())));
+        }
+
+        (response, None, None, bounds)
+    }
+
+    fn render(
+        &mut self,
+        ctx: &Context,
+        padding: f64,
+        top_left: DVec2,
+        width: f64,
+        draw_quad: &mut impl FnMut(DVec2, DVec2, QuadKind),
+    ) -> f64 {
+        let bounds = self.layout(ctx, top_left, width, padding);
+        draw_quad(
+            ctx.scale_factor * bounds.pos,
+            ctx.scale_factor * (bounds.pos + bounds.size),
+            QuadKind::OutputValueBox,
+        );
+        self.0.render(ctx, bounds, draw_quad);
+        bounds.size.y
+    }
+}
+
+// TODO turn this into general purpose IntervalUi that can be reused inside
+// SliderUi
+struct ParametricDomainUi {
+    name: String,
+    name_field: MathField,
+}
+
+struct ParametricDomainLayout {
+    min_field: Bounds,
+    name: Bounds,
+    max_field: Bounds,
+    bounds: Bounds,
+}
+
+impl ParametricDomainUi {
+    fn new(name: String) -> Self {
+        Self {
+            name_field: create_le_name_le(&name),
+            name,
+        }
+    }
+
+    fn set_name(&mut self, new_name: &str) {
+        if set(&mut self.name, new_name) {
+            self.name_field = create_le_name_le(new_name);
+        }
+    }
+
+    fn layout(
+        &mut self,
+        ctx: &Context,
+        padding: f64,
+        top_left: DVec2,
+        domain: &mut ParametricDomain,
+    ) -> ParametricDomainLayout {
+        let min_field_size = domain.min.0.expression_size(ctx, true);
+        let name_size = self.name_field.expression_size().map(|s| ctx.ceil(s));
+        let max_field_size = domain.max.0.expression_size(ctx, true);
+
+        let height = max([min_field_size.y, name_size.y, max_field_size.y]);
+
+        let min_field = Bounds {
+            pos: dvec2(
+                top_left.x + padding,
+                top_left.y + (height - min_field_size.y) / 2.0,
+            ),
+            size: min_field_size,
+        };
+        let name = Bounds {
+            pos: dvec2(min_field.right(), top_left.y + (height - name_size.y) / 2.0),
+            size: name_size,
+        };
+        let max_field = Bounds {
+            pos: dvec2(name.right(), top_left.y + (height - max_field_size.y) / 2.0),
+            size: max_field_size,
+        };
+
+        let bounds = union([min_field, name, max_field]);
+
+        ParametricDomainLayout {
+            min_field,
+            name,
+            max_field,
+            bounds,
+        }
+    }
+
+    fn update(
+        &mut self,
+        ctx: &Context,
+        event: &Event,
+        padding: f64,
+        top_left: DVec2,
+        domain: &mut ParametricDomain,
+    ) -> (Response, Option<f64>, Option<Message>, Bounds) {
+        let l = self.layout(ctx, padding, top_left, domain);
+
+        let (min_response, mut min_message) = domain.min.0.update(ctx, event, l.min_field);
+        let (max_response, mut max_message) = domain.max.0.update(ctx, event, l.max_field);
+
+        match min_message {
+            Some(Message::ContentsChanged) => {
+                let mut latex = domain.min.0.to_latex();
+                if latex.is_empty() {
+                    latex = domain.min.0.get_placeholder();
+                }
+                domain.min.1 = parse_standalone_expression(&latex)
+            }
+            Some(Message::Left | Message::Remove) => min_message = None,
+            Some(Message::Right) => {
+                min_message = None;
+                domain.min.0.unfocus();
+                domain.max.0.select_all();
+            }
+            Some(Message::Up | Message::Down | Message::Add) => domain.min.0.unfocus(),
+            None => {}
+        }
+
+        match max_message {
+            Some(Message::ContentsChanged) => {
+                let mut latex = domain.max.0.to_latex();
+                if latex.is_empty() {
+                    latex = domain.max.0.get_placeholder();
+                }
+                domain.max.1 = parse_standalone_expression(&latex)
+            }
+            Some(Message::Left) => {
+                max_message = None;
+                domain.max.0.unfocus();
+                domain.min.0.select_all();
+            }
+            Some(Message::Right | Message::Remove) => max_message = None,
+            Some(Message::Up | Message::Down | Message::Add) => domain.max.0.unfocus(),
+            None => {}
+        }
+
+        let response = min_response.or(max_response);
+        let message = min_message.or(max_message);
+        (response, None, message, l.bounds)
+    }
+
+    fn render(
+        &mut self,
+        ctx: &Context,
+        padding: f64,
+        top_left: DVec2,
+        domain: &mut ParametricDomain,
+        draw_quad: &mut impl FnMut(DVec2, DVec2, QuadKind),
+    ) -> f64 {
+        let l = self.layout(ctx, padding, top_left, domain);
+        domain.min.0.render(ctx, l.min_field, draw_quad);
+        self.name_field.render(ctx, l.name, draw_quad);
+        domain.max.0.render(ctx, l.max_field, draw_quad);
+        l.bounds.size.y
+    }
 }
 
 #[derive(Default)]
 enum OutputUi {
     #[default]
     None,
-    Slider {
-        value: Option<f64>,
-        min: Option<f64>,
-        max: Option<f64>,
-        step: Option<f64>,
-        dragging: Option<f64>,
-        hovered: bool,
-        name: String,
-        name_field: MathField,
-        step_label_field: MathField,
-        min_state: DomainState,
-        max_state: DomainState,
-        step_state: DomainState,
-    },
-    Field(MathField),
-    Domain {
-        name: String,
-        name_field: MathField,
-        min_state: DomainState,
-        max_state: DomainState,
-    },
+    Slider(SliderUi),
+    Field(FieldUi),
+    ParametricDomain(ParametricDomainUi),
 }
 
 /// Creates a MathField initialized with ≤name≤
@@ -149,29 +1017,94 @@ fn number_to_latex(nodes: &mut Vec<latex_tree::Node>, mut x: f64) {
 }
 
 impl OutputUi {
-    fn field_from_latex(latex: &[latex_tree::Node]) -> OutputUi {
-        let mut field = MathField::from(latex);
-        field.interactiveness = Interactiveness::Select;
-        field.scale = 18.0;
-        field.left_padding = 0.22;
-        field.right_padding = 0.4;
-        field.bottom_padding = 0.19;
-        field.top_padding = 0.25;
-        OutputUi::Field(field)
+    fn set_slider(
+        &mut self,
+        slider: &mut Slider,
+        name: &str,
+        value: Option<f64>,
+        min: Option<f64>,
+        max: Option<f64>,
+        step: Option<f64>,
+    ) {
+        let ui = match self {
+            OutputUi::Slider(ui) => ui,
+            _ => {
+                *self = OutputUi::Slider(SliderUi::new(name.into()));
+                match self {
+                    OutputUi::Slider(ui) => ui,
+                    _ => unreachable!(),
+                }
+            }
+        };
+
+        ui.set_fields(slider, name, value, min, max, step);
     }
 
     fn set_domain(&mut self, name: &str) {
-        if let OutputUi::Domain { name: existing, .. } = self
-            && existing == name
-        {
+        // If there was an already existing parametric domain then we just need to update its name
+        if let OutputUi::ParametricDomain(ui) = self {
+            ui.set_name(name);
             return;
         }
+        // Otherwise we need to create a whole new parametric domain UI
+        *self = OutputUi::ParametricDomain(ParametricDomainUi::new(name.into()))
+    }
 
-        *self = OutputUi::Domain {
-            name: name.into(),
-            name_field: create_le_name_le(name),
-            min_state: Default::default(),
-            max_state: Default::default(),
+    fn update(
+        &mut self,
+        ctx: &Context,
+        event: &Event,
+        padding: f64,
+        top_left: DVec2,
+        width: f64,
+        field_has_focus: bool,
+        slider: &mut Slider,
+        parametric_domain: &mut ParametricDomain,
+    ) -> (Response, Option<f64>, Option<Message>, Bounds) {
+        match self {
+            OutputUi::None => (Response::default(), None, None, Bounds::default()),
+            OutputUi::Slider(ui) => ui.update(
+                ctx,
+                event,
+                padding,
+                top_left,
+                width,
+                field_has_focus,
+                slider,
+            ),
+            OutputUi::Field(ui) => ui.update(ctx, event, top_left, width, padding),
+            OutputUi::ParametricDomain(ui) => {
+                ui.update(ctx, event, padding, top_left, parametric_domain)
+            }
+        }
+    }
+
+    fn render(
+        &mut self,
+        ctx: &Context,
+        padding: f64,
+        top_left: DVec2,
+        width: f64,
+        field_has_focus: bool,
+        slider: &mut Slider,
+        parametric_domain: &mut ParametricDomain,
+        draw_quad: &mut impl FnMut(DVec2, DVec2, QuadKind),
+    ) -> f64 {
+        match self {
+            OutputUi::None => 0.0,
+            OutputUi::Slider(ui) => ui.render(
+                ctx,
+                padding,
+                top_left,
+                width,
+                field_has_focus,
+                slider,
+                draw_quad,
+            ),
+            OutputUi::Field(ui) => ui.render(ctx, padding, top_left, width, draw_quad),
+            OutputUi::ParametricDomain(ui) => {
+                ui.render(ctx, padding, top_left, parametric_domain, draw_quad)
+            }
         }
     }
 }
@@ -185,11 +1118,11 @@ enum OutputData {
     Geometry(Vec<Geometry>),
 }
 
-const SLIDER_SOFT_MIN_DEFAULT: f64 = -10.0;
-const SLIDER_SOFT_MAX_DEFAULT: f64 = 10.0;
-const SLIDER_STEP_DEFAULT: f64 = 0.0;
-const PARAMETRIC_DOMAIN_MIN_DEFAULT: f64 = 0.0;
-const PARAMETRIC_DOMAIN_MAX_DEFAULT: f64 = 1.0;
+#[derive(Default)]
+struct Output {
+    ui: OutputUi,
+    data: OutputData,
+}
 
 impl Output {
     const NONE: Output = Output {
@@ -201,944 +1134,6 @@ impl Output {
         Output {
             ui: OutputUi::None,
             data: OutputData::Error(error),
-        }
-    }
-
-    fn set_slider_name(&mut self, new_name: &str) {
-        self.data = OutputData::None;
-
-        // If there was an already existing slider then we just need to update its name
-        if let OutputUi::Slider {
-            name, name_field, ..
-        } = &mut self.ui
-        {
-            if *name != new_name {
-                *name = new_name.into();
-                *name_field = create_le_name_le(new_name);
-            }
-            return;
-        }
-
-        // Otherwise we need to create a whole new slider UI
-        let mut step_label_field = MathField::from(
-            &"Step:"
-                .chars()
-                .map(latex_tree::Node::Char)
-                .collect::<Vec<_>>(),
-        );
-        step_label_field.no_italic(true);
-        step_label_field.scale = 15.7;
-        step_label_field.left_padding = 0.69;
-        step_label_field.right_padding = -0.15;
-        step_label_field.interactiveness = Interactiveness::None;
-        self.ui = OutputUi::Slider {
-            value: Some(0.0),
-            min: Some(SLIDER_SOFT_MIN_DEFAULT),
-            max: Some(SLIDER_SOFT_MAX_DEFAULT),
-            step: Some(SLIDER_STEP_DEFAULT),
-            dragging: None,
-            hovered: false,
-            name: new_name.into(),
-            name_field: create_le_name_le(new_name),
-            step_label_field,
-            min_state: Default::default(),
-            max_state: Default::default(),
-            step_state: Default::default(),
-        };
-    }
-
-    fn set_slider_fields(
-        &mut self,
-        slider: &mut Slider,
-        new_value: Option<f64>,
-        new_min: Option<f64>,
-        new_max: Option<f64>,
-        new_step: Option<f64>,
-    ) {
-        let OutputUi::Slider {
-            value,
-            min,
-            max,
-            step,
-            ..
-        } = &mut self.ui
-        else {
-            unreachable!("slider UI should've already been created before");
-        };
-
-        *value = new_value;
-
-        for (old, field, new) in [
-            (min, &mut slider.hard_min, new_min),
-            (max, &mut slider.hard_max, new_max),
-        ] {
-            if *old != new {
-                *old = new;
-                if let Some(new) = new {
-                    let mut latex = vec![];
-                    number_to_latex(&mut latex, new);
-                    field.0.set_placeholder(&latex);
-                }
-            }
-        }
-
-        *step = new_step;
-    }
-
-    const SLIDER_BAR_RADIUS: f64 = 3.0;
-    const SLIDER_TICK_RADIUS: f64 = Self::SLIDER_BAR_RADIUS / 3.0;
-    const SLIDER_STEP_TICKS_THRESHOLD: f64 = 0.03;
-    const SLIDER_POINT_RADIUS: f64 = 11.0;
-    // TODO rename this constant since its used for sliders too
-    const DOMAIN_VALUE_MIN_WIDTH: f64 = 35.0;
-    const DOMAIN_VALUE_MAX_WIDTH: f64 = 70.0;
-
-    fn update(
-        &mut self,
-        ctx: &Context,
-        event: &Event,
-        padding: f64,
-        top_left: DVec2,
-        width: f64,
-        field_has_focus: bool,
-        slider: &mut Slider,
-        parametric_domain: &mut Domain<(MathField, Result<ast::Expression, String>)>,
-    ) -> (Response, Option<f64>, Option<Message>, Bounds) {
-        match &mut self.ui {
-            OutputUi::None => (Response::default(), None, None, Bounds::default()),
-            OutputUi::Slider {
-                value,
-                min,
-                max,
-                step,
-                dragging,
-                hovered: point_hovered,
-                name: _,
-                name_field,
-                step_label_field,
-                min_state,
-                max_state,
-                step_state,
-            } => {
-                let is_slider_edit_shown = field_has_focus
-                    || slider.hard_min.0.has_focus()
-                    || slider.hard_max.0.has_focus()
-                    || slider.step.0.has_focus()
-                    || min_state.error
-                    || max_state.error
-                    || step_state.error;
-
-                for field in [&mut slider.hard_max.0, &mut slider.hard_min.0] {
-                    field.use_placeholder_if_empty = !is_slider_edit_shown;
-                    field.grayed = !is_slider_edit_shown;
-                    field.scale = if is_slider_edit_shown { 15.7 } else { 12.9 };
-                }
-
-                let mut slider_min_size = slider.hard_min.0.expression_size().map(|s| ctx.ceil(s));
-                let mut slider_max_size = slider.hard_max.0.expression_size().map(|s| ctx.ceil(s));
-
-                let mut response = Response::default();
-
-                if is_slider_edit_shown {
-                    let name_size = name_field.expression_size().map(|s| ctx.ceil(s));
-                    let step_label_size = step_label_field.expression_size().map(|s| ctx.ceil(s));
-                    let mut slider_step_size = slider.step.0.expression_size().map(|s| ctx.ceil(s));
-
-                    for x in [
-                        &mut slider_min_size.x,
-                        &mut slider_max_size.x,
-                        &mut slider_step_size.x,
-                    ] {
-                        *x = x.clamp(Self::DOMAIN_VALUE_MIN_WIDTH, Self::DOMAIN_VALUE_MAX_WIDTH);
-                    }
-
-                    let height = 0f64 // muh formatting
-                        .max(slider_min_size.y)
-                        .max(name_size.y)
-                        .max(slider_max_size.y)
-                        .max(step_label_size.y)
-                        .max(slider_step_size.y);
-
-                    let slider_min_bounds = Bounds {
-                        pos: dvec2(
-                            top_left.x + padding,
-                            top_left.y + (height - slider_min_size.y) / 2.0,
-                        ),
-                        size: slider_min_size,
-                    };
-                    let name_bounds = Bounds {
-                        pos: dvec2(
-                            slider_min_bounds.right(),
-                            top_left.y + (height - name_size.y) / 2.0,
-                        ),
-                        size: name_size,
-                    };
-                    let slider_max_bounds = Bounds {
-                        pos: dvec2(
-                            name_bounds.right(),
-                            top_left.y + (height - slider_max_size.y) / 2.0,
-                        ),
-                        size: slider_max_size,
-                    };
-                    let step_label_bounds = Bounds {
-                        pos: dvec2(
-                            slider_max_bounds.right(),
-                            top_left.y + (height - step_label_size.y) / 2.0,
-                        ),
-                        size: step_label_size,
-                    };
-                    let slider_step_bounds = Bounds {
-                        pos: dvec2(
-                            step_label_bounds.right(),
-                            top_left.y + (height - slider_step_size.y) / 2.0,
-                        ),
-                        size: slider_step_size,
-                    };
-
-                    let (mut response_slider_min, mut message_slider_min) =
-                        slider.hard_min.0.update(ctx, event, slider_min_bounds);
-                    let (response_name, _) = name_field.update(ctx, event, name_bounds);
-                    let (mut response_slider_max, mut message_slider_max) =
-                        slider.hard_max.0.update(ctx, event, slider_max_bounds);
-                    let (response_step_label, _) =
-                        step_label_field.update(ctx, event, step_label_bounds);
-                    let (mut response_slider_step, mut message_slider_step) =
-                        slider.step.0.update(ctx, event, slider_step_bounds);
-
-                    match message_slider_min {
-                        Some(Message::ContentsChanged) => {
-                            slider.soft_min = SLIDER_SOFT_MIN_DEFAULT;
-                            if !slider.hard_min.0.is_empty() {
-                                slider.hard_min.1 =
-                                    parse_standalone_expression(&slider.hard_min.0.to_latex());
-                            }
-                        }
-                        Some(Message::Left) => message_slider_min = None,
-                        Some(Message::Right) => {
-                            message_slider_min = None;
-                            slider.hard_min.0.unfocus();
-                            slider.hard_max.0.select_all();
-                        }
-                        Some(Message::Up | Message::Down | Message::Add) => {
-                            slider.hard_min.0.unfocus();
-                        }
-                        Some(Message::Remove) => {
-                            message_slider_min = None;
-                            if slider.soft_min != SLIDER_SOFT_MIN_DEFAULT {
-                                slider.soft_min = SLIDER_SOFT_MIN_DEFAULT;
-                                message_slider_min = Some(Message::ContentsChanged);
-                            }
-                        }
-                        None => {}
-                    }
-
-                    match message_slider_max {
-                        Some(Message::ContentsChanged) => {
-                            slider.soft_max = SLIDER_SOFT_MAX_DEFAULT;
-                            if !slider.hard_max.0.is_empty() {
-                                slider.hard_max.1 =
-                                    parse_standalone_expression(&slider.hard_max.0.to_latex());
-                            }
-                        }
-                        Some(Message::Left) => {
-                            message_slider_max = None;
-                            slider.hard_max.0.unfocus();
-                            slider.hard_min.0.select_all();
-                        }
-                        Some(Message::Right) => {
-                            message_slider_max = None;
-                            slider.hard_max.0.unfocus();
-                            slider.step.0.select_all();
-                        }
-                        Some(Message::Up | Message::Down | Message::Add) => {
-                            slider.hard_max.0.unfocus();
-                        }
-                        Some(Message::Remove) => {
-                            message_slider_max = None;
-                            if slider.soft_max != SLIDER_SOFT_MAX_DEFAULT {
-                                slider.soft_max = SLIDER_SOFT_MAX_DEFAULT;
-                                message_slider_max = Some(Message::ContentsChanged);
-                            }
-                        }
-                        None => {}
-                    }
-
-                    match message_slider_step {
-                        Some(Message::ContentsChanged) => {
-                            if slider.step.0.is_empty() {
-                                slider.step.1 = Ok(ast::Expression::Number(0.0));
-                            } else {
-                                slider.step.1 =
-                                    parse_standalone_expression(&slider.step.0.to_latex());
-                            }
-                        }
-                        Some(Message::Left) => {
-                            message_slider_step = None;
-                            slider.step.0.unfocus();
-                            slider.hard_max.0.select_all();
-                        }
-                        Some(Message::Right | Message::Remove) => message_slider_step = None,
-                        Some(Message::Up | Message::Down | Message::Add) => {
-                            slider.step.0.unfocus();
-                        }
-                        None => {}
-                    }
-
-                    let f =
-                        |f: &MathField, b: Bounds, s: &mut DomainFocusState, r: &mut Response| {
-                            let new = if f.has_focus() {
-                                DomainFocusState::Focussed
-                            } else if b.contains(ctx.cursor) {
-                                DomainFocusState::Hovered
-                            } else {
-                                DomainFocusState::None
-                            };
-                            if new != *s {
-                                *s = new;
-                                r.request_redraw();
-                            }
-                        };
-                    f(
-                        &slider.hard_min.0,
-                        slider_min_bounds,
-                        &mut min_state.state,
-                        &mut response_slider_min,
-                    );
-                    f(
-                        &slider.hard_max.0,
-                        slider_max_bounds,
-                        &mut max_state.state,
-                        &mut response_slider_max,
-                    );
-                    f(
-                        &slider.step.0,
-                        slider_step_bounds,
-                        &mut step_state.state,
-                        &mut response_slider_step,
-                    );
-
-                    let response = response_slider_min
-                        .or(response_name)
-                        .or(response_slider_max)
-                        .or(response_step_label)
-                        .or(response_slider_step);
-
-                    let bounds = slider_min_bounds
-                        .union(name_bounds)
-                        .union(slider_max_bounds)
-                        .union(step_label_bounds)
-                        .union(slider_step_bounds);
-
-                    (
-                        response,
-                        None,
-                        message_slider_min
-                            .or(message_slider_max)
-                            .or(message_slider_step),
-                        bounds,
-                    )
-                } else {
-                    let [value, min, max, step] = [value, min, max, step].map(|x| {
-                        x.as_mut()
-                            .expect("only None if error in which case slider edit shown")
-                    });
-                    let point_radius = ctx.round_nonzero(Self::SLIDER_POINT_RADIUS);
-                    let height = (point_radius * 2.0)
-                        .max(slider_min_size.y)
-                        .max(slider_max_size.y);
-
-                    let slider_min_bounds = Bounds {
-                        pos: top_left
-                            + dvec2(0.5 * padding, height / 2.0 - slider_min_size.y / 2.0),
-                        size: slider_min_size,
-                    };
-                    let slider_max_bounds = Bounds {
-                        pos: top_left
-                            + dvec2(
-                                width - 0.5 * padding - slider_max_size.x,
-                                height / 2.0 - slider_max_size.y / 2.0,
-                            ),
-                        size: slider_max_size,
-                    };
-
-                    let slider_bar_left = slider_min_bounds.right() + 0.8 * padding;
-                    let slider_bar_right = slider_max_bounds.left() - 0.8 * padding;
-                    let mut point = dvec2(
-                        mix(
-                            slider_bar_left,
-                            slider_bar_right,
-                            unmix(*value, *min, *max).clamp(0.0, 1.0),
-                        ),
-                        top_left.y + height / 2.0,
-                    );
-                    let point_bounds = Bounds {
-                        pos: point - point_radius,
-                        size: DVec2::splat(2.0 * point_radius),
-                    };
-                    let new_point_hovered = point_bounds.contains(ctx.cursor);
-                    let new_slider_min_hovered = slider_min_bounds.contains(ctx.cursor);
-                    let new_slider_max_hovered = slider_max_bounds.contains(ctx.cursor);
-
-                    let mut new_value = None;
-                    let mut slider_touched = false;
-
-                    match event {
-                        Event::CursorMoved { .. } if dragging.is_some() => {
-                            let offset = dragging.unwrap();
-                            // Not using `.clamp()` because it panics if sidebar is resized too small
-                            point.x = (ctx.cursor.x + offset)
-                                .max(slider_bar_left)
-                                .min(slider_bar_right);
-                            *value = mix(
-                                *min,
-                                *max,
-                                unmix(point.x, slider_bar_left, slider_bar_right),
-                            );
-                            *value = apply_slider(*value, *min, *max, *step);
-                            new_value = Some(*value);
-                            slider_touched = true;
-                            response.consume_event();
-                            response.request_redraw();
-                        }
-                        Event::MouseInput(ElementState::Pressed, MouseButton::Left) => {
-                            if new_point_hovered {
-                                *dragging = Some(point.x - ctx.cursor.x);
-                                slider_touched = true;
-                                response.consume_event();
-                            } else if new_slider_min_hovered {
-                                slider.hard_min.0.select_all();
-                                min_state.state = DomainFocusState::Focussed;
-                                response.consume_event();
-                                response.request_redraw()
-                            } else if new_slider_max_hovered {
-                                slider.hard_max.0.select_all();
-                                max_state.state = DomainFocusState::Focussed;
-                                response.consume_event();
-                                response.request_redraw()
-                            }
-                        }
-                        Event::MouseInput(ElementState::Released, MouseButton::Left)
-                            if dragging.is_some() =>
-                        {
-                            *dragging = None;
-                            response.consume_event();
-                        }
-                        _ => {}
-                    }
-
-                    if slider_touched {
-                        slider.soft_min = slider.soft_min.min(*value);
-                        slider.soft_max = slider.soft_max.max(*value);
-                    }
-
-                    let new_point_hovered = new_point_hovered || dragging.is_some();
-
-                    if *point_hovered != new_point_hovered {
-                        *point_hovered = new_point_hovered;
-                        response.request_redraw();
-                    }
-
-                    #[cfg(not(windows))]
-                    let (grab, grabbing) = (CursorIcon::Grab, CursorIcon::Grabbing);
-
-                    // https://github.com/rust-windowing/winit/issues/1043
-                    #[cfg(windows)]
-                    let (grab, grabbing) = (CursorIcon::EwResize, CursorIcon::EwResize);
-
-                    if dragging.is_some() {
-                        response.cursor_mode = CursorMode::Icon(grabbing);
-                    } else if *point_hovered {
-                        response.cursor_mode = CursorMode::Icon(grab);
-                    } else if new_slider_min_hovered || new_slider_max_hovered {
-                        response.cursor_mode = CursorMode::Icon(CursorIcon::Pointer);
-                    }
-
-                    let bounds = Bounds {
-                        pos: top_left,
-                        size: dvec2(width, height),
-                    };
-
-                    (response, new_value, None, bounds)
-                }
-            }
-            OutputUi::Field(field) => {
-                let size = field.expression_size().map(|s| ctx.ceil(s));
-                let right = top_left.x + width - 0.5 * padding;
-                let left = (right - size.x).max(top_left.x + padding);
-                let bounds = Bounds {
-                    pos: dvec2(left, top_left.y),
-                    size: dvec2(right - left, size.y),
-                };
-                let (mut response, _) = field.update(ctx, event, bounds);
-
-                if let Some(UserSelection { anchor, focus }) = field.get_selection() {
-                    let mut clamp = |mut cursor: Cursor| {
-                        let index = cursor
-                            .path
-                            .first_mut()
-                            .map_or(&mut cursor.index, |(index, _)| index);
-                        if *index == 0 {
-                            *index = 1;
-                            response.request_redraw();
-                        }
-                        cursor
-                    };
-                    field.set_selection((clamp(anchor.clone()), clamp(focus.clone())));
-                }
-
-                (response, None, None, bounds)
-            }
-            OutputUi::Domain {
-                name: _,
-                name_field,
-                min_state,
-                max_state,
-            } => {
-                let mut size1 = parametric_domain
-                    .min
-                    .0
-                    .expression_size()
-                    .map(|s| ctx.ceil(s));
-                let size2 = name_field.expression_size().map(|s| ctx.ceil(s));
-                let mut size3 = parametric_domain
-                    .max
-                    .0
-                    .expression_size()
-                    .map(|s| ctx.ceil(s));
-
-                size1.x = size1
-                    .x
-                    .clamp(Self::DOMAIN_VALUE_MIN_WIDTH, Self::DOMAIN_VALUE_MAX_WIDTH);
-                size3.x = size3
-                    .x
-                    .clamp(Self::DOMAIN_VALUE_MIN_WIDTH, Self::DOMAIN_VALUE_MAX_WIDTH);
-
-                let height = size1.y.max(size2.y).max(size3.y);
-
-                let left1 = top_left.x + padding;
-                let left2 = left1 + size1.x;
-                let left3 = left2 + size2.x;
-
-                let bounds1 = Bounds {
-                    pos: dvec2(left1, top_left.y + (height - size1.y) / 2.0),
-                    size: size1,
-                };
-                let bounds2 = Bounds {
-                    pos: dvec2(left2, top_left.y + (height - size2.y) / 2.0),
-                    size: size2,
-                };
-                let bounds3 = Bounds {
-                    pos: dvec2(left3, top_left.y + (height - size3.y) / 2.0),
-                    size: size3,
-                };
-
-                let (mut response1, mut message1) =
-                    parametric_domain.min.0.update(ctx, event, bounds1);
-                let (response2, _) = name_field.update(ctx, event, bounds2);
-                let (mut response3, mut message3) =
-                    parametric_domain.max.0.update(ctx, event, bounds3);
-
-                match message1 {
-                    Some(Message::ContentsChanged) => {
-                        let mut latex = parametric_domain.min.0.to_latex();
-                        if latex.is_empty() {
-                            latex = parametric_domain.min.0.get_placeholder();
-                        }
-                        parametric_domain.min.1 = parse_standalone_expression(&latex)
-                    }
-                    Some(Message::Left | Message::Remove) => message1 = None,
-                    Some(Message::Right) => {
-                        message1 = None;
-                        parametric_domain.min.0.unfocus();
-                        parametric_domain.max.0.select_all();
-                    }
-                    Some(Message::Up | Message::Down | Message::Add) => {
-                        parametric_domain.min.0.unfocus()
-                    }
-                    None => {}
-                }
-
-                match message3 {
-                    Some(Message::ContentsChanged) => {
-                        let mut latex = parametric_domain.max.0.to_latex();
-                        if latex.is_empty() {
-                            latex = parametric_domain.max.0.get_placeholder();
-                        }
-                        parametric_domain.max.1 = parse_standalone_expression(&latex)
-                    }
-                    Some(Message::Left) => {
-                        message3 = None;
-                        parametric_domain.max.0.unfocus();
-                        parametric_domain.min.0.select_all();
-                    }
-                    Some(Message::Right | Message::Remove) => message3 = None,
-                    Some(Message::Up | Message::Down | Message::Add) => {
-                        parametric_domain.max.0.unfocus()
-                    }
-                    None => {}
-                }
-
-                let f = |f: &MathField, b: Bounds, s: &mut DomainFocusState, r: &mut Response| {
-                    let new = if f.has_focus() {
-                        DomainFocusState::Focussed
-                    } else if b.contains(ctx.cursor) {
-                        DomainFocusState::Hovered
-                    } else {
-                        DomainFocusState::None
-                    };
-                    if new != *s {
-                        *s = new;
-                        r.request_redraw();
-                    }
-                };
-                f(
-                    &parametric_domain.min.0,
-                    bounds1,
-                    &mut min_state.state,
-                    &mut response1,
-                );
-                f(
-                    &parametric_domain.max.0,
-                    bounds3,
-                    &mut max_state.state,
-                    &mut response3,
-                );
-
-                let response = response1.or(response2).or(response3);
-
-                let bounds = bounds1.union(bounds2).union(bounds3);
-
-                (response, None, message1.or(message3), bounds)
-            }
-        }
-    }
-
-    fn render(
-        &mut self,
-        ctx: &Context,
-        padding: f64,
-        top_left: DVec2,
-        width: f64,
-        field_has_focus: bool,
-        slider: &mut Slider,
-        parametric_domain: &mut Domain<(MathField, Result<ast::Expression, String>)>,
-        draw_quad: &mut impl FnMut(DVec2, DVec2, QuadKind),
-    ) -> f64 {
-        match &mut self.ui {
-            OutputUi::None => 0.0,
-            OutputUi::Slider {
-                value,
-                min,
-                max,
-                step,
-                hovered,
-                name_field,
-                step_label_field,
-                min_state,
-                max_state,
-                step_state,
-                ..
-            } => {
-                let is_slider_edit_shown = field_has_focus
-                    || slider.hard_min.0.has_focus()
-                    || slider.hard_max.0.has_focus()
-                    || slider.step.0.has_focus()
-                    || min_state.error
-                    || max_state.error
-                    || step_state.error;
-
-                for field in [&mut slider.hard_max.0, &mut slider.hard_min.0] {
-                    field.use_placeholder_if_empty = !is_slider_edit_shown;
-                    field.grayed = !is_slider_edit_shown;
-                    field.scale = if is_slider_edit_shown { 15.7 } else { 12.9 };
-                }
-
-                let mut slider_min_size = slider.hard_min.0.expression_size().map(|s| ctx.ceil(s));
-                let mut slider_max_size = slider.hard_max.0.expression_size().map(|s| ctx.ceil(s));
-
-                if is_slider_edit_shown {
-                    let name_size = name_field.expression_size().map(|s| ctx.ceil(s));
-                    let step_label_size = step_label_field.expression_size().map(|s| ctx.ceil(s));
-                    let mut slider_step_size = slider.step.0.expression_size().map(|s| ctx.ceil(s));
-
-                    for x in [
-                        &mut slider_min_size.x,
-                        &mut slider_max_size.x,
-                        &mut slider_step_size.x,
-                    ] {
-                        *x = x.clamp(Self::DOMAIN_VALUE_MIN_WIDTH, Self::DOMAIN_VALUE_MAX_WIDTH);
-                    }
-
-                    let height = 0f64 // muh formatting
-                        .max(slider_min_size.y)
-                        .max(name_size.y)
-                        .max(slider_max_size.y)
-                        .max(step_label_size.y)
-                        .max(slider_step_size.y);
-
-                    let slider_min_bounds = Bounds {
-                        pos: dvec2(
-                            top_left.x + padding,
-                            top_left.y + (height - slider_min_size.y) / 2.0,
-                        ),
-                        size: slider_min_size,
-                    };
-                    let name_bounds = Bounds {
-                        pos: dvec2(
-                            slider_min_bounds.right(),
-                            top_left.y + (height - name_size.y) / 2.0,
-                        ),
-                        size: name_size,
-                    };
-                    let slider_max_bounds = Bounds {
-                        pos: dvec2(
-                            name_bounds.right(),
-                            top_left.y + (height - slider_max_size.y) / 2.0,
-                        ),
-                        size: slider_max_size,
-                    };
-                    let step_label_bounds = Bounds {
-                        pos: dvec2(
-                            slider_max_bounds.right(),
-                            top_left.y + (height - step_label_size.y) / 2.0,
-                        ),
-                        size: step_label_size,
-                    };
-                    let slider_step_bounds = Bounds {
-                        pos: dvec2(
-                            step_label_bounds.right(),
-                            top_left.y + (height - slider_step_size.y) / 2.0,
-                        ),
-                        size: slider_step_size,
-                    };
-
-                    slider.hard_min.0.render(ctx, slider_min_bounds, draw_quad);
-                    name_field.render(ctx, name_bounds, draw_quad);
-                    slider.hard_max.0.render(ctx, slider_max_bounds, draw_quad);
-                    step_label_field.render(ctx, step_label_bounds, draw_quad);
-                    slider.step.0.render(ctx, slider_step_bounds, draw_quad);
-
-                    let mut f = |b: Bounds, s: DomainState| {
-                        draw_quad(
-                            ctx.scale_factor * (b.pos + dvec2(0.0, b.size.y - 1.0)),
-                            ctx.scale_factor
-                                * (b.pos
-                                    + b.size
-                                    + dvec2(
-                                        0.0,
-                                        if s.state == DomainFocusState::None && !s.error {
-                                            0.0
-                                        } else {
-                                            1.0
-                                        },
-                                    )),
-                            match s.state {
-                                _ if s.error => QuadKind::DomainBoundError,
-                                DomainFocusState::None | DomainFocusState::Hovered => {
-                                    QuadKind::DomainBoundUnfocussed
-                                }
-                                DomainFocusState::Focussed => QuadKind::DomainBoundFocussed,
-                            },
-                        )
-                    };
-
-                    f(slider_min_bounds, *min_state);
-                    f(slider_max_bounds, *max_state);
-                    f(slider_step_bounds, *step_state);
-
-                    let bounds = slider_min_bounds
-                        .union(name_bounds)
-                        .union(slider_max_bounds)
-                        .union(step_label_bounds)
-                        .union(slider_step_bounds);
-                    bounds.size.y
-                } else {
-                    let [value, min, max, step] = [value, min, max, step].map(|x| {
-                        x.as_mut()
-                            .expect("only None if error in which case slider edit shown")
-                    });
-                    let bar_radius = ctx.round_nonzero(Self::SLIDER_BAR_RADIUS);
-                    let tick_radius = ctx.round_nonzero(Self::SLIDER_TICK_RADIUS);
-                    let point_radius = ctx.round_nonzero(Self::SLIDER_POINT_RADIUS);
-                    let height = (point_radius * 2.0)
-                        .max(slider_min_size.y)
-                        .max(slider_max_size.y);
-
-                    let slider_min_bounds = Bounds {
-                        pos: top_left
-                            + dvec2(0.5 * padding, height / 2.0 - slider_min_size.y / 2.0),
-                        size: slider_min_size,
-                    };
-                    let slider_max_bounds = Bounds {
-                        pos: top_left
-                            + dvec2(
-                                width - 0.5 * padding - slider_max_size.x,
-                                height / 2.0 - slider_max_size.y / 2.0,
-                            ),
-                        size: slider_max_size,
-                    };
-
-                    let slider_bar_left = slider_min_bounds.right() + 0.8 * padding;
-                    let slider_bar_right = slider_max_bounds.left() - 0.8 * padding;
-                    let point = dvec2(
-                        mix(
-                            slider_bar_left,
-                            slider_bar_right,
-                            unmix(*value, *min, *max).clamp(0.0, 1.0),
-                        ),
-                        top_left.y + height / 2.0,
-                    );
-                    let bounds = Bounds {
-                        pos: top_left,
-                        size: dvec2(width, height),
-                    };
-
-                    draw_quad(
-                        ctx.scale_factor * (dvec2(slider_bar_left, point.y - bar_radius)),
-                        ctx.scale_factor * (dvec2(slider_bar_right, point.y + bar_radius)),
-                        QuadKind::SliderBar,
-                    );
-
-                    if step.abs() >= (*max - *min) * Self::SLIDER_STEP_TICKS_THRESHOLD {
-                        let n = (((*max - *min) / step.abs()).ceil() as u32).max(1) - 1;
-                        for i in 1..=n {
-                            let value = *min + *step * i as f64;
-                            let tick = dvec2(
-                                mix(slider_bar_left, slider_bar_right, unmix(value, *min, *max)),
-                                point.y,
-                            );
-                            draw_quad(
-                                ctx.scale_factor * (tick - tick_radius),
-                                ctx.scale_factor * (tick + tick_radius),
-                                QuadKind::SliderStepTick,
-                            );
-                        }
-                    }
-
-                    if (*min..=*max).contains(&0.0) {
-                        let tick = dvec2(
-                            mix(slider_bar_left, slider_bar_right, unmix(0.0, *min, *max)),
-                            point.y,
-                        );
-                        draw_quad(
-                            ctx.scale_factor * (tick - tick_radius),
-                            ctx.scale_factor * (tick + tick_radius),
-                            QuadKind::SliderZeroTick,
-                        );
-                    }
-
-                    draw_quad(
-                        ctx.scale_factor * (point - point_radius),
-                        ctx.scale_factor * (point + point_radius),
-                        QuadKind::SliderPointOuter,
-                    );
-                    let inner_radius = if *hovered { point_radius } else { bar_radius };
-                    draw_quad(
-                        ctx.scale_factor * (point - inner_radius),
-                        ctx.scale_factor * (point + inner_radius),
-                        QuadKind::SliderPointInner,
-                    );
-
-                    slider.hard_min.0.render(ctx, slider_min_bounds, draw_quad);
-                    slider.hard_max.0.render(ctx, slider_max_bounds, draw_quad);
-
-                    bounds.size.y
-                }
-            }
-            OutputUi::Field(field) => {
-                let size = field.expression_size().map(|s| ctx.ceil(s));
-                let right = top_left.x + width - 0.5 * padding;
-                let left = (right - size.x).max(top_left.x + padding);
-                let bounds = Bounds {
-                    pos: dvec2(left, top_left.y),
-                    size: dvec2(right - left, size.y),
-                };
-                draw_quad(
-                    ctx.scale_factor * bounds.pos,
-                    ctx.scale_factor * (bounds.pos + bounds.size),
-                    QuadKind::OutputValueBox,
-                );
-                field.render(ctx, bounds, draw_quad);
-                bounds.size.y
-            }
-            OutputUi::Domain {
-                name: _,
-                name_field,
-                min_state,
-                max_state,
-            } => {
-                let mut size1 = parametric_domain
-                    .min
-                    .0
-                    .expression_size()
-                    .map(|s| ctx.ceil(s));
-                let size2 = name_field.expression_size().map(|s| ctx.ceil(s));
-                let mut size3 = parametric_domain
-                    .max
-                    .0
-                    .expression_size()
-                    .map(|s| ctx.ceil(s));
-
-                size1.x = size1
-                    .x
-                    .clamp(Self::DOMAIN_VALUE_MIN_WIDTH, Self::DOMAIN_VALUE_MAX_WIDTH);
-                size3.x = size3
-                    .x
-                    .clamp(Self::DOMAIN_VALUE_MIN_WIDTH, Self::DOMAIN_VALUE_MAX_WIDTH);
-
-                let height = size1.y.max(size2.y).max(size3.y);
-
-                let left1 = top_left.x + padding;
-                let left2 = left1 + size1.x;
-                let left3 = left2 + size2.x;
-
-                let bounds1 = Bounds {
-                    pos: dvec2(left1, top_left.y + (height - size1.y) / 2.0),
-                    size: size1,
-                };
-                let bounds2 = Bounds {
-                    pos: dvec2(left2, top_left.y + (height - size2.y) / 2.0),
-                    size: size2,
-                };
-                let bounds3 = Bounds {
-                    pos: dvec2(left3, top_left.y + (height - size3.y) / 2.0),
-                    size: size3,
-                };
-
-                parametric_domain.min.0.render(ctx, bounds1, draw_quad);
-                name_field.render(ctx, bounds2, draw_quad);
-                parametric_domain.max.0.render(ctx, bounds3, draw_quad);
-
-                let mut f = |b: Bounds, s: DomainState| {
-                    draw_quad(
-                        ctx.scale_factor * (b.pos + dvec2(0.0, b.size.y - 1.0)),
-                        ctx.scale_factor
-                            * (b.pos
-                                + b.size
-                                + dvec2(
-                                    0.0,
-                                    if s.state == DomainFocusState::None && !s.error {
-                                        0.0
-                                    } else {
-                                        1.0
-                                    },
-                                )),
-                        match s.state {
-                            _ if s.error => QuadKind::DomainBoundError,
-                            DomainFocusState::None | DomainFocusState::Hovered => {
-                                QuadKind::DomainBoundUnfocussed
-                            }
-                            DomainFocusState::Focussed => QuadKind::DomainBoundFocussed,
-                        },
-                    )
-                };
-
-                f(bounds1, *min_state);
-                f(bounds3, *max_state);
-
-                let bounds = bounds1.union(bounds2).union(bounds3);
-                bounds.size.y
-            }
         }
     }
 }
@@ -1159,11 +1154,11 @@ fn get_numeric_literal(expr: &parse::ast::Expression) -> Option<f64> {
 
 /// If the hard bound is empty, then the soft bound is used.
 struct Slider {
-    hard_min: (MathField, Result<parse::ast::Expression, String>),
+    hard_min: (InlineField, Result<parse::ast::Expression, String>),
     soft_min: f64,
-    hard_max: (MathField, Result<parse::ast::Expression, String>),
+    hard_max: (InlineField, Result<parse::ast::Expression, String>),
     soft_max: f64,
-    step: (MathField, Result<parse::ast::Expression, String>),
+    step: (InlineField, Result<parse::ast::Expression, String>),
     /// This is what is displayed to the user when a slider is shown instead of
     /// the actual math field. It's to handle desync between the actual value vs
     /// clamped slider value, e.g., when slider bounds get animated.
@@ -1172,50 +1167,42 @@ struct Slider {
     fake_field_value: f64,
 }
 
+type ParametricDomain = Domain<(InlineField, Result<parse::ast::Expression, String>)>;
+
 struct Expression {
     field: MathField,
     slider: Slider,
-    parametric_domain: Domain<(MathField, Result<parse::ast::Expression, String>)>,
+    parametric_domain: ParametricDomain,
     ast: Option<Result<parse::ast::Statement, String>>,
     output: Output,
 }
 
 impl Default for Expression {
     fn default() -> Self {
-        use latex_tree::Node;
-        let f = |s: &str| {
-            let mut f = MathField::default();
-            f.set_placeholder(&s.chars().map(Node::Char).collect::<Vec<_>>());
-            f.scale = 15.7;
-            f.left_padding = 0.22;
-            f.bottom_padding = 0.25;
-            f.top_padding = 0.25;
-            f
-        };
         Self {
             field: Default::default(),
             slider: Slider {
                 hard_min: (
-                    f(&SLIDER_SOFT_MIN_DEFAULT.to_string()),
+                    InlineField::new(&SLIDER_SOFT_MIN_DEFAULT.to_string()),
                     Ok(ast::Expression::Number(SLIDER_SOFT_MIN_DEFAULT)),
                 ),
                 soft_min: SLIDER_SOFT_MIN_DEFAULT,
                 hard_max: (
-                    f(&SLIDER_SOFT_MAX_DEFAULT.to_string()),
+                    InlineField::new(&SLIDER_SOFT_MAX_DEFAULT.to_string()),
                     Ok(ast::Expression::Number(SLIDER_SOFT_MAX_DEFAULT)),
                 ),
                 soft_max: SLIDER_SOFT_MAX_DEFAULT,
-                step: (f(""), Ok(ast::Expression::Number(0.0))),
+                step: (InlineField::new(""), Ok(ast::Expression::Number(0.0))),
                 fake_field: Default::default(),
                 fake_field_value: 0.0,
             },
             parametric_domain: Domain {
                 min: (
-                    f(&PARAMETRIC_DOMAIN_MIN_DEFAULT.to_string()),
+                    InlineField::new(&PARAMETRIC_DOMAIN_MIN_DEFAULT.to_string()),
                     Ok(ast::Expression::Number(PARAMETRIC_DOMAIN_MIN_DEFAULT)),
                 ),
                 max: (
-                    f(&PARAMETRIC_DOMAIN_MAX_DEFAULT.to_string()),
+                    InlineField::new(&PARAMETRIC_DOMAIN_MAX_DEFAULT.to_string()),
                     Ok(ast::Expression::Number(PARAMETRIC_DOMAIN_MAX_DEFAULT)),
                 ),
             },
@@ -1266,6 +1253,7 @@ impl Expression {
             true => &self.slider.fake_field,
             false => &self.field,
         };
+        // TODO why do we round here if later uses end up multiplying by fractional amount anyway
         let padding = ctx.round(Self::PADDING);
         height += padding;
         let field_bounds = Bounds {
@@ -1274,7 +1262,7 @@ impl Expression {
         };
         height += field_bounds.size.y;
         height += 0.5 * padding;
-        let (output_response, new_value, output_message, output_bounds) = self.output.update(
+        let (output_response, new_value, output_message, output_bounds) = self.output.ui.update(
             ctx,
             event,
             padding,
@@ -1337,7 +1325,7 @@ impl Expression {
                         self.slider.fake_field = self.field.clone();
                     }
 
-                    if let OutputUi::Slider { min, max, step, .. } = self.output.ui {
+                    if let OutputUi::Slider(SliderUi { min, max, step, .. }) = self.output.ui {
                         // maybe using `offset` instead of unconditionally
                         // using `min` reduces floating-point error?
                         let offset = if !self.slider.hard_min.0.is_empty()
@@ -1440,7 +1428,7 @@ impl Expression {
         };
         height += field_bounds.size.y;
         height += 0.5 * padding;
-        height += self.output.render(
+        height += self.output.ui.render(
             ctx,
             padding,
             top_left + dvec2(0.0, height),
@@ -1902,23 +1890,9 @@ impl ExpressionList {
                             }
                         };
                         let mut slider = None;
-                        if let parse::ast::Statement::Assignment { name, value } = ast {
+                        if let parse::ast::Statement::Assignment { value, .. } = ast {
                             if get_numeric_literal(value).is_some() {
-                                e.output.set_slider_name(name);
-
-                                let OutputUi::Slider {
-                                    min_state,
-                                    max_state,
-                                    step_state,
-                                    ..
-                                } = &mut e.output.ui
-                                else {
-                                    unreachable!("we just set slider name so it should exist")
-                                };
-                                min_state.error = false;
-                                max_state.error = false;
-                                step_state.error = false;
-
+                                e.output.data = OutputData::None;
                                 let [min, max, step] =
                                     [&e.slider.hard_min, &e.slider.hard_max, &e.slider.step].map(
                                         |f| (!f.0.is_empty()).then(|| f.1.as_ref().ok()).flatten(),
@@ -2100,16 +2074,10 @@ impl ExpressionList {
                                                 },
                                                 Err(e) => Err(format!("parse error: {e}")),
                                             };
-                                            let OutputUi::Domain {
-                                                min_state,
-                                                max_state,
-                                                ..
-                                            } = &mut output.ui
-                                            else {
-                                                unreachable!()
-                                            };
-                                            min_state.error = min.is_err();
-                                            max_state.error = max.is_err();
+                                            expression.parametric_domain.min.0.underline.error =
+                                                min.is_err();
+                                            expression.parametric_domain.max.0.underline.error =
+                                                max.is_err();
 
                                             let (min, max) = match (min, max) {
                                                 (Ok(min), Ok(max)) => (min, max),
@@ -2131,8 +2099,18 @@ impl ExpressionList {
 
                                             if min > max {
                                                 output.data = OutputData::Error("invalid domain limits: min should be less than max".into());
-                                                min_state.error = true;
-                                                max_state.error = true;
+                                                expression
+                                                    .parametric_domain
+                                                    .min
+                                                    .0
+                                                    .underline
+                                                    .error = true;
+                                                expression
+                                                    .parametric_domain
+                                                    .max
+                                                    .0
+                                                    .underline
+                                                    .error = true;
                                                 continue 'results_loop;
                                             }
 
@@ -2324,7 +2302,7 @@ impl ExpressionList {
                                         output.ui = OutputUi::None;
                                     } else if !matches!(output.data, OutputData::DraggablePoint(_))
                                     {
-                                        output.ui = OutputUi::field_from_latex(&nodes);
+                                        output.ui = OutputUi::Field(FieldUi::new(&nodes));
                                     }
                                     if let OutputData::None = output.data {
                                         output.data = OutputData::Geometry(geometry);
@@ -2332,83 +2310,57 @@ impl ExpressionList {
                                 }
                             }
                             ExpressionResult::Slider { value, slider } => {
-                                let OutputUi::Slider {
-                                    min_state,
-                                    max_state,
-                                    step_state,
-                                    ..
-                                } = &mut output.ui
-                                else {
-                                    // hm maybe we should set it for the first time here!
-                                    unreachable!()
-                                };
-
                                 let mut error_msg = String::new();
                                 let [min, max, step] = [
-                                    (
-                                        "min",
-                                        &expression.slider.hard_min,
-                                        &slider.min,
-                                        &mut *min_state,
-                                    ),
-                                    (
-                                        "max",
-                                        &expression.slider.hard_max,
-                                        &slider.max,
-                                        &mut *max_state,
-                                    ),
-                                    (
-                                        "step",
-                                        &expression.slider.step,
-                                        &slider.step,
-                                        &mut *step_state,
-                                    ),
+                                    ("min", &mut expression.slider.hard_min, &slider.min),
+                                    ("max", &mut expression.slider.hard_max, &slider.max),
+                                    ("step", &mut expression.slider.step, &slider.step),
                                 ]
-                                .map(
-                                    |(name, field, result, state)| {
-                                        if field.0.is_empty() {
-                                            return Ok(None);
-                                        }
+                                .map(|(name, field, result)| {
+                                    field.0.underline.error = false;
 
-                                        let nl = if error_msg.is_empty() { "" } else { "\n" };
+                                    if field.0.is_empty() {
+                                        return Ok(None);
+                                    }
 
-                                        if let Err(e) = &field.1 {
+                                    let nl = if error_msg.is_empty() { "" } else { "\n" };
+
+                                    if let Err(e) = &field.1 {
+                                        write!(
+                                            &mut error_msg,
+                                            "{nl}(slider {name}) parse error: {e}"
+                                        )
+                                        .unwrap();
+                                        field.0.underline.error = true;
+                                        return Err(());
+                                    }
+
+                                    let id = match result.as_ref().unwrap() {
+                                        Ok(id) => id,
+                                        Err(e) => {
                                             write!(
                                                 &mut error_msg,
-                                                "{nl}(slider {name}) parse error: {e}"
+                                                "{nl}(slider {name}) analysis error: {e}"
                                             )
                                             .unwrap();
-                                            state.error = true;
+                                            field.0.underline.error = true;
                                             return Err(());
                                         }
+                                    };
 
-                                        let id = match result.as_ref().unwrap() {
-                                            Ok(id) => id,
-                                            Err(e) => {
-                                                write!(
-                                                    &mut error_msg,
-                                                    "{nl}(slider {name}) analysis error: {e}"
-                                                )
-                                                .unwrap();
-                                                state.error = true;
-                                                return Err(());
-                                            }
-                                        };
+                                    let value = vm.vars[var_indices[id]].clone().number();
+                                    if !value.is_finite() {
+                                        write!(
+                                            &mut error_msg,
+                                            "{nl}invalid slider {name}: value should be finite"
+                                        )
+                                        .unwrap();
+                                        field.0.underline.error = true;
+                                        return Err(());
+                                    }
 
-                                        let value = vm.vars[var_indices[id]].clone().number();
-                                        if !value.is_finite() {
-                                            write!(
-                                                &mut error_msg,
-                                                "{nl}invalid slider {name}: value should be finite"
-                                            )
-                                            .unwrap();
-                                            state.error = true;
-                                            return Err(());
-                                        }
-
-                                        Ok(Some(value))
-                                    },
-                                );
+                                    Ok(Some(value))
+                                });
 
                                 if !error_msg.is_empty() {
                                     output.data = OutputData::Error(error_msg);
@@ -2418,8 +2370,8 @@ impl ExpressionList {
                                     output.data = OutputData::Error(
                                         "invalid slider limits: min should be less than max".into(),
                                     );
-                                    min_state.error = true;
-                                    max_state.error = true;
+                                    expression.slider.hard_min.0.underline.error = true;
+                                    expression.slider.hard_max.0.underline.error = true;
                                 }
 
                                 let value =
@@ -2445,8 +2397,15 @@ impl ExpressionList {
                                     })
                                 });
 
-                                output.set_slider_fields(
+                                let Some(Ok(ast::Statement::Assignment { name, .. })) =
+                                    &expression.ast
+                                else {
+                                    unreachable!("slider always has a name")
+                                };
+
+                                output.ui.set_slider(
                                     &mut expression.slider,
+                                    name,
                                     value,
                                     slider_min,
                                     slider_max,
@@ -2473,7 +2432,7 @@ impl ExpressionList {
         }
 
         for expression in &mut self.expressions {
-            if let OutputUi::Slider { value, .. } = expression.output.ui
+            if let OutputUi::Slider(SliderUi { value, .. }) = expression.output.ui
                 && let Some(value) = value
                 && expression.slider.fake_field_value != value
                 && !expression.slider.fake_field.has_focus()

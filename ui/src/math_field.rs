@@ -17,7 +17,7 @@ use crate::{
         new_frac, new_radical, new_script, new_script_lower, new_script_upper, new_sqrt, to_latex,
     },
     ui::{Bounds, Context, CursorMode, Event, QuadKind, Response},
-    utility::{mix, snap},
+    utility::{mix, set, snap},
 };
 use parse::{
     latex_parser::parse_latex,
@@ -1018,8 +1018,7 @@ impl MathField {
     }
 
     pub fn no_italic(&mut self, no_italic: bool) {
-        if self.tree.no_italic != no_italic {
-            self.tree.no_italic = no_italic;
+        if set(&mut self.tree.no_italic, no_italic) {
             self.tree.layout();
         }
     }

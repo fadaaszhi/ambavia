@@ -4,7 +4,7 @@ use std::{
 };
 
 use arboard::Clipboard;
-use glam::DVec2;
+use glam::{DVec2, DVec4, dvec4};
 use winit::{
     event::{ElementState, KeyEvent, MouseButton, WindowEvent},
     keyboard::ModifiersState,
@@ -213,53 +213,99 @@ impl Response {
     }
 }
 
-pub enum QuadKind {
-    MsdfGlyph(DVec2, DVec2),
-    TranslucentMsdfGlyph(DVec2, DVec2),
-    BlackBox,
-    TranslucentBlackBox,
-    HighlightBox,
-    GrayBox,
-    TransparentToWhiteGradient,
-    OutputValueBox,
-    SliderBar,
-    SliderStepTick,
-    SliderZeroTick,
-    SliderPointOuter,
-    SliderPointInner,
-    PlaceholderMsdfGlyph(DVec2, DVec2),
-    PlaceholderBlackBox,
-    GrayedMsdfGlyph(DVec2, DVec2),
-    GrayedBlackBox,
-    DomainBoundUnfocussed,
-    DomainBoundFocussed,
-    DomainBoundError,
+pub struct Quad {
+    pub kind: QuadKind,
+    pub p0: DVec2,
+    pub p1: DVec2,
+    pub uv0: DVec2,
+    pub uv1: DVec2,
+    pub color: DVec4,
 }
 
-impl QuadKind {
-    pub fn index(&self) -> u32 {
-        use QuadKind as K;
-        match self {
-            K::MsdfGlyph(..) => 0,
-            K::TranslucentMsdfGlyph(..) => 1,
-            K::BlackBox => 2,
-            K::TranslucentBlackBox => 3,
-            K::HighlightBox => 4,
-            K::GrayBox => 5,
-            K::TransparentToWhiteGradient => 6,
-            K::OutputValueBox => 7,
-            K::SliderBar => 8,
-            K::SliderStepTick => 9,
-            K::SliderZeroTick => 10,
-            K::SliderPointOuter => 11,
-            K::SliderPointInner => 12,
-            K::PlaceholderMsdfGlyph(..) => 13,
-            K::PlaceholderBlackBox => 14,
-            K::DomainBoundUnfocussed => 15,
-            K::DomainBoundFocussed => 16,
-            K::DomainBoundError => 17,
-            K::GrayedMsdfGlyph(..) => 18,
-            K::GrayedBlackBox => 19,
+impl Default for Quad {
+    fn default() -> Self {
+        Self {
+            kind: QuadKind::Rectangle,
+            p0: DVec2::ZERO,
+            p1: DVec2::ZERO,
+            uv0: DVec2::ZERO,
+            uv1: DVec2::ONE,
+            color: DVec4::ZERO,
         }
     }
+}
+
+pub trait Color {
+    fn to_rgbaf64(self) -> DVec4;
+}
+
+impl Color for (f64, f64, f64, f64) {
+    fn to_rgbaf64(self) -> DVec4 {
+        self.into()
+    }
+}
+
+impl Color for [f64; 3] {
+    fn to_rgbaf64(self) -> DVec4 {
+        dvec4(self[0], self[1], self[2], 1.0)
+    }
+}
+
+impl Color for (f64, f64, f64) {
+    fn to_rgbaf64(self) -> DVec4 {
+        dvec4(self.0, self.1, self.2, 1.0)
+    }
+}
+
+impl Color for (u8, u8, u8, f64) {
+    fn to_rgbaf64(self) -> DVec4 {
+        dvec4(
+            self.0 as f64 / 255.0,
+            self.1 as f64 / 255.0,
+            self.2 as f64 / 255.0,
+            self.3,
+        )
+    }
+}
+
+impl Color for (u8, u8, u8) {
+    fn to_rgbaf64(self) -> DVec4 {
+        (self.0, self.1, self.2, 1.0).to_rgbaf64()
+    }
+}
+
+impl Color for [u8; 3] {
+    fn to_rgbaf64(self) -> DVec4 {
+        (self[0], self[1], self[2]).to_rgbaf64()
+    }
+}
+
+impl Quad {
+    pub fn rectangle(p0: DVec2, p1: DVec2, color: impl Color) -> Quad {
+        Quad {
+            kind: QuadKind::Rectangle,
+            p0,
+            p1,
+            color: color.to_rgbaf64(),
+            ..Default::default()
+        }
+    }
+
+    pub fn pill(p0: DVec2, p1: DVec2, color: impl Color) -> Quad {
+        Quad {
+            kind: QuadKind::Pill,
+            p0,
+            p1,
+            color: color.to_rgbaf64(),
+            ..Default::default()
+        }
+    }
+}
+
+pub enum QuadKind {
+    Rectangle,
+    Pill,
+    MsdfGlyph,
+    AlphaGradientU,
+    OutputValueBox,
 }

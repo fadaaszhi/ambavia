@@ -2,7 +2,7 @@ mod tree;
 
 use std::{iter::zip, ops::Range};
 
-use glam::{DVec2, dvec2};
+use glam::{DVec2, DVec4, dvec2, dvec4};
 use winit::{
     event::{ElementState, KeyEvent, MouseButton},
     window::CursorIcon,
@@ -16,7 +16,7 @@ use crate::{
         OPERATORNAMES, TexturedQuad, Tree, ends_in_operatorname, new_big_op, new_bracket, new_char,
         new_frac, new_radical, new_script, new_script_lower, new_script_upper, new_sqrt, to_latex,
     },
-    ui::{Bounds, Context, CursorMode, Event, QuadKind, Response},
+    ui::{Bounds, Context, CursorMode, Event, Quad, QuadKind, Response},
     utility::{mix, set, snap},
 };
 use parse::{
@@ -760,7 +760,7 @@ impl Tree {
         ctx: &Context,
         selection: &Selection,
         transform: &impl Fn(DVec2) -> DVec2,
-        draw_quad: &mut impl FnMut(DVec2, DVec2, QuadKind),
+        draw_quad: &mut impl FnMut(Quad),
     ) {
         let tree = self.walk(&selection.path);
         match &selection.span {
@@ -780,13 +780,13 @@ impl Tree {
                 let x = snap(p0.x, w);
                 let p0 = dvec2(x - w as f64 / 2.0, p0.y.floor());
                 let p1 = dvec2(x + w as f64 / 2.0, p1.y.ceil());
-                draw_quad(p0, p1, QuadKind::BlackBox);
+                draw_quad(Quad::rectangle(p0, p1, [0; 3]))
             }
             SelectionSpan::Range(r) => {
                 for (b, _) in &tree.nodes[r.clone()] {
                     let p0 = transform(b.top_left());
                     let p1 = transform(b.bottom_right());
-                    draw_quad(p0, p1, QuadKind::HighlightBox);
+                    draw_quad(Quad::rectangle(p0, p1, (180, 213, 254)));
                 }
             }
         }
@@ -796,14 +796,14 @@ impl Tree {
         &self,
         ctx: &Context,
         transform: &impl Fn(DVec2) -> DVec2,
-        draw_quad: &mut impl FnMut(DVec2, DVec2, QuadKind),
+        draw_quad: &mut impl FnMut(Quad),
     ) {
         if self.has_gray_background {
-            draw_quad(
+            draw_quad(Quad::rectangle(
                 transform(self.bounds.top_left()),
                 transform(self.bounds.bottom_right()),
-                QuadKind::TranslucentBlackBox,
-            );
+                (0, 0, 0, 0.2),
+            ));
         }
         for (_, node) in &self.nodes {
             match node {
@@ -840,7 +840,7 @@ impl Tree {
                     let mut l1 = transform(dvec2(line.x_max, line.y));
                     l0.y = l0.y.floor();
                     l1.y = l0.y + ctx.round_nonzero_as_physical(1.0) as f64;
-                    draw_quad(l0, l1, QuadKind::BlackBox);
+                    draw_quad(Quad::rectangle(l0, l1, [0; 3]));
                 }
                 Frac { num, den, line } => {
                     num.render(ctx, transform, draw_quad);
@@ -849,11 +849,11 @@ impl Tree {
                     let l1 = transform(dvec2(line.x_max, line.y));
                     let w = ctx.round_nonzero_as_physical(1.0);
                     let y = snap(l0.y, w);
-                    draw_quad(
+                    draw_quad(Quad::rectangle(
                         dvec2(l0.x.floor(), y - w as f64 / 2.0),
                         dvec2(l1.x.ceil(), y + w as f64 / 2.0),
-                        QuadKind::BlackBox,
-                    );
+                        [0; 3],
+                    ));
                 }
                 BigOp {
                     lower,
@@ -872,20 +872,16 @@ impl Tree {
 }
 
 impl TexturedQuad {
-    fn render(
-        &self,
-        transform: &impl Fn(DVec2) -> DVec2,
-        draw_quad: &mut impl FnMut(DVec2, DVec2, QuadKind),
-    ) {
-        draw_quad(
-            transform(self.position),
-            transform(self.position + self.size),
-            if self.gray {
-                QuadKind::TranslucentMsdfGlyph
-            } else {
-                QuadKind::MsdfGlyph
-            }(self.uv0, self.uv1),
-        );
+    fn render(&self, transform: &impl Fn(DVec2) -> DVec2, draw_quad: &mut impl FnMut(Quad)) {
+        let opacity = if self.gray { 0.2 } else { 1.0 };
+        draw_quad(Quad {
+            kind: QuadKind::MsdfGlyph,
+            p0: transform(self.position),
+            p1: transform(self.position + self.size),
+            uv0: self.uv0,
+            uv1: self.uv1,
+            color: dvec4(0.0, 0.0, 0.0, opacity),
+        });
     }
 }
 
@@ -2307,12 +2303,7 @@ impl MathField {
         to_latex(&self.tree, true)
     }
 
-    pub fn render(
-        &mut self,
-        ctx: &Context,
-        bounds: Bounds,
-        draw_quad: &mut impl FnMut(DVec2, DVec2, QuadKind),
-    ) {
+    pub fn render(&mut self, ctx: &Context, bounds: Bounds, draw_quad: &mut impl FnMut(Quad)) {
         self.width = bounds.size.x;
         self.scroll(0.0);
         let top_left = bounds.pos * ctx.scale_factor;
@@ -2323,34 +2314,27 @@ impl MathField {
         } else {
             &mut self.tree
         };
-        let draw_quad = &mut |p0: DVec2, p1: DVec2, mut kind: QuadKind| {
-            let q0 = p0.clamp(top_left, bottom_right);
-            let q1 = p1.clamp(top_left, bottom_right);
-            match &mut kind {
-                QuadKind::MsdfGlyph(uv0, uv1) | QuadKind::TranslucentMsdfGlyph(uv0, uv1) => {
-                    *uv0 = mix(*uv0, *uv1, (q0 - p0) / (p1 - p0));
-                    *uv1 = mix(*uv0, *uv1, (q1 - p0) / (p1 - p0));
-                }
-                _ => {}
-            }
+        let draw_quad = &mut |quad: Quad| {
+            let p0 = quad.p0.clamp(top_left, bottom_right);
+            let p1 = quad.p1.clamp(top_left, bottom_right);
+            let uv0 = mix(quad.uv0, quad.uv1, (p0 - quad.p0) / (quad.p1 - quad.p0));
+            let uv1 = mix(quad.uv0, quad.uv1, (p1 - quad.p0) / (quad.p1 - quad.p0));
+
+            let mut color = quad.color;
             if self.grayed {
-                if let QuadKind::MsdfGlyph(uv0, uv1) | QuadKind::TranslucentMsdfGlyph(uv0, uv1) =
-                    kind
-                {
-                    kind = QuadKind::GrayedMsdfGlyph(uv0, uv1);
-                } else if let QuadKind::BlackBox = kind {
-                    kind = QuadKind::GrayedBlackBox;
-                }
+                color.w *= 0.6;
             } else if use_placeholder {
-                if let QuadKind::MsdfGlyph(uv0, uv1) | QuadKind::TranslucentMsdfGlyph(uv0, uv1) =
-                    kind
-                {
-                    kind = QuadKind::PlaceholderMsdfGlyph(uv0, uv1);
-                } else if let QuadKind::BlackBox = kind {
-                    kind = QuadKind::PlaceholderBlackBox;
-                }
-            }
-            draw_quad(q0, q1, kind)
+                color.w *= 0.47;
+            };
+
+            draw_quad(Quad {
+                kind: quad.kind,
+                p0,
+                p1,
+                uv0,
+                uv1,
+                color,
+            })
         };
         let height = tree.bounds.height;
         let transform = &|p| {
@@ -2377,26 +2361,30 @@ impl MathField {
 
         if self.scroll > 0.0 {
             // The order of the first two arguments determines which the direction of the gradient
-            draw_quad(
-                dvec2(
+            draw_quad(Quad {
+                kind: QuadKind::AlphaGradientU,
+                p0: dvec2(
                     top_left.x + ctx.scale_factor * self.scale * self.overflow_gradient_width,
                     bottom_right.y,
                 ),
-                top_left,
-                QuadKind::TransparentToWhiteGradient,
-            );
+                p1: top_left,
+                color: DVec4::ONE,
+                ..Default::default()
+            });
         }
 
         if self.scroll < self.expression_size().x - bounds.size.x {
             // The order of the first two arguments determines which the direction of the gradient
-            draw_quad(
-                dvec2(
+            draw_quad(Quad {
+                kind: QuadKind::AlphaGradientU,
+                p0: dvec2(
                     bottom_right.x - ctx.scale_factor * self.scale * self.overflow_gradient_width,
                     top_left.y,
                 ),
-                bottom_right,
-                QuadKind::TransparentToWhiteGradient,
-            );
+                p1: bottom_right,
+                color: DVec4::ONE,
+                ..Default::default()
+            });
         }
     }
 }

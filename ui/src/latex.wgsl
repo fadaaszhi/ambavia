@@ -7,40 +7,25 @@ struct Uniforms {
     scale_factor: f32,
 }
 
-const MSDF_GLYPH = 0u;
-const TRANSLUCENT_MSDF_GLYPH = 1u;
-const BLACK_BOX = 2u;
-const TRANSLUCENT_BLACK_BOX = 3u;
-const HIGHLIGHT_BOX = 4u;
-const GRAY_BOX = 5u;
-const TRANSPARENT_TO_WHITE_GRADIENT = 6u;
-const OUTPUT_VALUE_BOX = 7u;
-const SLIDER_BAR = 8u;
-const SLIDER_STEP_TICK = 9u;
-const SLIDER_ZERO_TICK = 10u;
-const SLIDER_POINT_OUTER = 11u;
-const SLIDER_POINT_INNER = 12u;
-const PLACEHOLDER_MSDF_GLYPH = 13u;
-const PLACEHOLDER_BLACK_BOX = 14u;
-const DOMAIN_BOUND_UNFOCUSSED = 15u;
-const DOMAIN_BOUND_FOCUSSED = 16u;
-const DOMAIN_BOUND_ERROR = 17u;
-const GRAYED_MSDF_GLYPH = 18u;
-const GRAYED_BLACK_BOX = 19u;
-
-const PLACEHOLDER_OPACITY = 0.47;
-const GRAYED_OPACITY = 0.6;
+// QuadKind
+const Rectangle = 0u;
+const Pill = 1u;
+const MsdfGlyph = 2u;
+const AlphaGradientU = 3u;
+const OutputValueBox = 4u;
 
 struct Vertex {
     @location(0) position: vec2f,
-    @location(1) uv: vec2f,
+    @location(1) color: vec4f,
     @location(2) kind: u32,
+    @location(3) uv: vec2f,
 }
 
 struct VertexOutput {
     @builtin(position) position: vec4f,
-    @location(0) uv: vec2f,
+    @location(0) color: vec4f,
     @location(1) @interpolate(flat) kind: u32,
+    @location(2) uv: vec2f,
 }
 
 fn flip_y(v: vec2f) -> vec2f {
@@ -50,7 +35,7 @@ fn flip_y(v: vec2f) -> vec2f {
 @vertex
 fn vs_latex(v: Vertex) -> VertexOutput {
     let p_clip = vec4(flip_y(2.0 * v.position - uniforms.resolution) / uniforms.resolution, 0.0, 1.0);
-    return VertexOutput(p_clip, v.uv, v.kind);
+    return VertexOutput(p_clip,  v.color, v.kind, v.uv);
 }
 
 fn median(x: f32, y: f32, z: f32) -> f32 {
@@ -93,63 +78,14 @@ fn fs_latex(in: VertexOutput) -> @location(0) vec4f {
     let size = 1.0 / vec2(dpdx(in.uv.x), dpdy(in.uv.y));
 
     switch in.kind {
-        case BLACK_BOX {
-            return vec4(0.0, 0.0, 0.0, 1.0);
+        case Rectangle, default {
+            return in.color;
         }
-        case TRANSLUCENT_BLACK_BOX {
-            return vec4(0.0, 0.0, 0.0, 0.2);
-        }
-        case PLACEHOLDER_BLACK_BOX {
-            return vec4(0.0, 0.0, 0.0, PLACEHOLDER_OPACITY);
-        }
-        case GRAYED_BLACK_BOX {
-            return vec4(0.0, 0.0, 0.0, GRAYED_OPACITY);
-        }
-        case DOMAIN_BOUND_UNFOCUSSED {
-            return vec4(0.8, 0.8, 0.8, 1.0);
-        }
-        case DOMAIN_BOUND_FOCUSSED {
-            return vec4(0.18, 0.45, 0.86, 1.0);
-        }
-        case DOMAIN_BOUND_ERROR {
-            return vec4(0.882, 0.345, 0.333, 1.0);
-        }
-        case HIGHLIGHT_BOX {
-            return vec4(0.706, 0.835, 0.996, 1.0);
-        }
-        case GRAY_BOX {
-            return vec4(0.847, 0.847, 0.847, 1.0);
-        }
-        case TRANSPARENT_TO_WHITE_GRADIENT {
-            return vec4(1.0, 1.0, 1.0, in.uv.x);
-        }
-        case OUTPUT_VALUE_BOX {
-            const RADIUS = 4.0;
-            const STROKE_COLOR = vec3(0.84);
-            const FILL_COLOR = vec3(0.96);
-            const STROKE_WIDTH = 1.0;
-
-            let radius = RADIUS * uniforms.scale_factor;
-            let stroke_width = max(round(STROKE_WIDTH * uniforms.scale_factor), 1.0);
-
-            let sd = sd_rounded_box(size * (in.uv - 0.5), size / 2.0, vec4(radius));
-            let color = mix(STROKE_COLOR, FILL_COLOR, saturate(0.5 - (sd + stroke_width)));
-            return vec4(color, saturate(0.5 - sd));
-        }
-        case SLIDER_BAR, SLIDER_STEP_TICK, SLIDER_ZERO_TICK, SLIDER_POINT_OUTER, SLIDER_POINT_INNER {
-            var color: vec4f;
-            switch in.kind {
-                case SLIDER_BAR         { color = vec4(0.898, 0.898, 0.898, 1.000); }
-                case SLIDER_STEP_TICK   { color = vec4(1.000, 1.000, 1.000, 1.000); }
-                case SLIDER_ZERO_TICK   { color = vec4(0.000, 0.000, 0.000, 0.353); }
-                case SLIDER_POINT_OUTER { color = vec4(0.184, 0.447, 0.863, 0.350); }
-                case SLIDER_POINT_INNER { color = vec4(0.184, 0.447, 0.863, 1.000); }
-                default {}
-            }
+        case Pill {
             let sd = sd_rounded_box(size * (in.uv - 0.5), size / 2.0, vec4(size.y / 2.0));
-            return color * vec4(1.0, 1.0, 1.0, saturate(0.5 - sd));
+            return in.color * vec4(1.0, 1.0, 1.0, saturate(0.5 - sd));
         }
-        default {
+        case MsdfGlyph {
             // Based off the example snippet from https://github.com/Chlumsky/msdfgen
             // but adjusted to handle non-uniform scaling
             let px_range = 4.0; // set during MSDF atlas creation
@@ -167,14 +103,23 @@ fn fs_latex(in: VertexOutput) -> @location(0) vec4f {
             var msd_screen = screen_px_range * (msd - 0.5);
             let screen_px_distance = median(msd_screen.r, msd_screen.g, msd_screen.b);
             var opacity = saturate(screen_px_distance + 0.5);
-            if in.kind == TRANSLUCENT_MSDF_GLYPH {
-                opacity *= 0.2;
-            } else if in.kind == PLACEHOLDER_MSDF_GLYPH {
-                opacity *= PLACEHOLDER_OPACITY;
-            } else if in.kind == GRAYED_MSDF_GLYPH {
-                opacity *= GRAYED_OPACITY;
-            }
-            return vec4(0.0, 0.0, 0.0, opacity);
+            return in.color * vec4(1.0, 1.0, 1.0, opacity);
+        }
+        case AlphaGradientU {
+            return in.color * vec4(1.0, 1.0, 1.0, in.uv.x);
+        }
+        case OutputValueBox {
+            const RADIUS = 4.0;
+            const STROKE_COLOR = vec3(0.84);
+            const FILL_COLOR = vec3(0.96);
+            const STROKE_WIDTH = 1.0;
+
+            let radius = RADIUS * uniforms.scale_factor;
+            let stroke_width = max(round(STROKE_WIDTH * uniforms.scale_factor), 1.0);
+
+            let sd = sd_rounded_box(size * (in.uv - 0.5), size / 2.0, vec4(radius));
+            let color = mix(STROKE_COLOR, FILL_COLOR, saturate(0.5 - (sd + stroke_width)));
+            return vec4(color, saturate(0.5 - sd));
         }
     }
 }

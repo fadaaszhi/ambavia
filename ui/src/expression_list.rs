@@ -4,7 +4,7 @@ use std::{collections::HashMap, ops::Deref};
 
 use bytemuck::{Zeroable, offset_of};
 use derive_more::{Add, From, Into, Sub};
-use glam::{DVec2, U16Vec2, Vec2, dvec2, u16vec2, uvec2, vec2};
+use glam::{DVec2, Vec2, dvec2, uvec2, vec2};
 use typed_index_collections::{TiVec, ti_vec};
 use winit::{
     event::{ElementState, MouseButton},
@@ -15,7 +15,7 @@ use crate::{
     AppGraphics,
     graph::{Geometry, GeometryKind},
     math_field::{Cursor, Interactiveness, MathField, Message, UserSelection},
-    ui::{Bounds, Context, CursorMode, Event, QuadKind, Response},
+    ui::{Bounds, Context, CursorMode, Event, Quad, QuadKind, Response},
     utility::{max, mix, set, union, unmix},
 };
 use eval::{
@@ -67,12 +67,7 @@ impl Underline {
         }
     }
 
-    fn render(
-        &self,
-        ctx: &Context,
-        field_bounds: Bounds,
-        draw_quad: &mut impl FnMut(DVec2, DVec2, QuadKind),
-    ) {
+    fn render(&self, ctx: &Context, field_bounds: Bounds, draw_quad: &mut impl FnMut(Quad)) {
         let thickness = if self.state != UnderlineState::None || self.error {
             2.0
         } else {
@@ -80,16 +75,16 @@ impl Underline {
         };
         let top_left = field_bounds.pos + dvec2(0.0, field_bounds.size.y - 1.0);
         let bottom_right = top_left + dvec2(field_bounds.size.x, thickness);
-
-        draw_quad(
+        let color = match self.state {
+            _ if self.error => (225, 88, 85),
+            UnderlineState::None | UnderlineState::Hovered => (180, 180, 180),
+            UnderlineState::Focussed => (47, 114, 220),
+        };
+        draw_quad(Quad::rectangle(
             ctx.scale_factor * top_left,
             ctx.scale_factor * bottom_right,
-            match self.state {
-                _ if self.error => QuadKind::DomainBoundError,
-                UnderlineState::None | UnderlineState::Hovered => QuadKind::DomainBoundUnfocussed,
-                UnderlineState::Focussed => QuadKind::DomainBoundFocussed,
-            },
-        );
+            color,
+        ));
     }
 }
 
@@ -161,12 +156,7 @@ impl InlineField {
         (response, message)
     }
 
-    fn render(
-        &mut self,
-        ctx: &Context,
-        bounds: Bounds,
-        draw_quad: &mut impl FnMut(DVec2, DVec2, QuadKind),
-    ) {
+    fn render(&mut self, ctx: &Context, bounds: Bounds, draw_quad: &mut impl FnMut(Quad)) {
         if self.do_underline {
             self.underline.state = if self.field.has_focus() {
                 UnderlineState::Focussed
@@ -630,7 +620,7 @@ impl SliderUi {
         width: f64,
         field_has_focus: bool,
         slider: &mut Slider,
-        draw_quad: &mut impl FnMut(DVec2, DVec2, QuadKind),
+        draw_quad: &mut impl FnMut(Quad),
     ) -> f64 {
         match self.layout(ctx, padding, top_left, width, field_has_focus, slider) {
             SliderLayout::Edit(layout) => self.render_edit(ctx, slider, draw_quad, layout),
@@ -642,7 +632,7 @@ impl SliderUi {
         &mut self,
         ctx: &Context,
         slider: &mut Slider,
-        draw_quad: &mut impl FnMut(DVec2, DVec2, QuadKind),
+        draw_quad: &mut impl FnMut(Quad),
         l: SliderEditLayout,
     ) -> f64 {
         slider.hard_min.0.render(ctx, l.min_field, draw_quad);
@@ -658,7 +648,7 @@ impl SliderUi {
         &mut self,
         ctx: &Context,
         slider: &mut Slider,
-        draw_quad: &mut impl FnMut(DVec2, DVec2, QuadKind),
+        draw_quad: &mut impl FnMut(Quad),
         l: SliderBarLayout,
     ) -> f64 {
         let (Some(min), Some(max), Some(step)) = (self.min, self.max, self.step) else {
@@ -668,11 +658,11 @@ impl SliderUi {
         let tick_radius = ctx.round_nonzero(Self::SLIDER_TICK_RADIUS);
 
         // slider bar
-        draw_quad(
+        draw_quad(Quad::pill(
             ctx.scale_factor * (dvec2(l.bar_left, l.point.y - bar_radius)),
             ctx.scale_factor * (dvec2(l.bar_right, l.point.y + bar_radius)),
-            QuadKind::SliderBar,
-        );
+            [0.9; 3],
+        ));
 
         // step ticks on slider bar
         if step.abs() >= (max - min) * Self::SLIDER_STEP_TICKS_THRESHOLD {
@@ -683,11 +673,11 @@ impl SliderUi {
                     mix(l.bar_left, l.bar_right, unmix(value, min, max)),
                     l.point.y,
                 );
-                draw_quad(
+                draw_quad(Quad::pill(
                     ctx.scale_factor * (tick - tick_radius),
                     ctx.scale_factor * (tick + tick_radius),
-                    QuadKind::SliderStepTick,
-                );
+                    [1.0; 3],
+                ));
             }
         }
 
@@ -697,29 +687,29 @@ impl SliderUi {
                 mix(l.bar_left, l.bar_right, unmix(0.0, min, max)),
                 l.point.y,
             );
-            draw_quad(
+            draw_quad(Quad::pill(
                 ctx.scale_factor * (tick - tick_radius),
                 ctx.scale_factor * (tick + tick_radius),
-                QuadKind::SliderZeroTick,
-            );
+                (0, 0, 0, 0.35),
+            ));
         }
 
         // slider point
-        draw_quad(
+        draw_quad(Quad::pill(
             ctx.scale_factor * (l.point - l.point_radius),
             ctx.scale_factor * (l.point + l.point_radius),
-            QuadKind::SliderPointOuter,
-        );
+            (47, 114, 220, 0.25),
+        ));
         let inner_radius = if self.point_hovered {
             l.point_radius
         } else {
             bar_radius
         };
-        draw_quad(
+        draw_quad(Quad::pill(
             ctx.scale_factor * (l.point - inner_radius),
             ctx.scale_factor * (l.point + inner_radius),
-            QuadKind::SliderPointInner,
-        );
+            (47, 114, 220),
+        ));
 
         // min/max field
         slider.hard_min.0.render(ctx, l.min_field, draw_quad);
@@ -789,14 +779,15 @@ impl FieldUi {
         padding: f64,
         top_left: DVec2,
         width: f64,
-        draw_quad: &mut impl FnMut(DVec2, DVec2, QuadKind),
+        draw_quad: &mut impl FnMut(Quad),
     ) -> f64 {
         let bounds = self.layout(ctx, top_left, width, padding);
-        draw_quad(
-            ctx.scale_factor * bounds.pos,
-            ctx.scale_factor * (bounds.pos + bounds.size),
-            QuadKind::OutputValueBox,
-        );
+        draw_quad(Quad {
+            kind: QuadKind::OutputValueBox,
+            p0: ctx.scale_factor * bounds.pos,
+            p1: ctx.scale_factor * (bounds.pos + bounds.size),
+            ..Default::default()
+        });
         self.0.render(ctx, bounds, draw_quad);
         bounds.size.y
     }
@@ -929,7 +920,7 @@ impl ParametricDomainUi {
         padding: f64,
         top_left: DVec2,
         domain: &mut ParametricDomain,
-        draw_quad: &mut impl FnMut(DVec2, DVec2, QuadKind),
+        draw_quad: &mut impl FnMut(Quad),
     ) -> f64 {
         let l = self.layout(ctx, padding, top_left, domain);
         domain.min.0.render(ctx, l.min_field, draw_quad);
@@ -1088,7 +1079,7 @@ impl OutputUi {
         field_has_focus: bool,
         slider: &mut Slider,
         parametric_domain: &mut ParametricDomain,
-        draw_quad: &mut impl FnMut(DVec2, DVec2, QuadKind),
+        draw_quad: &mut impl FnMut(Quad),
     ) -> f64 {
         match self {
             OutputUi::None => 0.0,
@@ -1411,7 +1402,7 @@ impl Expression {
         ctx: &Context,
         top_left: DVec2,
         width: f64,
-        draw_quad: &mut impl FnMut(DVec2, DVec2, QuadKind),
+        draw_quad: &mut impl FnMut(Quad),
     ) -> f64 {
         let mut height = 0.0;
 
@@ -1479,8 +1470,9 @@ struct Uniforms {
 #[repr(C)]
 struct Vertex {
     position: Vec2,
-    uv: U16Vec2,
+    color: [u8; 4],
     kind: u32,
+    uv: [u16; 2],
 }
 
 fn create_index_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
@@ -1565,14 +1557,19 @@ impl ExpressionList {
                             shader_location: 0,
                         },
                         wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Unorm16x2,
-                            offset: offset_of!(Vertex::zeroed(), Vertex, uv) as _,
+                            format: wgpu::VertexFormat::Unorm8x4,
+                            offset: offset_of!(Vertex::zeroed(), Vertex, color) as _,
                             shader_location: 1,
                         },
                         wgpu::VertexAttribute {
                             format: wgpu::VertexFormat::Uint32,
                             offset: offset_of!(Vertex::zeroed(), Vertex, kind) as _,
                             shader_location: 2,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Unorm16x2,
+                            offset: offset_of!(Vertex::zeroed(), Vertex, uv) as _,
+                            shader_location: 3,
                         },
                     ],
                 }],
@@ -2518,23 +2515,14 @@ impl ExpressionList {
     ) {
         let mut indices = vec![];
         let mut vertices = vec![];
-        let draw_quad = &mut |p0: DVec2, p1: DVec2, kind: QuadKind| {
-            let p0 = p0.as_vec2();
-            let p1 = p1.as_vec2();
-            let (uv0, uv1) = match kind {
-                QuadKind::MsdfGlyph(uv0, uv1)
-                | QuadKind::TranslucentMsdfGlyph(uv0, uv1)
-                | QuadKind::PlaceholderMsdfGlyph(uv0, uv1)
-                | QuadKind::GrayedMsdfGlyph(uv0, uv1) => (uv0, uv1),
-                _ => (DVec2::splat(0.0), DVec2::splat(1.0)),
-            };
-            let kind = kind.index();
-            let uv0 = uv0
-                .map(|x| (x.clamp(0.0, 1.0) * 65535.0).round())
-                .as_u16vec2();
-            let uv1 = uv1
-                .map(|x| (x.clamp(0.0, 1.0) * 65535.0).round())
-                .as_u16vec2();
+        let draw_quad = &mut |quad: Quad| {
+            let kind = quad.kind as u32;
+            let p0 = quad.p0.as_vec2();
+            let p1 = quad.p1.as_vec2();
+            let to_unorm = |x: f64, s: f64| (x.clamp(0.0, 1.0) * s).round();
+            let uv0 = quad.uv0.to_array().map(|x| to_unorm(x, 65535.0) as u16);
+            let uv1 = quad.uv1.to_array().map(|x| to_unorm(x, 65535.0) as u16);
+            let color = quad.color.to_array().map(|x| to_unorm(x, 255.0) as u8);
 
             indices.push(vertices.len() as u32);
             indices.push(vertices.len() as u32 + 1);
@@ -2544,23 +2532,27 @@ impl ExpressionList {
 
             vertices.push(Vertex {
                 position: p0,
-                uv: uv0,
+                color,
                 kind,
+                uv: uv0,
             });
             vertices.push(Vertex {
                 position: vec2(p1.x, p0.y),
-                uv: u16vec2(uv1.x, uv0.y),
+                color,
                 kind,
+                uv: [uv1[0], uv0[1]],
             });
             vertices.push(Vertex {
                 position: vec2(p0.x, p1.y),
-                uv: u16vec2(uv0.x, uv1.y),
+                color,
                 kind,
+                uv: [uv0[0], uv1[1]],
             });
             vertices.push(Vertex {
                 position: p1,
-                uv: uv1,
+                color,
                 kind,
+                uv: uv1,
             });
         };
         let mut next_y = bounds.pos.y - self.scroll;
@@ -2577,22 +2569,22 @@ impl ExpressionList {
             next_y += height;
             let p0 = dvec2(bounds.pos.x, next_y);
             let p1 = p0 + dvec2(bounds.size.x, separator_width);
-            draw_quad(
+            draw_quad(Quad::rectangle(
                 ctx.scale_factor * p0,
                 ctx.scale_factor * p1,
-                QuadKind::GrayBox,
-            );
+                (0.847, 0.847, 0.847, 1.0),
+            ));
             next_y += separator_width;
         }
 
         {
             let p0 = dvec2(bounds.right() - separator_width, bounds.top());
             let p1 = dvec2(bounds.right(), bounds.bottom());
-            draw_quad(
+            draw_quad(Quad::rectangle(
                 ctx.scale_factor * p0,
                 ctx.scale_factor * p1,
-                QuadKind::GrayBox,
-            );
+                (0.847, 0.847, 0.847, 1.0),
+            ));
         }
 
         let indices_size = size_of_val(&indices[..]) as u64;

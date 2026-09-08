@@ -235,8 +235,25 @@ impl Default for Quad {
     }
 }
 
+pub const PRIMARY_COLOR: [u8; 3] = [47, 114, 220];
+
 pub trait Color {
     fn to_rgbaf64(self) -> DVec4;
+
+    fn with_opacity(self, opacity: f64) -> DVec4
+    where
+        Self: Sized,
+    {
+        let mut color = self.to_rgbaf64();
+        color.w *= opacity;
+        color
+    }
+}
+
+impl Color for DVec4 {
+    fn to_rgbaf64(self) -> DVec4 {
+        self
+    }
 }
 
 impl Color for (f64, f64, f64, f64) {
@@ -307,5 +324,6 @@ pub enum QuadKind {
     Pill,
     MsdfGlyph,
     AlphaGradientU,
+    AlphaGradientV2,
     OutputValueBox,
 }

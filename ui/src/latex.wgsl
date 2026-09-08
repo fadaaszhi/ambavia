@@ -12,7 +12,8 @@ const Rectangle = 0u;
 const Pill = 1u;
 const MsdfGlyph = 2u;
 const AlphaGradientU = 3u;
-const OutputValueBox = 4u;
+const AlphaGradientV2 = 4u;
+const OutputValueBox = 5u;
 
 struct Vertex {
     @location(0) position: vec2f,
@@ -107,6 +108,9 @@ fn fs_latex(in: VertexOutput) -> @location(0) vec4f {
         }
         case AlphaGradientU {
             return in.color * vec4(1.0, 1.0, 1.0, in.uv.x);
+        }
+        case AlphaGradientV2 {
+            return in.color * vec4(1.0, 1.0, 1.0, in.uv.y * in.uv.y);
         }
         case OutputValueBox {
             const RADIUS = 4.0;

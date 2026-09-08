@@ -4,13 +4,14 @@ use std::{collections::HashMap, ops::Deref};
 
 use bytemuck::{Zeroable, offset_of};
 use derive_more::{Add, From, Into, Sub};
-use glam::{DVec2, Vec2, dvec2, uvec2, vec2};
+use glam::{DVec2, DVec4, Vec2, dvec2, dvec4, uvec2, vec2};
 use typed_index_collections::{TiVec, ti_vec};
 use winit::{
     event::{ElementState, MouseButton},
     window::CursorIcon,
 };
 
+use crate::ui::{Color, PRIMARY_COLOR};
 use crate::{
     AppGraphics,
     graph::{Geometry, GeometryKind},
@@ -76,9 +77,9 @@ impl Underline {
         let top_left = field_bounds.pos + dvec2(0.0, field_bounds.size.y - 1.0);
         let bottom_right = top_left + dvec2(field_bounds.size.x, thickness);
         let color = match self.state {
-            _ if self.error => (225, 88, 85),
-            UnderlineState::None | UnderlineState::Hovered => (180, 180, 180),
-            UnderlineState::Focussed => (47, 114, 220),
+            _ if self.error => [225, 88, 85],
+            UnderlineState::None | UnderlineState::Hovered => [180; 3],
+            UnderlineState::Focussed => PRIMARY_COLOR,
         };
         draw_quad(Quad::rectangle(
             ctx.scale_factor * top_left,
@@ -698,7 +699,7 @@ impl SliderUi {
         draw_quad(Quad::pill(
             ctx.scale_factor * (l.point - l.point_radius),
             ctx.scale_factor * (l.point + l.point_radius),
-            (47, 114, 220, 0.25),
+            PRIMARY_COLOR.with_opacity(0.25),
         ));
         let inner_radius = if self.point_hovered {
             l.point_radius
@@ -708,7 +709,7 @@ impl SliderUi {
         draw_quad(Quad::pill(
             ctx.scale_factor * (l.point - inner_radius),
             ctx.scale_factor * (l.point + inner_radius),
-            (47, 114, 220),
+            PRIMARY_COLOR,
         ));
 
         // min/max field
@@ -1162,16 +1163,37 @@ type ParametricDomain = Domain<(InlineField, Result<parse::ast::Expression, Stri
 
 struct Expression {
     field: MathField,
+    color: [f32; 4],
     slider: Slider,
     parametric_domain: ParametricDomain,
     ast: Option<Result<parse::ast::Statement, String>>,
     output: Output,
+    /// The cached height from the last update or render, or `None` if it's never
+    /// been calculated before.
+    height: Option<f64>,
 }
 
-impl Default for Expression {
-    fn default() -> Self {
-        Self {
+fn create_slider_latex<'a>(name_equal_field: &MathField, value: f64) -> latex_tree::Nodes<'a> {
+    use latex_tree::Node::Char as C;
+    let name = name_equal_field
+        .to_latex()
+        .iter()
+        .take_while(|n| n != &&C('='))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut latex = name;
+    latex.push(C('='));
+    latex.extend(value.to_string().chars().map(C));
+    latex
+}
+
+impl Expression {
+    const PADDING: f64 = 16.0;
+
+    fn new(color: [f32; 4]) -> Expression {
+        Expression {
             field: Default::default(),
+            color,
             slider: Slider {
                 hard_min: (
                     InlineField::new(&SLIDER_SOFT_MIN_DEFAULT.to_string()),
@@ -1199,34 +1221,25 @@ impl Default for Expression {
             },
             ast: None,
             output: Default::default(),
+            height: None,
         }
     }
-}
 
-impl From<&[latex_tree::Node<'_>]> for Expression {
-    fn from(latex: &[latex_tree::Node]) -> Self {
-        let mut e = Expression::default();
+    /// Returns the expression's height from the previous update or render. The height
+    /// is guessed if the expression has never been updated or rendered before. If
+    /// possible, you should prefer using the height directly after calling update/render
+    /// to avoid the value being stale (e.g., the height will be wrong if a slider UI
+    /// was just added and there was no update/render afterwards).
+    fn height(&self) -> f64 {
+        self.height
+            .unwrap_or_else(|| 2.0 * Self::PADDING + self.field.expression_size().y)
+    }
+
+    fn from_latex(latex: &[latex_tree::Node], color: [f32; 4]) -> Self {
+        let mut e = Expression::new(color);
         e.set_latex(latex);
         e
     }
-}
-
-fn create_slider_latex<'a>(name_equal_field: &MathField, value: f64) -> latex_tree::Nodes<'a> {
-    use latex_tree::Node::Char as C;
-    let name = name_equal_field
-        .to_latex()
-        .iter()
-        .take_while(|n| n != &&C('='))
-        .cloned()
-        .collect::<Vec<_>>();
-    let mut latex = name;
-    latex.push(C('='));
-    latex.extend(value.to_string().chars().map(C));
-    latex
-}
-
-impl Expression {
-    const PADDING: f64 = 16.0;
 
     fn update(
         &mut self,
@@ -1234,7 +1247,7 @@ impl Expression {
         event: &Event,
         top_left: DVec2,
         width: f64,
-    ) -> (Response, Option<Message>, f64) {
+    ) -> (Response, Option<Message>) {
         let mut response = Response::default();
         let mut message = None;
         let mut height = 0.0;
@@ -1360,7 +1373,10 @@ impl Expression {
             };
         }
 
-        (response, message, height)
+        // Adjust height after field was updated
+        height += ctx.ceil(self.field.expression_size().y) - field_bounds.size.y;
+        self.height = Some(height);
+        (response, message)
     }
 
     fn set_latex(&mut self, latex: &[latex_tree::Node]) {
@@ -1391,10 +1407,28 @@ impl Expression {
     fn unfocus(&mut self) {
         self.field.unfocus();
         self.slider.fake_field.unfocus();
+        self.slider.hard_min.0.unfocus();
+        self.slider.hard_max.0.unfocus();
+        self.slider.step.0.unfocus();
+        self.parametric_domain.min.0.unfocus();
+        self.parametric_domain.max.0.unfocus();
     }
 
     fn has_focus(&self) -> bool {
         self.field.has_focus()
+            || match &self.output.ui {
+                OutputUi::None | OutputUi::Field(_) => false,
+                OutputUi::Slider(_) => {
+                    self.slider.fake_field.has_focus()
+                        || self.slider.hard_min.0.has_focus()
+                        || self.slider.hard_max.0.has_focus()
+                        || self.slider.step.0.has_focus()
+                }
+                OutputUi::ParametricDomain(_) => {
+                    self.parametric_domain.min.0.has_focus()
+                        || self.parametric_domain.max.0.has_focus()
+                }
+            }
     }
 
     fn render(
@@ -1403,7 +1437,7 @@ impl Expression {
         top_left: DVec2,
         width: f64,
         draw_quad: &mut impl FnMut(Quad),
-    ) -> f64 {
+    ) {
         let mut height = 0.0;
 
         let use_fake_field = matches!(self.output.ui, OutputUi::Slider { .. });
@@ -1437,19 +1471,20 @@ impl Expression {
         };
         field.render(ctx, field_bounds, draw_quad);
 
-        height
+        self.height = Some(height);
     }
 }
 
-#[derive(Debug, Clone, Copy, From, Into, Add, Sub, PartialEq)]
+#[derive(Debug, Clone, Copy, From, Into, Add, Sub, PartialEq, PartialOrd)]
 pub struct ExpressionId(usize);
 
 pub struct ExpressionList {
     expressions: TiVec<ExpressionId, Expression>,
     expressions_changed: bool,
+    dragged_expression: Option<(ExpressionId, f64)>,
+    next_color: usize,
     scroll: f64,
     height: f64,
-    expression_bottoms: TiVec<ExpressionId, f64>,
     vm_vars: vm::Vars,
 
     pipeline: wgpu::RenderPipeline,
@@ -1492,6 +1527,14 @@ fn create_vertex_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
         mapped_at_creation: false,
     })
 }
+
+const EXPRESSION_COLORS: &[[f32; 4]] = &[
+    [0.780, 0.267, 0.251, 1.0],
+    [0.176, 0.439, 0.702, 1.0],
+    [0.204, 0.522, 0.263, 1.0],
+    [0.376, 0.259, 0.651, 1.0],
+    [0.0, 0.0, 0.0, 1.0],
+];
 
 impl ExpressionList {
     pub fn new(
@@ -1666,16 +1709,24 @@ impl ExpressionList {
         });
 
         let expressions = [];
+        let mut next_color = 0;
+        let expressions = expressions
+            .iter()
+            .chain(Some(&""))
+            .chain(expressions.is_empty().then_some(&""))
+            .map(|s| {
+                let color = EXPRESSION_COLORS[next_color % EXPRESSION_COLORS.len()];
+                next_color += 1;
+                Expression::from_latex(parse_latex(s).unwrap().as_slice(), color)
+            })
+            .collect();
         Self {
-            expressions: expressions
-                .iter()
-                .chain(Some(&""))
-                .map(|s| Expression::from(parse_latex(s).unwrap().as_slice()))
-                .collect(),
+            expressions,
             expressions_changed: true,
+            dragged_expression: None,
+            next_color,
             scroll: 0.0,
             height: 0.0,
-            expression_bottoms: ti_vec![],
             vm_vars: Default::default(),
 
             pipeline,
@@ -1711,26 +1762,51 @@ impl ExpressionList {
     }
 
     // Positive `delta` moves the expressions down
-    fn scroll(&mut self, delta: f64) {
-        const SCROLL_EXTRA: f64 = 50.0;
+    fn scroll(&mut self, ctx: &Context, delta: f64) {
+        const SCROLL_EXTRA: f64 = 80.0;
+        let separator_width = ctx.round_nonzero(Self::SEPARATOR_WIDTH);
+        let expressions_height = self.expressions
+            [..ExpressionId(self.expressions.len().max(1) - 1)] // ignore faded
+            .iter()
+            .map(|e| e.height() + separator_width)
+            .sum::<f64>();
         self.scroll = (self.scroll - delta)
-            .min(SCROLL_EXTRA + self.expression_bottoms.last().unwrap_or(&0.0) - self.height)
+            .min(SCROLL_EXTRA + expressions_height - self.height)
             .max(0.0);
     }
 
-    fn scroll_into_view(&mut self, i: ExpressionId) {
-        const SCROLL_PADDING: f64 = 25.0;
-        let bottom = self.expression_bottoms[i];
-        let top = if i.0 == 0 {
-            0.0
-        } else {
-            self.expression_bottoms[i - 1.into()]
-        };
-        self.scroll((self.height - SCROLL_PADDING - (bottom - self.scroll)).min(0.0));
-        self.scroll((SCROLL_PADDING - (top - self.scroll)).max(0.0));
+    const SCROLL_PADDING: f64 = 25.0;
+
+    fn scroll_y_into_view(&mut self, ctx: &Context, y: f64) {
+        self.scroll(
+            ctx,
+            (self.height - Self::SCROLL_PADDING - (y - self.scroll)).min(0.0),
+        );
+        self.scroll(ctx, (Self::SCROLL_PADDING - (y - self.scroll)).max(0.0));
+    }
+
+    fn scroll_into_view(&mut self, ctx: &Context, i: ExpressionId) {
+        let separator_width = ctx.round_nonzero(Self::SEPARATOR_WIDTH);
+        let top = self.expressions[ExpressionId(0)..i]
+            .iter()
+            .map(|e| e.height() + separator_width)
+            .sum::<f64>();
+        let bottom = top + self.expressions[i].height();
+        self.scroll(
+            ctx,
+            (self.height - Self::SCROLL_PADDING - (bottom - self.scroll)).min(0.0),
+        );
+        self.scroll(ctx, (Self::SCROLL_PADDING - (top - self.scroll)).max(0.0));
+    }
+
+    fn new_expression(&mut self) -> Expression {
+        let color = EXPRESSION_COLORS[self.next_color % EXPRESSION_COLORS.len()];
+        self.next_color += 1;
+        Expression::new(color)
     }
 
     const SEPARATOR_WIDTH: f64 = 1.0;
+    const GUTTER_WIDTH: f64 = 37.0;
 
     pub fn update(
         &mut self,
@@ -1742,46 +1818,161 @@ impl ExpressionList {
         let mut response = Response::default();
         let mut redraw_geometry = false;
 
+        if event == &Event::MouseInput(ElementState::Released, MouseButton::Left)
+            && self.dragged_expression.is_some()
+        {
+            self.dragged_expression = None;
+            response.request_redraw();
+        }
+
         match event {
             Event::MouseWheel(delta)
                 if bounds.contains(ctx.cursor) && delta.abs().y >= delta.x.abs() =>
             {
-                self.scroll(delta.y);
+                self.scroll(ctx, delta.y);
+                response.consume_event();
+                response.request_redraw();
+            }
+            Event::CursorMoved { .. } if self.dragged_expression.is_some() => {
+                // TODO keep it scrolling even when cursor isn't moving and make it FPS-independent
+                self.scroll_y_into_view(ctx, ctx.cursor.y - (bounds.pos.y - self.scroll));
+                let (i, offset) = self.dragged_expression.as_mut().unwrap();
+                let i_top = ctx.cursor.y + *offset - (bounds.pos.y - self.scroll);
+                let separator_width = ctx.round_nonzero(Self::SEPARATOR_WIDTH);
+                let mut new_i = 0;
+                let mut top = 0.0;
+
+                for (j, expression) in self.expressions.iter_enumerated() {
+                    if j == *i {
+                        continue;
+                    }
+                    let middle = top + expression.height() / 2.0;
+                    if i_top < middle {
+                        break;
+                    }
+                    top += expression.height() + separator_width;
+                    new_i += 1;
+                }
+
+                // Don't try putting it past the last expression which is just
+                // for the faded-away visual
+                let new_i = ExpressionId(new_i.min(self.expressions.len() - 2));
+
+                let offset_geometry_id = |expression: &mut Expression, amount: isize| {
+                    if let OutputData::DraggablePoint(Geometry {
+                        kind:
+                            GeometryKind::Point {
+                                draggable: Some(id),
+                                ..
+                            },
+                        ..
+                    }) = &mut expression.output.data
+                    {
+                        id.0 = (id.0 as isize + amount) as usize;
+                    }
+                };
+
+                if new_i > *i {
+                    self.expressions[*i..=new_i].rotate_left(1.into());
+                    for expression in &mut self.expressions[*i..new_i] {
+                        offset_geometry_id(expression, -1);
+                    }
+                } else if new_i < *i {
+                    self.expressions[new_i..=*i].rotate_right(1.into());
+                    for expression in &mut self.expressions[new_i + 1.into()..=*i] {
+                        offset_geometry_id(expression, 1);
+                    }
+                }
+
+                offset_geometry_id(
+                    &mut self.expressions[new_i],
+                    new_i.0 as isize - i.0 as isize,
+                );
+
+                redraw_geometry |= set(i, new_i);
+
+                #[cfg(not(windows))]
+                let grabbing = CursorIcon::Grabbing;
+
+                // https://github.com/rust-windowing/winit/issues/1043
+                #[cfg(windows)]
+                let grabbing = CursorIcon::NsResize;
+
+                response.cursor_mode = CursorMode::Icon(grabbing);
                 response.consume_event();
                 response.request_redraw();
             }
             _ => {
-                let mut next_y = bounds.pos.y - self.scroll;
                 let mut message = None;
                 let separator_width = ctx.round_nonzero(Self::SEPARATOR_WIDTH);
-                let expression_width = bounds.size.x - separator_width;
+                let gutter_width = ctx.round_nonzero(Self::GUTTER_WIDTH);
+                let expression_width = bounds.size.x - 2.0 * separator_width - gutter_width;
+                let expression_left = bounds.pos.x + gutter_width + separator_width;
+                let mut expression_top = bounds.pos.y - self.scroll;
+                let expressions_len = self.expressions.len();
                 let mut original_focus = None;
-                self.expression_bottoms.clear();
 
                 for (i, expression) in self.expressions.iter_mut_enumerated() {
-                    if expression.has_focus() {
+                    let has_focus = expression.has_focus();
+
+                    if has_focus {
                         original_focus = Some(i);
                     }
 
-                    let (r, m, height) = expression.update(
+                    let (r, m) = expression.update(
                         ctx,
                         event,
-                        dvec2(bounds.pos.x, next_y),
+                        dvec2(expression_left, expression_top),
                         expression_width,
                     );
-                    next_y += height;
                     response = response.or(r);
                     message = message.or(m.map(|m| (i, m)));
-                    next_y += separator_width;
-                    self.expression_bottoms
-                        .push(next_y - (bounds.pos.y - self.scroll));
+
+                    let gutter_bounds = Bounds {
+                        pos: dvec2(bounds.left(), expression_top),
+                        size: dvec2(gutter_width, expression.height()) + separator_width,
+                    };
+
+                    if i.0 != expressions_len - 1 && gutter_bounds.contains(ctx.cursor) {
+                        let mut gutter_response = Response::default();
+
+                        if event == &Event::MouseInput(ElementState::Pressed, MouseButton::Left) {
+                            self.dragged_expression = Some((i, expression_top - ctx.cursor.y));
+                            gutter_response.consume_event();
+                            gutter_response.request_redraw();
+
+                            // We would've just lost focus after we started dragging, refocus if so
+                            if has_focus {
+                                // TODO make this not lose where specifically we were focussed inside the expression
+                                expression.focus();
+                            }
+                        }
+
+                        #[cfg(not(windows))]
+                        let (grab, grabbing) = (CursorIcon::Grab, CursorIcon::Grabbing);
+
+                        // https://github.com/rust-windowing/winit/issues/1043
+                        #[cfg(windows)]
+                        let (grab, grabbing) = (CursorIcon::EwResize, CursorIcon::EwResize);
+
+                        gutter_response.cursor_mode =
+                            CursorMode::Icon(if self.dragged_expression.is_some() {
+                                grabbing
+                            } else {
+                                grab
+                            });
+
+                        response = response.or(gutter_response);
+                    }
+
+                    expression_top += expression.height() + separator_width;
                 }
 
                 if let Some((i, m)) = message {
                     match m {
                         Message::ContentsChanged => {
                             self.expressions_changed = true;
-                            self.scroll_into_view(i);
+                            self.scroll_into_view(ctx, i);
                         }
                         Message::Left | Message::Right => {}
                         Message::Up => {
@@ -1793,7 +1984,8 @@ impl ExpressionList {
                         }
                         Message::Down => {
                             if i.0 == self.expressions.len() - 1 {
-                                self.expressions.push(Default::default());
+                                let expression = self.new_expression();
+                                self.expressions.push(expression);
                             }
                             self.expressions[i].unfocus();
                             self.expressions[i + 1.into()].focus();
@@ -1801,7 +1993,8 @@ impl ExpressionList {
                         }
                         Message::Add => {
                             self.expressions_changed = true;
-                            self.expressions.insert(i + 1.into(), Default::default());
+                            let expression = self.new_expression();
+                            self.expressions.insert(i + 1.into(), expression);
                             self.expressions[i].unfocus();
                             self.expressions[i + 1.into()].focus();
                             response.request_redraw();
@@ -1810,7 +2003,8 @@ impl ExpressionList {
                             self.expressions.remove(i);
                             self.expressions_changed = true;
                             if self.expressions.is_empty() {
-                                self.expressions.push(Default::default());
+                                let expression = self.new_expression();
+                                self.expressions.push(expression);
                             }
                             self.expressions[ExpressionId(i.0.saturating_sub(1))].focus();
                             response.request_redraw();
@@ -1819,7 +2013,8 @@ impl ExpressionList {
                 }
 
                 if self.expressions.last().unwrap().has_focus() {
-                    self.expressions.push(Default::default());
+                    let expression = self.new_expression();
+                    self.expressions.push(expression);
                     response.request_redraw();
                 }
 
@@ -1832,18 +2027,11 @@ impl ExpressionList {
                 if let Some(i) = new_focus
                     && original_focus != new_focus
                 {
-                    self.scroll_into_view(i);
+                    self.scroll_into_view(ctx, i);
                 }
 
                 if self.expressions_changed {
                     use latex_tree::Node::{self, Char as C};
-                    let colors = [
-                        [0.780, 0.267, 0.251, 1.0],
-                        [0.176, 0.439, 0.702, 1.0],
-                        [0.204, 0.522, 0.263, 1.0],
-                        [0.376, 0.259, 0.651, 1.0],
-                        [0.0, 0.0, 0.0, 1.0],
-                    ];
                     let line_width = 2.5;
                     let fill_opacity = 0.4;
                     let point2 = |nodes: &mut Vec<Node>, x: f64, y: f64| {
@@ -1909,7 +2097,7 @@ impl ExpressionList {
                                     ui: OutputUi::None,
                                     data: OutputData::DraggablePoint(Geometry {
                                         width: 8.0,
-                                        color: colors[i.0 % colors.len()],
+                                        color: e.color,
                                         kind: GeometryKind::Point {
                                             p: dvec2(x, y),
                                             draggable: Some(i),
@@ -2012,7 +2200,7 @@ impl ExpressionList {
                             | ExpressionResult::Plot { value: id, ty, .. } => {
                                 let mut nodes = vec![C('=')];
 
-                                let color = colors[i.0 % colors.len()];
+                                let color = expression.color;
                                 let mut geometry = vec![];
                                 let mut draw_point = |x: f64, y: f64| {
                                     geometry.push(Geometry {
@@ -2494,7 +2682,7 @@ impl ExpressionList {
         if response.requested_redraw {
             // If something wanted a redraw then some heights probably got
             // altered so it would be good to reclamp the scroll
-            self.scroll(0.0);
+            self.scroll(ctx, 0.0);
         }
 
         (response, geometry)
@@ -2515,6 +2703,7 @@ impl ExpressionList {
     ) {
         let mut indices = vec![];
         let mut vertices = vec![];
+        // TODO make draw_quad accept logical positions instead of physical positions
         let draw_quad = &mut |quad: Quad| {
             let kind = quad.kind as u32;
             let p0 = quad.p0.as_vec2();
@@ -2555,36 +2744,209 @@ impl ExpressionList {
                 uv: uv1,
             });
         };
-        let mut next_y = bounds.pos.y - self.scroll;
-        let separator_width = ctx.round_nonzero(Self::SEPARATOR_WIDTH);
-        let expression_width = bounds.size.x - separator_width;
 
-        for expression in &mut self.expressions {
-            let height = expression.render(
+        let separator_width = ctx.round_nonzero(Self::SEPARATOR_WIDTH);
+        let gutter_width = ctx.round_nonzero(Self::GUTTER_WIDTH);
+        let expression_width = bounds.size.x - 2.0 * separator_width - gutter_width;
+        let expression_left = bounds.pos.x + gutter_width + separator_width;
+        let mut expression_top = bounds.pos.y - self.scroll;
+        let expressions_len = self.expressions.len();
+
+        let separator_color = [216; 3];
+        let gutter_color = [238; 3];
+
+        // separator between expression list and graph
+        draw_quad(Quad::rectangle(
+            ctx.scale_factor * dvec2(bounds.right() - separator_width, bounds.top()),
+            ctx.scale_factor * dvec2(bounds.right(), bounds.bottom()),
+            separator_color,
+        ));
+
+        for (i, expression) in self.expressions.iter_mut().enumerate() {
+            // Don't draw last faded expression if expressions are being reordered
+            if i == expressions_len - 1 && self.dragged_expression.is_some() {
+                continue;
+            }
+
+            let has_focus = expression.has_focus();
+            let focus_color_or = |color| if has_focus { PRIMARY_COLOR } else { color };
+            let is_being_dragged = self.dragged_expression.is_some_and(|(j, _)| j.0 == i);
+            let expression_bottom;
+
+            if is_being_dragged {
+                // We will render dragged expression on top afterwards
+                expression_bottom = expression_top + expression.height();
+
+                if i < expressions_len - 2 {
+                    // top separator for next expression
+                    draw_quad(Quad::rectangle(
+                        ctx.scale_factor * dvec2(bounds.left(), expression_bottom),
+                        ctx.scale_factor
+                            * dvec2(bounds.right(), expression_bottom + separator_width),
+                        separator_color,
+                    ));
+                }
+            } else {
+                expression.render(
+                    ctx,
+                    dvec2(expression_left, expression_top),
+                    expression_width,
+                    draw_quad,
+                );
+                expression_bottom = expression_top + expression.height();
+                // gutter separator
+                draw_quad(Quad::rectangle(
+                    ctx.scale_factor * dvec2(bounds.left() + gutter_width, expression_top),
+                    ctx.scale_factor
+                        * dvec2(
+                            bounds.left() + gutter_width + separator_width,
+                            expression_bottom,
+                        ),
+                    focus_color_or(separator_color),
+                ));
+                // gutter fill
+                draw_quad(Quad::rectangle(
+                    ctx.scale_factor * dvec2(bounds.left(), expression_top),
+                    ctx.scale_factor * dvec2(bounds.left() + gutter_width, expression_bottom),
+                    focus_color_or(gutter_color),
+                ));
+
+                if i < expressions_len - 1 {
+                    if has_focus {
+                        // replace separators with thicker focus color when focussed
+                        // top separator
+                        draw_quad(Quad::rectangle(
+                            ctx.scale_factor
+                                * dvec2(bounds.left(), expression_top - separator_width),
+                            ctx.scale_factor
+                                * dvec2(
+                                    bounds.right(),
+                                    expression_top
+                                        + if i == 0 { 2.0 } else { 1.0 } * separator_width,
+                                ),
+                            focus_color_or(separator_color),
+                        ));
+
+                        // expression list/graph separator
+                        draw_quad(Quad::rectangle(
+                            ctx.scale_factor
+                                * dvec2(bounds.right() - 2.0 * separator_width, expression_top),
+                            ctx.scale_factor * dvec2(bounds.right(), expression_bottom),
+                            focus_color_or(separator_color),
+                        ));
+                    }
+
+                    // bottom separator
+                    draw_quad(Quad::rectangle(
+                        ctx.scale_factor
+                            * dvec2(
+                                bounds.left(),
+                                expression_bottom - if has_focus { separator_width } else { 0.0 },
+                            ),
+                        ctx.scale_factor
+                            * dvec2(bounds.right(), expression_bottom + separator_width),
+                        focus_color_or(separator_color),
+                    ));
+                }
+            }
+
+            if i == expressions_len - 1 && !is_being_dragged {
+                // fade away gradient for last expression
+                draw_quad(Quad {
+                    kind: QuadKind::AlphaGradientV2,
+                    p0: ctx.scale_factor * dvec2(bounds.left(), expression_top),
+                    p1: ctx.scale_factor
+                        * dvec2(
+                            bounds.left() + gutter_width + separator_width,
+                            expression_bottom,
+                        ),
+                    color: DVec4::ONE,
+                    ..Default::default()
+                });
+            }
+
+            expression_top += expression.height() + separator_width;
+        }
+
+        // draw the expression being currently dragged on top
+        if let Some((i, offset)) = self.dragged_expression {
+            let expression_top = offset + ctx.cursor.y;
+            let expression = &mut self.expressions[i];
+
+            // background fill
+            draw_quad(Quad::rectangle(
+                ctx.scale_factor * dvec2(expression_left, expression_top),
+                ctx.scale_factor
+                    * (dvec2(
+                        expression_left + expression_width,
+                        expression_top + expression.height(),
+                    )),
+                [255; 3],
+            ));
+
+            expression.render(
                 ctx,
-                dvec2(bounds.pos.x, next_y),
+                dvec2(expression_left, expression_top),
                 expression_width,
                 draw_quad,
             );
-            next_y += height;
-            let p0 = dvec2(bounds.pos.x, next_y);
-            let p1 = p0 + dvec2(bounds.size.x, separator_width);
-            draw_quad(Quad::rectangle(
-                ctx.scale_factor * p0,
-                ctx.scale_factor * p1,
-                (0.847, 0.847, 0.847, 1.0),
-            ));
-            next_y += separator_width;
-        }
+            let expression_bottom = expression_top + expression.height();
 
-        {
-            let p0 = dvec2(bounds.right() - separator_width, bounds.top());
-            let p1 = dvec2(bounds.right(), bounds.bottom());
+            // gutter fill
             draw_quad(Quad::rectangle(
-                ctx.scale_factor * p0,
-                ctx.scale_factor * p1,
-                (0.847, 0.847, 0.847, 1.0),
+                ctx.scale_factor * dvec2(bounds.left(), expression_top),
+                ctx.scale_factor
+                    * dvec2(
+                        bounds.left() + gutter_width + separator_width,
+                        expression_bottom,
+                    ),
+                PRIMARY_COLOR,
             ));
+            // top separator
+            draw_quad(Quad::rectangle(
+                ctx.scale_factor * dvec2(bounds.left(), expression_top - separator_width),
+                ctx.scale_factor * dvec2(bounds.right(), expression_top + separator_width),
+                PRIMARY_COLOR,
+            ));
+            // bottom separator
+            draw_quad(Quad::rectangle(
+                ctx.scale_factor * dvec2(bounds.left(), expression_bottom - separator_width),
+                ctx.scale_factor * dvec2(bounds.right(), expression_bottom + separator_width),
+                PRIMARY_COLOR,
+            ));
+            // side separator
+            draw_quad(Quad::rectangle(
+                ctx.scale_factor * dvec2(bounds.right() - 2.0 * separator_width, expression_top),
+                ctx.scale_factor * dvec2(bounds.right(), expression_bottom),
+                PRIMARY_COLOR,
+            ));
+
+            let shadow_height = 12.0;
+            let color = dvec4(0.0, 0.0, 0.0, 0.22);
+            // top shadow
+            draw_quad(Quad {
+                kind: QuadKind::AlphaGradientV2,
+                p0: ctx.scale_factor
+                    * dvec2(
+                        bounds.left(),
+                        expression_top - separator_width - shadow_height,
+                    ),
+                p1: ctx.scale_factor * dvec2(bounds.right(), expression_top - separator_width),
+                color,
+                ..Default::default()
+            });
+            // bottom shadow
+            draw_quad(Quad {
+                kind: QuadKind::AlphaGradientV2,
+                p0: ctx.scale_factor
+                    * dvec2(
+                        bounds.left(),
+                        expression_bottom + separator_width + shadow_height,
+                    ),
+                p1: ctx.scale_factor * dvec2(bounds.right(), expression_bottom + separator_width),
+                color,
+                ..Default::default()
+            });
         }
 
         let indices_size = size_of_val(&indices[..]) as u64;

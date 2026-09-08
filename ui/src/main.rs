@@ -104,7 +104,10 @@ impl AppGraphics {
         match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Suboptimal(tex)
             | wgpu::CurrentSurfaceTexture::Success(tex) => Some(tex),
-            wgpu::CurrentSurfaceTexture::Occluded | wgpu::CurrentSurfaceTexture::Timeout => None,
+            v @ (wgpu::CurrentSurfaceTexture::Occluded | wgpu::CurrentSurfaceTexture::Timeout) => {
+                println!("surface.get_current_texture() returned {v:?}");
+                None
+            }
             v => todo!("handle wgpu surface error {v:?}"),
         }
     }
@@ -201,10 +204,7 @@ impl App {
                 _ => break 'update,
             };
             let response = self.main_thing.update(&self.context, &my_event, bounds);
-            if response.requested_redraw {
-                self.request_redraw = true;
-                // self.window.request_redraw();
-            }
+            self.request_redraw |= response.requested_redraw;
 
             if matches!(my_event, Event::CursorMoved { .. }) {
                 self.window.set_cursor_visible(true);
@@ -225,9 +225,8 @@ impl App {
             WindowEvent::Resized(new_size) => {
                 self.graphics.resize(new_size);
             }
-            WindowEvent::ScaleFactorChanged { .. } => {
-                self.window.request_redraw();
-            }
+            WindowEvent::ScaleFactorChanged { .. } => self.request_redraw = true,
+            WindowEvent::Occluded(false) => self.request_redraw = true,
             WindowEvent::RedrawRequested => {
                 let Some(surface_texture) = self.graphics.get_surface_texture() else {
                     return;

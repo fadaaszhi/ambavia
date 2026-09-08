@@ -18,7 +18,7 @@ use winit::{
 
 use crate::{
     ui::{Bounds, Context, CursorMode, Event, Response},
-    utility::{AsGlam, mix, unmix},
+    utility::AsGlam,
 };
 
 fn main() -> Result<(), winit::error::EventLoopError> {
@@ -244,9 +244,13 @@ impl App {
         };
     }
 }
+
+const RESIZER_WIDTH: f64 = 25.0;
+const MIN_EXPRESSION_LIST_WIDTH: f64 = 320.0;
+
 struct MainThing {
-    resizer_width: f64,
-    resizer_position: f64,
+    raw_resizer_size: f64,
+    clamped_resizer_size: f64,
     dragging: Option<f64>,
     expression_list: expression_list::ExpressionList,
     graph_paper: graph::GraphPaper,
@@ -255,8 +259,8 @@ struct MainThing {
 impl MainThing {
     fn new(graphics: &AppGraphics) -> MainThing {
         MainThing {
-            resizer_width: 25.0,
-            resizer_position: 0.3,
+            raw_resizer_size: f64::NAN,
+            clamped_resizer_size: 0.0,
             dragging: None,
             expression_list: expression_list::ExpressionList::new(graphics),
             graph_paper: graph::GraphPaper::new(graphics),
@@ -266,21 +270,42 @@ impl MainThing {
     fn update(&mut self, ctx: &Context, event: &Event, bounds: Bounds) -> Response {
         let mut response = Response::default();
 
-        let mut x = mix(bounds.left(), bounds.right(), self.resizer_position);
-        let resized = if let Event::CursorMoved { .. } = event
+        if let Event::CursorMoved { .. } = event
             && let Some(offset) = self.dragging
         {
-            x = (ctx.cursor.x + offset).clamp(bounds.left(), bounds.right());
-            self.resizer_position = unmix(x, bounds.left(), bounds.right());
+            self.raw_resizer_size =
+                (ctx.cursor.x + offset - bounds.left()).clamp(0.0, bounds.size.x);
             response.consume_event();
-            response.request_redraw();
-            true
-        } else {
-            false
+        }
+
+        let resized = {
+            let previous_clamped = self.clamped_resizer_size;
+            let expression_list_width = if self.raw_resizer_size.is_finite() {
+                self.raw_resizer_size.min(bounds.size.x)
+            } else {
+                bounds.size.x * 0.3
+            };
+            self.clamped_resizer_size = if expression_list_width == 0.0
+                || expression_list_width >= MIN_EXPRESSION_LIST_WIDTH
+            {
+                expression_list_width
+            } else if expression_list_width < RESIZER_WIDTH
+                || MIN_EXPRESSION_LIST_WIDTH > bounds.size.x
+            {
+                0.0
+            } else {
+                MIN_EXPRESSION_LIST_WIDTH
+            };
+            previous_clamped != self.clamped_resizer_size
         };
 
+        if resized {
+            response.request_redraw();
+        }
+
+        let x = bounds.left() + self.clamped_resizer_size;
         let offset = x - ctx.cursor.x;
-        let hovering = offset.abs() <= self.resizer_width / 2.0;
+        let hovering = offset.abs() <= RESIZER_WIDTH / 2.0;
 
         if let Event::MouseInput(state, MouseButton::Left) = event {
             match state {
@@ -291,6 +316,7 @@ impl MainThing {
                 ElementState::Released if self.dragging.is_some() => {
                     self.dragging = None;
                     response.consume_event();
+                    self.raw_resizer_size = self.clamped_resizer_size;
                 }
                 _ => {}
             }
@@ -364,7 +390,7 @@ impl MainThing {
             ..Default::default()
         });
 
-        let x = ctx.round(mix(bounds.left(), bounds.right(), self.resizer_position));
+        let x = ctx.round(bounds.left() + self.clamped_resizer_size);
         let left = Bounds {
             pos: bounds.pos,
             size: dvec2(x - bounds.left(), bounds.size.y),

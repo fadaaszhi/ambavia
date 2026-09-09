@@ -70,7 +70,7 @@ impl Underline {
         }
     }
 
-    fn render(&self, ctx: &Context, field_bounds: Bounds, draw_quad: &mut impl FnMut(Quad)) {
+    fn render(&self, field_bounds: Bounds, draw_quad: &mut impl FnMut(Quad)) {
         let thickness = if self.state != UnderlineState::None || self.error {
             2.0
         } else {
@@ -83,11 +83,7 @@ impl Underline {
             UnderlineState::None | UnderlineState::Hovered => [180; 3],
             UnderlineState::Focussed => PRIMARY_COLOR,
         };
-        draw_quad(Quad::rectangle(
-            ctx.scale_factor * top_left,
-            ctx.scale_factor * bottom_right,
-            color,
-        ));
+        draw_quad(Quad::rectangle(top_left, bottom_right, color));
     }
 }
 
@@ -168,7 +164,7 @@ impl InlineField {
             } else {
                 UnderlineState::None
             };
-            self.underline.render(ctx, bounds, draw_quad);
+            self.underline.render(bounds, draw_quad);
         }
         self.field.render(ctx, bounds, draw_quad);
     }
@@ -663,8 +659,8 @@ impl SliderUi {
 
         // slider bar
         draw_quad(Quad::pill(
-            ctx.scale_factor * (dvec2(l.bar_left, l.point.y - bar_radius)),
-            ctx.scale_factor * (dvec2(l.bar_right, l.point.y + bar_radius)),
+            dvec2(l.bar_left, l.point.y - bar_radius),
+            dvec2(l.bar_right, l.point.y + bar_radius),
             [0.9; 3],
         ));
 
@@ -677,11 +673,7 @@ impl SliderUi {
                     mix(l.bar_left, l.bar_right, unmix(value, min, max)),
                     l.point.y,
                 );
-                draw_quad(Quad::pill(
-                    ctx.scale_factor * (tick - tick_radius),
-                    ctx.scale_factor * (tick + tick_radius),
-                    [1.0; 3],
-                ));
+                draw_quad(Quad::pill(tick - tick_radius, tick + tick_radius, [1.0; 3]));
             }
         }
 
@@ -692,16 +684,16 @@ impl SliderUi {
                 l.point.y,
             );
             draw_quad(Quad::pill(
-                ctx.scale_factor * (tick - tick_radius),
-                ctx.scale_factor * (tick + tick_radius),
+                tick - tick_radius,
+                tick + tick_radius,
                 (0, 0, 0, 0.35),
             ));
         }
 
         // slider point
         draw_quad(Quad::pill(
-            ctx.scale_factor * (l.point - l.point_radius),
-            ctx.scale_factor * (l.point + l.point_radius),
+            l.point - l.point_radius,
+            l.point + l.point_radius,
             PRIMARY_COLOR.with_opacity(0.25),
         ));
         let inner_radius = if self.point_hovered {
@@ -710,8 +702,8 @@ impl SliderUi {
             bar_radius
         };
         draw_quad(Quad::pill(
-            ctx.scale_factor * (l.point - inner_radius),
-            ctx.scale_factor * (l.point + inner_radius),
+            l.point - inner_radius,
+            l.point + inner_radius,
             PRIMARY_COLOR,
         ));
 
@@ -788,8 +780,8 @@ impl FieldUi {
         let bounds = self.layout(ctx, top_left, width, padding);
         draw_quad(Quad {
             kind: QuadKind::OutputValueBox,
-            p0: ctx.scale_factor * bounds.pos,
-            p1: ctx.scale_factor * (bounds.pos + bounds.size),
+            p0: bounds.pos,
+            p1: bounds.pos + bounds.size,
             ..Default::default()
         });
         self.0.render(ctx, bounds, draw_quad);
@@ -2706,11 +2698,10 @@ impl ExpressionList {
     ) {
         let mut indices = vec![];
         let mut vertices = vec![];
-        // TODO make draw_quad accept logical positions instead of physical positions
         let draw_quad = &mut |quad: Quad| {
             let kind = quad.kind as u32;
-            let p0 = quad.p0.as_vec2();
-            let p1 = quad.p1.as_vec2();
+            let p0 = (ctx.scale_factor * quad.p0).as_vec2();
+            let p1 = (ctx.scale_factor * quad.p1).as_vec2();
             let to_unorm = |x: f64, s: f64| (x.clamp(0.0, 1.0) * s).round();
             let uv0 = quad.uv0.to_array().map(|x| to_unorm(x, 65535.0) as u16);
             let uv1 = quad.uv1.to_array().map(|x| to_unorm(x, 65535.0) as u16);
@@ -2760,8 +2751,8 @@ impl ExpressionList {
 
         // separator between expression list and graph
         draw_quad(Quad::rectangle(
-            ctx.scale_factor * dvec2(bounds.right() - separator_width, bounds.top()),
-            ctx.scale_factor * dvec2(bounds.right(), bounds.bottom()),
+            dvec2(bounds.right() - separator_width, bounds.top()),
+            dvec2(bounds.right(), bounds.bottom()),
             separator_color,
         ));
 
@@ -2783,9 +2774,8 @@ impl ExpressionList {
                 if i < expressions_len - 2 {
                     // top separator for next expression
                     draw_quad(Quad::rectangle(
-                        ctx.scale_factor * dvec2(bounds.left(), expression_bottom),
-                        ctx.scale_factor
-                            * dvec2(bounds.right(), expression_bottom + separator_width),
+                        dvec2(bounds.left(), expression_bottom),
+                        dvec2(bounds.right(), expression_bottom + separator_width),
                         separator_color,
                     ));
                 }
@@ -2799,18 +2789,17 @@ impl ExpressionList {
                 expression_bottom = expression_top + expression.height();
                 // gutter separator
                 draw_quad(Quad::rectangle(
-                    ctx.scale_factor * dvec2(bounds.left() + gutter_width, expression_top),
-                    ctx.scale_factor
-                        * dvec2(
-                            bounds.left() + gutter_width + separator_width,
-                            expression_bottom,
-                        ),
+                    dvec2(bounds.left() + gutter_width, expression_top),
+                    dvec2(
+                        bounds.left() + gutter_width + separator_width,
+                        expression_bottom,
+                    ),
                     focus_color_or(separator_color),
                 ));
                 // gutter fill
                 draw_quad(Quad::rectangle(
-                    ctx.scale_factor * dvec2(bounds.left(), expression_top),
-                    ctx.scale_factor * dvec2(bounds.left() + gutter_width, expression_bottom),
+                    dvec2(bounds.left(), expression_top),
+                    dvec2(bounds.left() + gutter_width, expression_bottom),
                     focus_color_or(gutter_color),
                 ));
 
@@ -2818,8 +2807,8 @@ impl ExpressionList {
                 let scale = 11.4;
                 label(
                     &(i + 1).to_string(),
-                    ctx.scale_factor * dvec2(bounds.left() + 2.1, expression_top + 10.6),
-                    ctx.scale_factor * scale,
+                    dvec2(bounds.left() + 2.1, expression_top + 10.6),
+                    scale,
                     if has_focus {
                         (255, 255, 255, 1.0)
                     } else {
@@ -2834,35 +2823,29 @@ impl ExpressionList {
                         // replace separators with thicker focus color when focussed
                         // top separator
                         draw_quad(Quad::rectangle(
-                            ctx.scale_factor
-                                * dvec2(bounds.left(), expression_top - separator_width),
-                            ctx.scale_factor
-                                * dvec2(
-                                    bounds.right(),
-                                    expression_top
-                                        + if i == 0 { 2.0 } else { 1.0 } * separator_width,
-                                ),
+                            dvec2(bounds.left(), expression_top - separator_width),
+                            dvec2(
+                                bounds.right(),
+                                expression_top + if i == 0 { 2.0 } else { 1.0 } * separator_width,
+                            ),
                             focus_color_or(separator_color),
                         ));
 
                         // expression list/graph separator
                         draw_quad(Quad::rectangle(
-                            ctx.scale_factor
-                                * dvec2(bounds.right() - 2.0 * separator_width, expression_top),
-                            ctx.scale_factor * dvec2(bounds.right(), expression_bottom),
+                            dvec2(bounds.right() - 2.0 * separator_width, expression_top),
+                            dvec2(bounds.right(), expression_bottom),
                             focus_color_or(separator_color),
                         ));
                     }
 
                     // bottom separator
                     draw_quad(Quad::rectangle(
-                        ctx.scale_factor
-                            * dvec2(
-                                bounds.left(),
-                                expression_bottom - if has_focus { separator_width } else { 0.0 },
-                            ),
-                        ctx.scale_factor
-                            * dvec2(bounds.right(), expression_bottom + separator_width),
+                        dvec2(
+                            bounds.left(),
+                            expression_bottom - if has_focus { separator_width } else { 0.0 },
+                        ),
+                        dvec2(bounds.right(), expression_bottom + separator_width),
                         focus_color_or(separator_color),
                     ));
                 }
@@ -2872,12 +2855,11 @@ impl ExpressionList {
                 // fade away gradient for last expression
                 draw_quad(Quad {
                     kind: QuadKind::AlphaGradientV2,
-                    p0: ctx.scale_factor * dvec2(bounds.left(), expression_top),
-                    p1: ctx.scale_factor
-                        * dvec2(
-                            bounds.left() + gutter_width + separator_width,
-                            expression_bottom,
-                        ),
+                    p0: dvec2(bounds.left(), expression_top),
+                    p1: dvec2(
+                        bounds.left() + gutter_width + separator_width,
+                        expression_bottom,
+                    ),
                     color: DVec4::ONE,
                     ..Default::default()
                 });
@@ -2893,12 +2875,11 @@ impl ExpressionList {
 
             // background fill
             draw_quad(Quad::rectangle(
-                ctx.scale_factor * dvec2(expression_left, expression_top),
-                ctx.scale_factor
-                    * (dvec2(
-                        expression_left + expression_width,
-                        expression_top + expression.height(),
-                    )),
+                dvec2(expression_left, expression_top),
+                dvec2(
+                    expression_left + expression_width,
+                    expression_top + expression.height(),
+                ),
                 [255; 3],
             ));
 
@@ -2912,30 +2893,29 @@ impl ExpressionList {
 
             // gutter fill
             draw_quad(Quad::rectangle(
-                ctx.scale_factor * dvec2(bounds.left(), expression_top),
-                ctx.scale_factor
-                    * dvec2(
-                        bounds.left() + gutter_width + separator_width,
-                        expression_bottom,
-                    ),
+                dvec2(bounds.left(), expression_top),
+                dvec2(
+                    bounds.left() + gutter_width + separator_width,
+                    expression_bottom,
+                ),
                 PRIMARY_COLOR,
             ));
             // top separator
             draw_quad(Quad::rectangle(
-                ctx.scale_factor * dvec2(bounds.left(), expression_top - separator_width),
-                ctx.scale_factor * dvec2(bounds.right(), expression_top + separator_width),
+                dvec2(bounds.left(), expression_top - separator_width),
+                dvec2(bounds.right(), expression_top + separator_width),
                 PRIMARY_COLOR,
             ));
             // bottom separator
             draw_quad(Quad::rectangle(
-                ctx.scale_factor * dvec2(bounds.left(), expression_bottom - separator_width),
-                ctx.scale_factor * dvec2(bounds.right(), expression_bottom + separator_width),
+                dvec2(bounds.left(), expression_bottom - separator_width),
+                dvec2(bounds.right(), expression_bottom + separator_width),
                 PRIMARY_COLOR,
             ));
             // side separator
             draw_quad(Quad::rectangle(
-                ctx.scale_factor * dvec2(bounds.right() - 2.0 * separator_width, expression_top),
-                ctx.scale_factor * dvec2(bounds.right(), expression_bottom),
+                dvec2(bounds.right() - 2.0 * separator_width, expression_top),
+                dvec2(bounds.right(), expression_bottom),
                 PRIMARY_COLOR,
             ));
 
@@ -2944,24 +2924,22 @@ impl ExpressionList {
             // top shadow
             draw_quad(Quad {
                 kind: QuadKind::AlphaGradientV2,
-                p0: ctx.scale_factor
-                    * dvec2(
-                        bounds.left(),
-                        expression_top - separator_width - shadow_height,
-                    ),
-                p1: ctx.scale_factor * dvec2(bounds.right(), expression_top - separator_width),
+                p0: dvec2(
+                    bounds.left(),
+                    expression_top - separator_width - shadow_height,
+                ),
+                p1: dvec2(bounds.right(), expression_top - separator_width),
                 color,
                 ..Default::default()
             });
             // bottom shadow
             draw_quad(Quad {
                 kind: QuadKind::AlphaGradientV2,
-                p0: ctx.scale_factor
-                    * dvec2(
-                        bounds.left(),
-                        expression_bottom + separator_width + shadow_height,
-                    ),
-                p1: ctx.scale_factor * dvec2(bounds.right(), expression_bottom + separator_width),
+                p0: dvec2(
+                    bounds.left(),
+                    expression_bottom + separator_width + shadow_height,
+                ),
+                p1: dvec2(bounds.right(), expression_bottom + separator_width),
                 color,
                 ..Default::default()
             });

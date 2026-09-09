@@ -12,7 +12,7 @@ use winit::{
 };
 
 use crate::katex_font::Font;
-use crate::label::label;
+use crate::label::{Label, render_label};
 use crate::ui::{Color, PRIMARY_COLOR};
 use crate::{
     AppGraphics,
@@ -185,8 +185,7 @@ struct SliderUi {
     point_hovered: bool,
     name: String,
     name_field: MathField,
-    // TODO change this to use `label()` instead of an entire `MathField`
-    step_label_field: MathField,
+    step_label: Label<'static>,
 }
 
 struct SliderEditLayout {
@@ -221,17 +220,6 @@ impl SliderUi {
     const SLIDER_POINT_RADIUS: f64 = 11.0;
 
     fn new(name: String) -> Self {
-        let mut step_label_field = MathField::from(
-            &"Step:"
-                .chars()
-                .map(latex_tree::Node::Char)
-                .collect::<Vec<_>>(),
-        );
-        step_label_field.no_italic(true);
-        step_label_field.scale = 15.7;
-        step_label_field.left_padding = 0.69;
-        step_label_field.right_padding = -0.15;
-        step_label_field.interactiveness = Interactiveness::None;
         SliderUi {
             value: Some(0.0),
             min: Some(SLIDER_SOFT_MIN_DEFAULT),
@@ -241,7 +229,7 @@ impl SliderUi {
             point_hovered: false,
             name_field: create_le_name_le(&name),
             name,
-            step_label_field,
+            step_label: Label::new("Step:", 15.7, Font::MainRegular),
         }
     }
 
@@ -308,7 +296,7 @@ impl SliderUi {
 
         if is_slider_edit_shown {
             let name_size = self.name_field.expression_size().map(|s| ctx.ceil(s));
-            let step_label_size = self.step_label_field.expression_size().map(|s| ctx.ceil(s));
+            let step_label_size = self.step_label.size();
             let step_field_size = slider.step.0.expression_size(ctx, true);
 
             let height = max([
@@ -336,14 +324,14 @@ impl SliderUi {
             };
             let step_label = Bounds {
                 pos: dvec2(
-                    max_field.right(),
+                    max_field.right() + 11.0,
                     top_left.y + (height - step_label_size.y) / 2.0,
                 ),
                 size: step_label_size,
             };
             let step_field = Bounds {
                 pos: dvec2(
-                    step_label.right(),
+                    step_label.right() + 1.4,
                     top_left.y + (height - step_field_size.y) / 2.0,
                 ),
                 size: step_field_size,
@@ -638,7 +626,8 @@ impl SliderUi {
         slider.hard_min.0.render(ctx, l.min_field, draw_quad);
         self.name_field.render(ctx, l.name, draw_quad);
         slider.hard_max.0.render(ctx, l.max_field, draw_quad);
-        self.step_label_field.render(ctx, l.step_label, draw_quad);
+        self.step_label
+            .render_from_top_left(l.step_label.pos, [0; 3], draw_quad);
         slider.step.0.render(ctx, l.step_field, draw_quad);
 
         l.bounds.size.y
@@ -2804,11 +2793,10 @@ impl ExpressionList {
                 ));
 
                 // expression number
-                let scale = 11.4;
-                label(
+                render_label(
                     &(i + 1).to_string(),
                     dvec2(bounds.left() + 2.1, expression_top + 10.6),
-                    scale,
+                    11.4,
                     if has_focus {
                         (255, 255, 255, 1.0)
                     } else {

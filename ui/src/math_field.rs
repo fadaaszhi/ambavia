@@ -1013,6 +1013,7 @@ impl MathField {
         self.use_placeholder_if_empty && self.is_empty() && !self.has_focus()
     }
 
+    #[allow(unused)]
     pub fn no_italic(&mut self, no_italic: bool) {
         if set(&mut self.tree.no_italic, no_italic) {
             self.tree.layout();

@@ -1,6 +1,7 @@
 mod expression_list;
 mod graph;
 mod katex_font;
+mod label;
 mod math_field;
 mod timer;
 mod ui;

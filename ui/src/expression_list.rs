@@ -11,6 +11,8 @@ use winit::{
     window::CursorIcon,
 };
 
+use crate::katex_font::Font;
+use crate::label::label;
 use crate::ui::{Color, PRIMARY_COLOR};
 use crate::{
     AppGraphics,
@@ -187,6 +189,7 @@ struct SliderUi {
     point_hovered: bool,
     name: String,
     name_field: MathField,
+    // TODO change this to use `label()` instead of an entire `MathField`
     step_label_field: MathField,
 }
 
@@ -2810,6 +2813,21 @@ impl ExpressionList {
                     ctx.scale_factor * dvec2(bounds.left() + gutter_width, expression_bottom),
                     focus_color_or(gutter_color),
                 ));
+
+                // expression number
+                let scale = 11.4;
+                label(
+                    &(i + 1).to_string(),
+                    ctx.scale_factor * dvec2(bounds.left() + 2.1, expression_top + 10.6),
+                    ctx.scale_factor * scale,
+                    if has_focus {
+                        (255, 255, 255, 1.0)
+                    } else {
+                        (0, 0, 0, 0.75)
+                    },
+                    Font::MainRegular,
+                    draw_quad,
+                );
 
                 if i < expressions_len - 1 {
                     if has_focus {

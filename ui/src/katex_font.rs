@@ -16,7 +16,7 @@ pub struct Glyph {
     pub atlas: Bounds,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum Font {
     MainRegular,
     MathItalic,

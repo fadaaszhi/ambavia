@@ -850,8 +850,8 @@ impl Tree {
                     let w = ctx.round_nonzero_as_physical(1.0);
                     let y = snap(l0.y, w);
                     draw_quad(Quad::rectangle(
-                        dvec2(l0.x.floor(), y - w as f64 / 2.0),
-                        dvec2(l1.x.ceil(), y + w as f64 / 2.0),
+                        (l0.x.floor(), y - w as f64 / 2.0),
+                        (l1.x.ceil(), y + w as f64 / 2.0),
                         [0; 3],
                     ));
                 }

@@ -298,21 +298,21 @@ impl Color for [u8; 3] {
 }
 
 impl Quad {
-    pub fn rectangle(p0: DVec2, p1: DVec2, color: impl Color) -> Quad {
+    pub fn rectangle(p0: impl Into<DVec2>, p1: impl Into<DVec2>, color: impl Color) -> Quad {
         Quad {
             kind: QuadKind::Rectangle,
-            p0,
-            p1,
+            p0: p0.into(),
+            p1: p1.into(),
             color: color.to_rgbaf64(),
             ..Default::default()
         }
     }
 
-    pub fn pill(p0: DVec2, p1: DVec2, color: impl Color) -> Quad {
+    pub fn pill(p0: impl Into<DVec2>, p1: impl Into<DVec2>, color: impl Color) -> Quad {
         Quad {
             kind: QuadKind::Pill,
-            p0,
-            p1,
+            p0: p0.into(),
+            p1: p1.into(),
             color: color.to_rgbaf64(),
             ..Default::default()
         }

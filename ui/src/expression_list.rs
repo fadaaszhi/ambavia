@@ -659,8 +659,8 @@ impl SliderUi {
 
         // slider bar
         draw_quad(Quad::pill(
-            dvec2(l.bar_left, l.point.y - bar_radius),
-            dvec2(l.bar_right, l.point.y + bar_radius),
+            (l.bar_left, l.point.y - bar_radius),
+            (l.bar_right, l.point.y + bar_radius),
             [0.9; 3],
         ));
 
@@ -2751,8 +2751,8 @@ impl ExpressionList {
 
         // separator between expression list and graph
         draw_quad(Quad::rectangle(
-            dvec2(bounds.right() - separator_width, bounds.top()),
-            dvec2(bounds.right(), bounds.bottom()),
+            (bounds.right() - separator_width, bounds.top()),
+            (bounds.right(), bounds.bottom()),
             separator_color,
         ));
 
@@ -2774,8 +2774,8 @@ impl ExpressionList {
                 if i < expressions_len - 2 {
                     // top separator for next expression
                     draw_quad(Quad::rectangle(
-                        dvec2(bounds.left(), expression_bottom),
-                        dvec2(bounds.right(), expression_bottom + separator_width),
+                        (bounds.left(), expression_bottom),
+                        (bounds.right(), expression_bottom + separator_width),
                         separator_color,
                     ));
                 }
@@ -2789,8 +2789,8 @@ impl ExpressionList {
                 expression_bottom = expression_top + expression.height();
                 // gutter separator
                 draw_quad(Quad::rectangle(
-                    dvec2(bounds.left() + gutter_width, expression_top),
-                    dvec2(
+                    (bounds.left() + gutter_width, expression_top),
+                    (
                         bounds.left() + gutter_width + separator_width,
                         expression_bottom,
                     ),
@@ -2798,8 +2798,8 @@ impl ExpressionList {
                 ));
                 // gutter fill
                 draw_quad(Quad::rectangle(
-                    dvec2(bounds.left(), expression_top),
-                    dvec2(bounds.left() + gutter_width, expression_bottom),
+                    (bounds.left(), expression_top),
+                    (bounds.left() + gutter_width, expression_bottom),
                     focus_color_or(gutter_color),
                 ));
 
@@ -2823,8 +2823,8 @@ impl ExpressionList {
                         // replace separators with thicker focus color when focussed
                         // top separator
                         draw_quad(Quad::rectangle(
-                            dvec2(bounds.left(), expression_top - separator_width),
-                            dvec2(
+                            (bounds.left(), expression_top - separator_width),
+                            (
                                 bounds.right(),
                                 expression_top + if i == 0 { 2.0 } else { 1.0 } * separator_width,
                             ),
@@ -2833,19 +2833,19 @@ impl ExpressionList {
 
                         // expression list/graph separator
                         draw_quad(Quad::rectangle(
-                            dvec2(bounds.right() - 2.0 * separator_width, expression_top),
-                            dvec2(bounds.right(), expression_bottom),
+                            (bounds.right() - 2.0 * separator_width, expression_top),
+                            (bounds.right(), expression_bottom),
                             focus_color_or(separator_color),
                         ));
                     }
 
                     // bottom separator
                     draw_quad(Quad::rectangle(
-                        dvec2(
+                        (
                             bounds.left(),
                             expression_bottom - if has_focus { separator_width } else { 0.0 },
                         ),
-                        dvec2(bounds.right(), expression_bottom + separator_width),
+                        (bounds.right(), expression_bottom + separator_width),
                         focus_color_or(separator_color),
                     ));
                 }
@@ -2875,8 +2875,8 @@ impl ExpressionList {
 
             // background fill
             draw_quad(Quad::rectangle(
-                dvec2(expression_left, expression_top),
-                dvec2(
+                (expression_left, expression_top),
+                (
                     expression_left + expression_width,
                     expression_top + expression.height(),
                 ),
@@ -2893,8 +2893,8 @@ impl ExpressionList {
 
             // gutter fill
             draw_quad(Quad::rectangle(
-                dvec2(bounds.left(), expression_top),
-                dvec2(
+                (bounds.left(), expression_top),
+                (
                     bounds.left() + gutter_width + separator_width,
                     expression_bottom,
                 ),
@@ -2902,20 +2902,20 @@ impl ExpressionList {
             ));
             // top separator
             draw_quad(Quad::rectangle(
-                dvec2(bounds.left(), expression_top - separator_width),
-                dvec2(bounds.right(), expression_top + separator_width),
+                (bounds.left(), expression_top - separator_width),
+                (bounds.right(), expression_top + separator_width),
                 PRIMARY_COLOR,
             ));
             // bottom separator
             draw_quad(Quad::rectangle(
-                dvec2(bounds.left(), expression_bottom - separator_width),
-                dvec2(bounds.right(), expression_bottom + separator_width),
+                (bounds.left(), expression_bottom - separator_width),
+                (bounds.right(), expression_bottom + separator_width),
                 PRIMARY_COLOR,
             ));
             // side separator
             draw_quad(Quad::rectangle(
-                dvec2(bounds.right() - 2.0 * separator_width, expression_top),
-                dvec2(bounds.right(), expression_bottom),
+                (bounds.right() - 2.0 * separator_width, expression_top),
+                (bounds.right(), expression_bottom),
                 PRIMARY_COLOR,
             ));
 

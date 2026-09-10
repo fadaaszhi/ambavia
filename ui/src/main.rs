@@ -192,7 +192,10 @@ impl App {
             let my_event = match event.clone() {
                 WindowEvent::Resized { .. } => Event::Resized,
                 WindowEvent::KeyboardInput { event, .. } => Event::KeyboardInput(event),
-                WindowEvent::CursorMoved { .. } => Event::CursorMoved { previous_cursor },
+                // Ignore redundant CursorMoved events that happen sometimes (at least on macOS)
+                WindowEvent::CursorMoved { .. } if previous_cursor != self.context.cursor => {
+                    Event::CursorMoved { previous_cursor }
+                }
                 // Is this delta a physical size? Do we need to convert it to
                 // logical? I think it's already logical because my trackpad
                 // feels less sensitive when I decrease my Mac's scale factor.

@@ -13,7 +13,7 @@ use winit::{
 
 use crate::katex_font::Font;
 use crate::label::{Label, render_label};
-use crate::ui::{Color, PRIMARY_COLOR};
+use crate::ui::{ClickDragTracker, Color, PRIMARY_COLOR};
 use crate::{
     AppGraphics,
     graph::{Geometry, GeometryKind},
@@ -186,6 +186,10 @@ struct SliderUi {
     name: String,
     name_field: MathField,
     step_label: Label<'static>,
+
+    play_button_hovered: bool,
+    play_button_click_tracker: ClickDragTracker,
+    is_playing: bool,
 }
 
 struct SliderEditLayout {
@@ -213,6 +217,12 @@ enum SliderLayout {
     Bar(SliderBarLayout),
 }
 
+struct SliderGutterLayout {
+    play_button_center: DVec2,
+    play_button_radius: f64,
+    play_button: Bounds,
+}
+
 impl SliderUi {
     const SLIDER_BAR_RADIUS: f64 = 3.0;
     const SLIDER_TICK_RADIUS: f64 = Self::SLIDER_BAR_RADIUS / 3.0;
@@ -230,6 +240,10 @@ impl SliderUi {
             name_field: create_le_name_le(&name),
             name,
             step_label: Label::new("Step:", 15.7, Font::MainRegular),
+
+            play_button_hovered: false,
+            play_button_click_tracker: Default::default(),
+            is_playing: false,
         }
     }
 
@@ -701,6 +715,102 @@ impl SliderUi {
         slider.hard_max.0.render(ctx, l.max_field, draw_quad);
 
         l.bounds.size.y
+    }
+
+    fn layout_gutter(&self, ctx: &Context, bounds: Bounds) -> SliderGutterLayout {
+        let play_button_center = bounds.pos + bounds.size.x * dvec2(0.5, 0.752);
+        let play_button_radius = 0.392 * bounds.size.x;
+        let round = |p: DVec2| p.map(|x| ctx.round(x));
+        let p0 = round(play_button_center - play_button_radius);
+        let p1 = round(play_button_center + play_button_radius);
+        let play_button = Bounds {
+            pos: p0,
+            size: p1 - p0,
+        };
+        SliderGutterLayout {
+            play_button_center,
+            play_button_radius,
+            play_button,
+        }
+    }
+
+    fn update_gutter(&mut self, ctx: &Context, event: &Event, bounds: Bounds) -> Response {
+        let l = self.layout_gutter(ctx, bounds);
+        let mut response = Response::default();
+
+        match event {
+            Event::MouseInput(ElementState::Pressed, MouseButton::Left)
+                if self.play_button_hovered =>
+            {
+                self.play_button_click_tracker.press(ctx.cursor);
+                response.consume_event();
+                response.request_redraw();
+            }
+            Event::CursorMoved { .. } => {
+                if set(
+                    &mut self.play_button_hovered,
+                    ctx.cursor.distance(l.play_button_center) <= l.play_button_radius,
+                ) {
+                    response.request_redraw();
+                }
+
+                if self.play_button_click_tracker.drag(ctx.cursor) {
+                    response.request_redraw();
+                }
+            }
+            Event::MouseInput(ElementState::Released, MouseButton::Left)
+                if self.play_button_click_tracker.release().was_clicked() =>
+            {
+                self.is_playing ^= true;
+                response.request_redraw();
+            }
+            _ => {}
+        }
+
+        if self.play_button_hovered {
+            response.cursor_mode = CursorMode::Icon(CursorIcon::Pointer);
+        }
+
+        response
+    }
+
+    fn render_gutter(
+        &mut self,
+        ctx: &Context,
+        bounds: Bounds,
+        expression_is_focussed: bool,
+        draw_quad: &mut impl FnMut(Quad),
+    ) {
+        let l = self.layout_gutter(ctx, bounds);
+        draw_quad(Quad {
+            kind: if self.is_playing {
+                QuadKind::SliderPlayingButton
+            } else {
+                QuadKind::SliderPausedButton
+            },
+            p0: l.play_button.pos,
+            p1: l.play_button.pos + l.play_button.size,
+            color: if expression_is_focussed {
+                let opacity =
+                    if self.play_button_hovered || self.play_button_click_tracker.is_pressed() {
+                        1.0
+                    } else {
+                        0.9
+                    };
+                (255, 255, 255, opacity)
+            } else {
+                let opacity = if self.play_button_click_tracker.is_pressed() {
+                    0.9
+                } else if self.play_button_hovered {
+                    0.7
+                } else {
+                    0.5
+                };
+                (0, 0, 0, opacity)
+            }
+            .to_rgbaf64(),
+            ..Default::default()
+        });
     }
 }
 
@@ -1363,6 +1473,13 @@ impl Expression {
         (response, message)
     }
 
+    fn update_gutter(&mut self, ctx: &Context, event: &Event, bounds: Bounds) -> Response {
+        match &mut self.output.ui {
+            OutputUi::Slider(ui) => ui.update_gutter(ctx, event, bounds),
+            _ => Response::default(),
+        }
+    }
+
     fn set_latex(&mut self, latex: &[latex_tree::Node]) {
         self.field = MathField::from(latex);
         self.parse_ast();
@@ -1457,6 +1574,19 @@ impl Expression {
 
         self.height = Some(height);
     }
+
+    fn render_gutter(
+        &mut self,
+        ctx: &Context,
+        bounds: Bounds,
+        has_focus: bool,
+        draw_quad: &mut impl FnMut(Quad),
+    ) {
+        match &mut self.output.ui {
+            OutputUi::Slider(ui) => ui.render_gutter(ctx, bounds, has_focus, draw_quad),
+            _ => {}
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, From, Into, Add, Sub, PartialEq, PartialOrd)]
@@ -1465,7 +1595,7 @@ pub struct ExpressionId(usize);
 pub struct ExpressionList {
     expressions: TiVec<ExpressionId, Expression>,
     expressions_changed: bool,
-    dragged_expression: Option<(ExpressionId, f64)>,
+    dragged_expression: Option<(ClickDragTracker, ExpressionId, f64)>,
     next_color: usize,
     scroll: f64,
     height: f64,
@@ -1802,11 +1932,84 @@ impl ExpressionList {
         let mut response = Response::default();
         let mut redraw_geometry = false;
 
-        if event == &Event::MouseInput(ElementState::Released, MouseButton::Left)
-            && self.dragged_expression.is_some()
-        {
-            self.dragged_expression = None;
-            response.request_redraw();
+        if let Some((drag_tracker, i, offset)) = &mut self.dragged_expression {
+            match event {
+                Event::MouseInput(ElementState::Released, MouseButton::Left) => {
+                    if drag_tracker.release().was_dragged() {
+                        response.request_redraw();
+                    }
+                    self.dragged_expression = None;
+                }
+                Event::CursorMoved { .. } if drag_tracker.drag(ctx.cursor) => {
+                    let i_top = ctx.cursor.y + *offset - (bounds.pos.y - self.scroll);
+                    let separator_width = ctx.round_nonzero(Self::SEPARATOR_WIDTH);
+                    let mut new_i = 0;
+                    let mut top = 0.0;
+
+                    for (j, expression) in self.expressions.iter_enumerated() {
+                        if j == *i {
+                            continue;
+                        }
+                        let middle = top + expression.height() / 2.0;
+                        if i_top < middle {
+                            break;
+                        }
+                        top += expression.height() + separator_width;
+                        new_i += 1;
+                    }
+
+                    // Don't try putting it past the last expression which is just
+                    // for the faded-away visual
+                    let new_i = ExpressionId(new_i.min(self.expressions.len() - 2));
+
+                    let offset_geometry_id = |expression: &mut Expression, amount: isize| {
+                        if let OutputData::DraggablePoint(Geometry {
+                            kind:
+                                GeometryKind::Point {
+                                    draggable: Some(id),
+                                    ..
+                                },
+                            ..
+                        }) = &mut expression.output.data
+                        {
+                            id.0 = (id.0 as isize + amount) as usize;
+                        }
+                    };
+
+                    if new_i > *i {
+                        self.expressions[*i..=new_i].rotate_left(1.into());
+                        for expression in &mut self.expressions[*i..new_i] {
+                            offset_geometry_id(expression, -1);
+                        }
+                    } else if new_i < *i {
+                        self.expressions[new_i..=*i].rotate_right(1.into());
+                        for expression in &mut self.expressions[new_i + 1.into()..=*i] {
+                            offset_geometry_id(expression, 1);
+                        }
+                    }
+
+                    offset_geometry_id(
+                        &mut self.expressions[new_i],
+                        new_i.0 as isize - i.0 as isize,
+                    );
+
+                    redraw_geometry |= set(i, new_i);
+                    // TODO keep it scrolling even when cursor isn't moving and make it FPS-independent
+                    self.scroll_y_into_view(ctx, ctx.cursor.y - (bounds.pos.y - self.scroll));
+
+                    #[cfg(not(windows))]
+                    let grabbing = CursorIcon::Grabbing;
+
+                    // https://github.com/rust-windowing/winit/issues/1043
+                    #[cfg(windows)]
+                    let grabbing = CursorIcon::NsResize;
+
+                    response.cursor_mode = CursorMode::Icon(grabbing);
+                    response.consume_event();
+                    response.request_redraw();
+                }
+                _ => {}
+            }
         }
 
         match event {
@@ -1814,75 +2017,6 @@ impl ExpressionList {
                 if bounds.contains(ctx.cursor) && delta.abs().y >= delta.x.abs() =>
             {
                 self.scroll(ctx, delta.y);
-                response.consume_event();
-                response.request_redraw();
-            }
-            Event::CursorMoved { .. } if self.dragged_expression.is_some() => {
-                // TODO keep it scrolling even when cursor isn't moving and make it FPS-independent
-                self.scroll_y_into_view(ctx, ctx.cursor.y - (bounds.pos.y - self.scroll));
-                let (i, offset) = self.dragged_expression.as_mut().unwrap();
-                let i_top = ctx.cursor.y + *offset - (bounds.pos.y - self.scroll);
-                let separator_width = ctx.round_nonzero(Self::SEPARATOR_WIDTH);
-                let mut new_i = 0;
-                let mut top = 0.0;
-
-                for (j, expression) in self.expressions.iter_enumerated() {
-                    if j == *i {
-                        continue;
-                    }
-                    let middle = top + expression.height() / 2.0;
-                    if i_top < middle {
-                        break;
-                    }
-                    top += expression.height() + separator_width;
-                    new_i += 1;
-                }
-
-                // Don't try putting it past the last expression which is just
-                // for the faded-away visual
-                let new_i = ExpressionId(new_i.min(self.expressions.len() - 2));
-
-                let offset_geometry_id = |expression: &mut Expression, amount: isize| {
-                    if let OutputData::DraggablePoint(Geometry {
-                        kind:
-                            GeometryKind::Point {
-                                draggable: Some(id),
-                                ..
-                            },
-                        ..
-                    }) = &mut expression.output.data
-                    {
-                        id.0 = (id.0 as isize + amount) as usize;
-                    }
-                };
-
-                if new_i > *i {
-                    self.expressions[*i..=new_i].rotate_left(1.into());
-                    for expression in &mut self.expressions[*i..new_i] {
-                        offset_geometry_id(expression, -1);
-                    }
-                } else if new_i < *i {
-                    self.expressions[new_i..=*i].rotate_right(1.into());
-                    for expression in &mut self.expressions[new_i + 1.into()..=*i] {
-                        offset_geometry_id(expression, 1);
-                    }
-                }
-
-                offset_geometry_id(
-                    &mut self.expressions[new_i],
-                    new_i.0 as isize - i.0 as isize,
-                );
-
-                redraw_geometry |= set(i, new_i);
-
-                #[cfg(not(windows))]
-                let grabbing = CursorIcon::Grabbing;
-
-                // https://github.com/rust-windowing/winit/issues/1043
-                #[cfg(windows)]
-                let grabbing = CursorIcon::NsResize;
-
-                response.cursor_mode = CursorMode::Icon(grabbing);
                 response.consume_event();
                 response.request_redraw();
             }
@@ -1912,18 +2046,45 @@ impl ExpressionList {
                     response = response.or(r);
                     message = message.or(m.map(|m| (i, m)));
 
-                    let gutter_bounds = Bounds {
+                    let gutter_response = expression.update_gutter(
+                        ctx,
+                        event,
+                        Bounds {
+                            pos: dvec2(bounds.left(), expression_top),
+                            size: dvec2(gutter_width, expression.height()),
+                        },
+                    );
+
+                    if gutter_response.consumed_event && has_focus {
+                        // We would've just lost focus after we clicked on gutter, refocus if so
+                        if has_focus {
+                            // TODO make this not lose where specifically we were focussed inside the expression
+                            expression.focus();
+                        }
+                    }
+
+                    response = response.or(gutter_response);
+
+                    let drag_bounds = Bounds {
                         pos: dvec2(bounds.left(), expression_top),
                         size: dvec2(gutter_width, expression.height()) + separator_width,
                     };
 
-                    if i.0 != expressions_len - 1 && gutter_bounds.contains(ctx.cursor) {
-                        let mut gutter_response = Response::default();
+                    if i.0 != expressions_len - 1 && drag_bounds.contains(ctx.cursor) {
+                        let mut drag_response = Response::default();
 
                         if event == &Event::MouseInput(ElementState::Pressed, MouseButton::Left) {
-                            self.dragged_expression = Some((i, expression_top - ctx.cursor.y));
-                            gutter_response.consume_event();
-                            gutter_response.request_redraw();
+                            self.dragged_expression = Some((
+                                if response.consumed_event {
+                                    ClickDragTracker::Pressed(ctx.cursor)
+                                } else {
+                                    ClickDragTracker::Dragging
+                                },
+                                i,
+                                expression_top - ctx.cursor.y,
+                            ));
+                            drag_response.consume_event();
+                            drag_response.request_redraw();
 
                             // We would've just lost focus after we started dragging, refocus if so
                             if has_focus {
@@ -1939,14 +2100,14 @@ impl ExpressionList {
                         #[cfg(windows)]
                         let (grab, grabbing) = (CursorIcon::EwResize, CursorIcon::EwResize);
 
-                        gutter_response.cursor_mode =
+                        drag_response.cursor_mode =
                             CursorMode::Icon(if self.dragged_expression.is_some() {
                                 grabbing
                             } else {
                                 grab
                             });
 
-                        response = response.or(gutter_response);
+                        response = response.or(drag_response);
                     }
 
                     expression_top += expression.height() + separator_width;
@@ -2747,13 +2908,18 @@ impl ExpressionList {
 
         for (i, expression) in self.expressions.iter_mut().enumerate() {
             // Don't draw last faded expression if expressions are being reordered
-            if i == expressions_len - 1 && self.dragged_expression.is_some() {
+            if i == expressions_len - 1
+                && let Some((ClickDragTracker::Dragging, _, _)) = self.dragged_expression
+            {
                 continue;
             }
 
             let has_focus = expression.has_focus();
             let focus_color_or = |color| if has_focus { PRIMARY_COLOR } else { color };
-            let is_being_dragged = self.dragged_expression.is_some_and(|(j, _)| j.0 == i);
+            let is_being_dragged = match &self.dragged_expression {
+                Some((ClickDragTracker::Dragging, j, _)) => j.0 == i,
+                _ => false,
+            };
             let expression_bottom;
 
             if is_being_dragged {
@@ -2791,6 +2957,17 @@ impl ExpressionList {
                     (bounds.left() + gutter_width, expression_bottom),
                     focus_color_or(gutter_color),
                 ));
+
+                // gutter contents
+                expression.render_gutter(
+                    ctx,
+                    Bounds {
+                        pos: dvec2(bounds.left(), expression_top),
+                        size: dvec2(gutter_width, expression.height()),
+                    },
+                    has_focus,
+                    draw_quad,
+                );
 
                 // expression number
                 render_label(
@@ -2857,7 +3034,7 @@ impl ExpressionList {
         }
 
         // draw the expression being currently dragged on top
-        if let Some((i, offset)) = self.dragged_expression {
+        if let Some((ClickDragTracker::Dragging, i, offset)) = self.dragged_expression {
             let expression_top = offset + ctx.cursor.y;
             let expression = &mut self.expressions[i];
 
@@ -2906,6 +3083,17 @@ impl ExpressionList {
                 (bounds.right(), expression_bottom),
                 PRIMARY_COLOR,
             ));
+
+            // gutter contents
+            expression.render_gutter(
+                ctx,
+                Bounds {
+                    pos: dvec2(bounds.left(), expression_top),
+                    size: dvec2(gutter_width, expression.height()),
+                },
+                true,
+                draw_quad,
+            );
 
             let shadow_height = 12.0;
             let color = dvec4(0.0, 0.0, 0.0, 0.22);

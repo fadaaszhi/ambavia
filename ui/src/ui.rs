@@ -213,6 +213,69 @@ impl Response {
     }
 }
 
+#[derive(PartialEq)]
+pub enum ClickOrDrag {
+    None,
+    Clicked,
+    Dragged,
+}
+
+impl ClickOrDrag {
+    pub fn was_clicked(self) -> bool {
+        self == ClickOrDrag::Clicked
+    }
+
+    pub fn was_dragged(self) -> bool {
+        self == ClickOrDrag::Dragged
+    }
+}
+
+/// Tracks whether an interaction with an object was a click or a drag.
+#[derive(Default)]
+pub enum ClickDragTracker {
+    #[default]
+    None,
+    Pressed(DVec2),
+    Dragging,
+}
+
+impl ClickDragTracker {
+    const DRAG_THRESHOLD: f64 = 2.0;
+
+    pub fn is_pressed(&self) -> bool {
+        matches!(self, ClickDragTracker::Pressed(_))
+    }
+
+    pub fn is_dragging(&self) -> bool {
+        matches!(self, ClickDragTracker::Dragging)
+    }
+
+    /// Call on mouse down and pass it the current cursor position
+    pub fn press(&mut self, cursor: DVec2) {
+        *self = ClickDragTracker::Pressed(cursor);
+    }
+
+    /// Call on mouse move and pass it the new cursor position.
+    /// Returns `true` if the user is dragging.
+    pub fn drag(&mut self, cursor: DVec2) -> bool {
+        if let ClickDragTracker::Pressed(start) = self
+            && start.distance(cursor) >= Self::DRAG_THRESHOLD
+        {
+            *self = ClickDragTracker::Dragging;
+        }
+        self.is_dragging()
+    }
+
+    /// Call on mouse up. Returns what type of interaction it was.
+    pub fn release(&mut self) -> ClickOrDrag {
+        match std::mem::take(self) {
+            ClickDragTracker::None => ClickOrDrag::None,
+            ClickDragTracker::Pressed(_) => ClickOrDrag::Clicked,
+            ClickDragTracker::Dragging => ClickOrDrag::Dragged,
+        }
+    }
+}
+
 pub struct Quad {
     pub kind: QuadKind,
     pub p0: DVec2,
@@ -326,4 +389,6 @@ pub enum QuadKind {
     AlphaGradientU,
     AlphaGradientV2,
     OutputValueBox,
+    SliderPausedButton,
+    SliderPlayingButton,
 }

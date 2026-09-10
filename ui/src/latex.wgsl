@@ -14,6 +14,8 @@ const MsdfGlyph = 2u;
 const AlphaGradientU = 3u;
 const AlphaGradientV2 = 4u;
 const OutputValueBox = 5u;
+const SliderPausedButton = 6u;
+const SliderPlayingButton = 7u;
 
 struct Vertex {
     @location(0) position: vec2f,
@@ -124,6 +126,20 @@ fn fs_latex(in: VertexOutput) -> @location(0) vec4f {
             let sd = sd_rounded_box(size * (in.uv - 0.5), size / 2.0, vec4(radius));
             let color = mix(STROKE_COLOR, FILL_COLOR, saturate(0.5 - (sd + stroke_width)));
             return vec4(color, saturate(0.5 - sd));
+        }
+        case SliderPausedButton, SliderPlayingButton {
+            let p = in.uv * 2.0 - 1.0;
+            var sd = abs(length(p) - 0.935) - 0.065;
+
+            if in.kind == SliderPausedButton {
+                sd = min(sd, max(0.5 * p.x + sqrt(0.75) * abs(p.y), -p.x) - 0.21);
+            } else {
+                sd = min(sd, max(abs(abs(p.x) - 0.22) - 0.14, abs(p.y) - 0.35));
+            }
+
+            sd *= size.x / 2.0;
+            let opacity = saturate(0.5 - sd);
+            return in.color * vec4(1.0, 1.0, 1.0, opacity);
         }
     }
 }

@@ -712,33 +712,22 @@ impl<'a> Resolver<'a> {
                     let name = left;
                     let left = self.resolve_variable(left)?;
                     let len = right.len();
-                    let right = self.resolve_expressions(right)?;
-                    if len == 1 || len == 2 {
-                        let mut right_iter = right.into_iter();
-                        Ok(Expression::Op {
-                            operation: OpName::Mul,
-                            args: vec![
-                                Expression::Identifier(left),
-                                if len == 1 {
-                                    right_iter.next().unwrap()
-                                } else {
-                                    Expression::Op {
-                                        operation: OpName::Point,
-                                        args: array::from_fn::<_, 2, _>(|_| {
-                                            right_iter.next().unwrap()
-                                        })
-                                        .into(),
-                                    }
+                    let mut right = self.resolve_expressions(right)?;
+                    Ok(Expression::Op {
+                        operation: OpName::Mul,
+                        args: vec![
+                            Expression::Identifier(left),
+                            match len {
+                                0 => return Err(NameError::VariableAsFunction(name.into())),
+                                1 => right.pop().unwrap(),
+                                2 | 3 => Expression::Op {
+                                    operation: OpName::Point,
+                                    args: right,
                                 },
-                            ],
-                        })
-                    } else {
-                        Err(if len == 0 {
-                            NameError::VariableAsFunction(name.into())
-                        } else {
-                            NameError::BadPointDimension
-                        })
-                    }
+                                _ => return Err(NameError::BadPointDimension),
+                            },
+                        ],
+                    })
                 }
             }
             ast::Expression::Call { callee, args } => self.resolve_call(callee, args),
@@ -2427,6 +2416,11 @@ mod tests {
                     callee: "a".into(),
                     args: vec![ANum(3.0), ANum(4.0)],
                 }),
+                // a(5, 6, 7)
+                ElExpr(ACallMul {
+                    callee: "a".into(),
+                    args: vec![ANum(5.0), ANum(6.0), ANum(7.0)],
+                }),
                 // a(5, 6, 7, 8)
                 ElExpr(ACallMul {
                     callee: "a".into(),
@@ -2462,11 +2456,30 @@ mod tests {
                             ]
                         },
                     },
+                    Assignment {
+                        id: Id(3),
+                        name: "<anonymous>".into(),
+                        value: Expression::Op {
+                            operation: OpName::Mul,
+                            args: vec![
+                                Expression::Identifier(Id(0)),
+                                Expression::Op {
+                                    operation: OpName::Point,
+                                    args: vec![
+                                        Expression::Number(5.0),
+                                        Expression::Number(6.0),
+                                        Expression::Number(7.0)
+                                    ],
+                                }
+                            ]
+                        },
+                    },
                 ],
                 vec![
                     ExpressionResult::Value(Id(0)),
                     ExpressionResult::Value(Id(1)),
                     ExpressionResult::Value(Id(2)),
+                    ExpressionResult::Value(Id(3)),
                     ExpressionResult::Err(NameError::BadPointDimension),
                 ],
                 HashMap::from([]),

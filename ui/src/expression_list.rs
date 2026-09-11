@@ -149,7 +149,7 @@ impl InlineField {
         event: &Event,
         bounds: Bounds,
     ) -> (Response, Option<Message>) {
-        let (mut response, message) = self.field.update(ctx, event, bounds);
+        let (mut response, message) = self.field.update(ctx, event, bounds, None);
         self.underline
             .update(ctx, &self.field, bounds, &mut response);
         (response, message)
@@ -847,7 +847,7 @@ impl FieldUi {
         padding: f64,
     ) -> (Response, Option<f64>, Option<Message>, Bounds) {
         let bounds = self.layout(ctx, top_left, width, padding);
-        let (mut response, _) = self.0.update(ctx, event, bounds);
+        let (mut response, _) = self.0.update(ctx, event, bounds, None);
 
         if let Some(UserSelection { anchor, focus }) = self.0.get_selection() {
             let mut clamp = |mut cursor: Cursor| {
@@ -1359,6 +1359,11 @@ impl Expression {
             size: dvec2(width - padding * 1.5, ctx.ceil(field.expression_size().y)),
         };
         height += field_bounds.size.y;
+        // Bounds used for testing if field got clicked on (field_bounds + padding included)
+        let field_hit_test_bounds = Bounds {
+            pos: top_left,
+            size: field_bounds.size + padding * 1.5,
+        };
         height += 0.5 * padding;
         let (output_response, new_value, output_message, output_bounds) = self.output.ui.update(
             ctx,
@@ -1381,79 +1386,60 @@ impl Expression {
         height += output_bounds.size.y;
         height += 0.5 * padding;
 
-        let bounds = Bounds {
-            pos: top_left,
-            size: dvec2(width, height),
+        let field = match use_fake_field {
+            true => &mut self.slider.fake_field,
+            false => &mut self.field,
         };
+        let (field_response, field_message) =
+            field.update(ctx, event, field_bounds, Some(field_hit_test_bounds));
+        if !field.has_focus() && use_fake_field {
+            self.field.unfocus();
+        }
+        if matches!(field_message, Some(Message::ContentsChanged { .. })) {
+            if use_fake_field {
+                self.field = self.slider.fake_field.clone();
+            }
+            self.parse_ast();
+            if let Some(Ok(ast::Statement::Assignment { value, .. })) = &self.ast
+                && let Some(value) = get_numeric_literal(value)
+            {
+                self.slider.fake_field_value = value;
+                if !use_fake_field {
+                    // We just became a slider. Transfer control over to fake field
+                    self.slider.fake_field = self.field.clone();
+                }
 
-        let mut r = Response::default();
-        if bounds.contains(ctx.cursor)
-            && !field_bounds.contains(ctx.cursor)
-            && !output_bounds.contains(ctx.cursor)
-        {
-            r.cursor_mode = CursorMode::Icon(CursorIcon::Pointer);
-            if event == &Event::MouseInput(ElementState::Pressed, MouseButton::Left) {
-                r.consume_event();
-                if !self.field.has_focus() {
-                    self.field.focus();
-                    r.request_redraw();
+                if let OutputUi::Slider(SliderUi { min, max, step, .. }) = self.output.ui {
+                    // maybe using `offset` instead of unconditionally
+                    // using `min` reduces floating-point error?
+                    let offset = if !self.slider.hard_min.0.is_empty()
+                        && let Some(min) = min
+                    {
+                        min
+                    } else {
+                        0.0
+                    };
+
+                    if min.is_some_and(|min| value < min) {
+                        self.slider.hard_min.0.clear();
+                    }
+                    if max.is_some_and(|max| value > max) {
+                        self.slider.hard_max.0.clear();
+                    }
+                    if max.is_none_or(|max| value != max)
+                        && let Some(step) = step
+                        && value != apply_slider_step(value, offset, step, f64::round)
+                    {
+                        self.slider.step.0.clear();
+                    }
                 }
             }
         }
-        response = response.or(r.or_else(|| {
-            let field = match use_fake_field {
-                true => &mut self.slider.fake_field,
-                false => &mut self.field,
-            };
-            let (r, m) = field.update(ctx, event, field_bounds);
-            if !field.has_focus() && use_fake_field {
-                self.field.unfocus();
-            }
-            if m == Some(Message::ContentsChanged) {
-                if use_fake_field {
-                    self.field = self.slider.fake_field.clone();
-                }
-                self.parse_ast();
-                if let Some(Ok(ast::Statement::Assignment { value, .. })) = &self.ast
-                    && let Some(value) = get_numeric_literal(value)
-                {
-                    self.slider.fake_field_value = value;
-                    if !use_fake_field {
-                        // We just became a slider. Transfer control over to fake field
-                        self.slider.fake_field = self.field.clone();
-                    }
+        if message.is_none() {
+            message = field_message;
+        }
 
-                    if let OutputUi::Slider(SliderUi { min, max, step, .. }) = self.output.ui {
-                        // maybe using `offset` instead of unconditionally
-                        // using `min` reduces floating-point error?
-                        let offset = if !self.slider.hard_min.0.is_empty()
-                            && let Some(min) = min
-                        {
-                            min
-                        } else {
-                            0.0
-                        };
-
-                        if min.is_some_and(|min| value < min) {
-                            self.slider.hard_min.0.clear();
-                        }
-                        if max.is_some_and(|max| value > max) {
-                            self.slider.hard_max.0.clear();
-                        }
-                        if max.is_none_or(|max| value != max)
-                            && let Some(step) = step
-                            && value != apply_slider_step(value, offset, step, f64::round)
-                        {
-                            self.slider.step.0.clear();
-                        }
-                    }
-                }
-            }
-            if message.is_none() {
-                message = m;
-            }
-            r
-        }));
+        response = response.or(field_response);
 
         // Maybe the parametric domain or slider settings got changed
         if let Some(m) = output_message {

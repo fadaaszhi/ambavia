@@ -1118,23 +1118,32 @@ impl MathField {
         &mut self,
         ctx: &Context,
         event: &Event,
-        bounds: Bounds,
+        // Where the field contents will fit within
+        content_bounds: Bounds,
+        // The area used for determining if a mouse click hit the field. If you don't provide
+        // this then it defaults to the `content_bounds`
+        hit_test_bounds: Option<Bounds>,
     ) -> (Response, Option<Message>) {
-        self.width = bounds.size.x;
+        self.width = content_bounds.size.x;
         let mut response = Response::default();
         let mut message = None;
 
         let write = self.interactiveness.allows_writing();
         let select = self.interactiveness.allows_selection();
 
-        let hovered = (bounds.contains(ctx.cursor) || self.dragging).then(|| {
-            let position = (ctx.cursor - bounds.pos + dvec2(self.scroll, 0.0)) / self.scale
-                - dvec2(
-                    self.left_padding,
-                    self.top_padding + self.tree.bounds.height,
-                );
-            self.tree.get_hovered(vec![], position)
-        });
+        let hovered = (hit_test_bounds
+            .unwrap_or(content_bounds)
+            .contains(ctx.cursor)
+            || self.dragging)
+            .then(|| {
+                let position = (ctx.cursor - content_bounds.pos + dvec2(self.scroll, 0.0))
+                    / self.scale
+                    - dvec2(
+                        self.left_padding,
+                        self.top_padding + self.tree.bounds.height,
+                    );
+                self.tree.get_hovered(vec![], position)
+            });
 
         if hovered.is_some() {
             if write || self.dragging {
@@ -2304,11 +2313,16 @@ impl MathField {
         to_latex(&self.tree, true)
     }
 
-    pub fn render(&mut self, ctx: &Context, bounds: Bounds, draw_quad: &mut impl FnMut(Quad)) {
-        self.width = bounds.size.x;
+    pub fn render(
+        &mut self,
+        ctx: &Context,
+        content_bounds: Bounds,
+        draw_quad: &mut impl FnMut(Quad),
+    ) {
+        self.width = content_bounds.size.x;
         self.scroll(0.0);
-        let top_left = bounds.pos * ctx.scale_factor;
-        let bottom_right = (bounds.pos + bounds.size) * ctx.scale_factor;
+        let top_left = content_bounds.pos * ctx.scale_factor;
+        let bottom_right = (content_bounds.pos + content_bounds.size) * ctx.scale_factor;
         let use_placeholder = self.use_placeholder();
         let tree = if use_placeholder {
             &mut self.placeholder
@@ -2341,7 +2355,7 @@ impl MathField {
         };
         let height = tree.bounds.height;
         let transform = &|p| {
-            (bounds.pos - dvec2(self.scroll, 0.0)
+            (content_bounds.pos - dvec2(self.scroll, 0.0)
                 + self.scale * (p + dvec2(self.left_padding, self.top_padding + height)))
                 * ctx.scale_factor
         };
@@ -2376,7 +2390,7 @@ impl MathField {
             });
         }
 
-        if self.scroll < self.expression_size().x - bounds.size.x {
+        if self.scroll < self.expression_size().x - content_bounds.size.x {
             // The order of the first two arguments determines which the direction of the gradient
             draw_quad(Quad {
                 kind: QuadKind::AlphaGradientU,

@@ -207,7 +207,8 @@ struct SliderBarLayout {
     max_field: Bounds,
     bar_left: f64,
     bar_right: f64,
-    point_bounds: Bounds,
+    bar_hitbox: Bounds,
+    point_hitbox: Bounds,
     point: DVec2,
     point_radius: f64,
     bounds: Bounds,
@@ -397,9 +398,14 @@ impl SliderUi {
                 ),
                 top_left.y + height / 2.0,
             );
-            let point_bounds = Bounds {
-                pos: point - point_radius,
-                size: DVec2::splat(2.0 * point_radius),
+            let bar_hitbox = Bounds {
+                pos: dvec2(bar_left, point.y - point_radius),
+                size: dvec2(bar_right - bar_left, 2.0 * point_radius),
+            };
+            let point_hitbox_size = dvec2(3.0, 2.0) * point_radius;
+            let point_hitbox = Bounds {
+                pos: point - point_hitbox_size / 2.0,
+                size: point_hitbox_size,
             };
             let bounds = Bounds {
                 pos: top_left,
@@ -411,7 +417,8 @@ impl SliderUi {
                 max_field,
                 bar_left,
                 bar_right,
-                point_bounds,
+                bar_hitbox,
+                point_hitbox,
                 point,
                 point_radius,
                 bounds,
@@ -544,7 +551,8 @@ impl SliderUi {
             unreachable!("only None if error in which case slider edit shown")
         };
         let mut response = Response::default();
-        let new_point_hovered = l.point_bounds.contains(ctx.cursor);
+        let new_point_hovered = l.point_hitbox.contains(ctx.cursor);
+        let bar_hovered = l.bar_hitbox.contains(ctx.cursor);
         let new_slider_min_hovered = l.min_field.contains(ctx.cursor);
         let new_slider_max_hovered = l.max_field.contains(ctx.cursor);
 
@@ -552,18 +560,21 @@ impl SliderUi {
         let original_value = *value;
         let mut should_update_soft_bounds = false;
 
+        let mut update_value_based_on_slider = |offset: f64| {
+            // Not using `.clamp()` because it panics if sidebar is resized too small
+            let point_x = (ctx.cursor.x + offset).max(l.bar_left).min(l.bar_right);
+            *value = mix(*min, *max, unmix(point_x, l.bar_left, l.bar_right));
+            *value = apply_slider(*value, *min, *max, *step);
+            new_value = Some(*value);
+            should_update_soft_bounds = true;
+            response.consume_event();
+            response.request_redraw();
+        };
+
         match event {
             // drag point
             Event::CursorMoved { .. } if self.dragging.is_some() => {
-                let offset = self.dragging.unwrap();
-                // Not using `.clamp()` because it panics if sidebar is resized too small
-                let point_x = (ctx.cursor.x + offset).max(l.bar_left).min(l.bar_right);
-                *value = mix(*min, *max, unmix(point_x, l.bar_left, l.bar_right));
-                *value = apply_slider(*value, *min, *max, *step);
-                new_value = Some(*value);
-                should_update_soft_bounds = true;
-                response.consume_event();
-                response.request_redraw();
+                update_value_based_on_slider(self.dragging.unwrap());
             }
             Event::MouseInput(ElementState::Pressed, MouseButton::Left) => {
                 if new_point_hovered {
@@ -572,6 +583,11 @@ impl SliderUi {
                     should_update_soft_bounds = true;
                     slider.is_playing = false;
                     response.consume_event();
+                } else if bar_hovered {
+                    // teleport point then start dragging
+                    update_value_based_on_slider(0.0);
+                    self.dragging = Some(0.0);
+                    slider.is_playing = false;
                 } else if new_slider_min_hovered {
                     // select min field
                     slider.hard_min.0.select_all();
@@ -648,7 +664,7 @@ impl SliderUi {
             response.cursor_mode = CursorMode::Icon(grabbing);
         } else if self.point_hovered {
             response.cursor_mode = CursorMode::Icon(grab);
-        } else if new_slider_min_hovered || new_slider_max_hovered {
+        } else if bar_hovered || new_slider_min_hovered || new_slider_max_hovered {
             response.cursor_mode = CursorMode::Icon(CursorIcon::Pointer);
         }
 

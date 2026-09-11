@@ -2098,7 +2098,7 @@ impl ExpressionList {
 
                         // https://github.com/rust-windowing/winit/issues/1043
                         #[cfg(windows)]
-                        let (grab, grabbing) = (CursorIcon::EwResize, CursorIcon::EwResize);
+                        let (grab, grabbing) = (CursorIcon::NsResize, CursorIcon::NsResize);
 
                         drag_response.cursor_mode =
                             CursorMode::Icon(if self.dragged_expression.is_some() {

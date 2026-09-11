@@ -13,7 +13,7 @@ use winit::{
 
 use crate::katex_font::Font;
 use crate::label::{Label, render_label};
-use crate::ui::{ClickDragTracker, Color, PRIMARY_COLOR};
+use crate::ui::{AnimatedValue, ClickDragTracker, Color, PRIMARY_COLOR};
 use crate::{
     AppGraphics,
     graph::{Geometry, GeometryKind},
@@ -183,6 +183,7 @@ struct SliderUi {
     step: Option<f64>,
     dragging: Option<f64>,
     point_hovered: bool,
+    point_hover_animation: AnimatedValue,
     name: String,
     name_field: MathField,
     step_label: Label<'static>,
@@ -239,6 +240,7 @@ impl SliderUi {
             step: Some(SLIDER_STEP_DEFAULT),
             dragging: None,
             point_hovered: false,
+            point_hover_animation: AnimatedValue::new(0.0),
             name_field: create_le_name_le(&name),
             name,
             step_label: Label::new("Step:", 15.7, Font::MainRegular),
@@ -608,35 +610,41 @@ impl SliderUi {
                 self.dragging = None;
                 response.consume_event();
             }
-            Event::AnimationFrame if slider.is_playing => {
-                // animated_value is the raw unstepped value used to maintain
-                // correct timing. check if it got invalidated by something like
-                // an action updating the slider value
-                if apply_slider(self.expected_value, *min, *max, *step)
-                    != apply_slider(*value, *min, *max, *step)
-                {
-                    println!("unsynced!");
-                    self.animated_value = *value;
+            Event::AnimationFrame => {
+                if self.point_hover_animation.is_animating(ctx.time) {
+                    response.request_redraw();
                 }
 
-                let dt = ctx.time - slider.previous_update_time;
-                let x = unmix(self.animated_value.clamp(*min, *max), *min, *max);
-                let y = x + slider.play_direction * dt / slider.animation_period;
-                let z = 1.0 - (y.rem_euclid(2.0) - 1.0).abs();
-                slider.play_direction *= 1.0 - y.rem_euclid(2.0).floor() * 2.0;
-                self.animated_value = mix(*min, *max, z);
+                if slider.is_playing {
+                    // animated_value is the raw unstepped value used to maintain
+                    // correct timing. check if it got invalidated by something like
+                    // an action updating the slider value
+                    if apply_slider(self.expected_value, *min, *max, *step)
+                        != apply_slider(*value, *min, *max, *step)
+                    {
+                        println!("unsynced!");
+                        self.animated_value = *value;
+                    }
 
-                // TODO round value to fewest required decimal places based on animatino period,framerate,max-min,step
-                if set(value, apply_slider(self.animated_value, *min, *max, *step)) {
-                    new_value = Some(*value);
-                    self.expected_value = *value;
+                    let dt = ctx.time - slider.previous_update_time;
+                    let x = unmix(self.animated_value.clamp(*min, *max), *min, *max);
+                    let y = x + slider.play_direction * dt / slider.animation_period;
+                    let z = 1.0 - (y.rem_euclid(2.0) - 1.0).abs();
+                    slider.play_direction *= 1.0 - y.rem_euclid(2.0).floor() * 2.0;
+                    self.animated_value = mix(*min, *max, z);
+
+                    // TODO round value to fewest required decimal places based on animatino period,framerate,max-min,step
+                    if set(value, apply_slider(self.animated_value, *min, *max, *step)) {
+                        new_value = Some(*value);
+                        self.expected_value = *value;
+                    }
+
+                    should_update_soft_bounds = true;
+                    // TODO make sliders with a step only request an animation frame when
+                    // they actually need to change. we'd need to use ControlFlow::WaitUntil
+                    // or something and add a new method response.request_redraw_at(Instant)
+                    response.request_redraw();
                 }
-
-                should_update_soft_bounds = true;
-                // TODO make sliders with a step only request an animation frame when
-                // they actually need to change. we'd need to use ControlFlow::WaitUntil
-                // or something and add a new method response.request_redraw_at(Instant)
-                response.request_redraw();
             }
             _ => {}
         }
@@ -650,6 +658,11 @@ impl SliderUi {
             &mut self.point_hovered,
             new_point_hovered || self.dragging.is_some(),
         ) {
+            let current = self.point_hover_animation.get(ctx.time);
+            let target = if self.point_hovered { 1.0 } else { 0.0 };
+            let duration = (current - target).abs().sqrt() * 0.2;
+            self.point_hover_animation
+                .animate_towards(target, duration, 2, ctx.time);
             response.request_redraw();
         }
 
@@ -761,16 +774,19 @@ impl SliderUi {
             l.point + l.point_radius,
             PRIMARY_COLOR.with_opacity(0.25).with_opacity(opacity),
         ));
-        let inner_radius = if self.point_hovered {
-            l.point_radius
-        } else {
-            bar_radius
-        };
-        draw_quad(Quad::pill(
-            l.point - inner_radius,
-            l.point + inner_radius,
-            PRIMARY_COLOR.with_opacity(opacity),
-        ));
+        let inner_radius = mix(
+            bar_radius,
+            l.point_radius,
+            self.point_hover_animation.get(ctx.time),
+        );
+        draw_quad(
+            Quad::pill(
+                l.point - inner_radius,
+                l.point + inner_radius,
+                PRIMARY_COLOR.with_opacity(opacity),
+            )
+            .pixel_snap(ctx),
+        );
 
         // min/max field
         slider.hard_min.0.render(ctx, l.min_field, draw_quad);
@@ -1721,7 +1737,7 @@ struct Vertex {
     position: Vec2,
     color: [u8; 4],
     kind: u32,
-    uv: [u16; 2],
+    uv: Vec2,
 }
 
 fn create_index_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
@@ -1824,7 +1840,7 @@ impl ExpressionList {
                             shader_location: 2,
                         },
                         wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Unorm16x2,
+                            format: wgpu::VertexFormat::Float32x2,
                             offset: offset_of!(Vertex::zeroed(), Vertex, uv) as _,
                             shader_location: 3,
                         },
@@ -2955,8 +2971,8 @@ impl ExpressionList {
             let p0 = (ctx.scale_factor * quad.p0).as_vec2();
             let p1 = (ctx.scale_factor * quad.p1).as_vec2();
             let to_unorm = |x: f64, s: f64| (x.clamp(0.0, 1.0) * s).round();
-            let uv0 = quad.uv0.to_array().map(|x| to_unorm(x, 65535.0) as u16);
-            let uv1 = quad.uv1.to_array().map(|x| to_unorm(x, 65535.0) as u16);
+            let uv0 = quad.uv0.as_vec2();
+            let uv1 = quad.uv1.as_vec2();
             let color = quad.color.to_array().map(|x| to_unorm(x, 255.0) as u8);
 
             indices.push(vertices.len() as u32);
@@ -2975,13 +2991,13 @@ impl ExpressionList {
                 position: vec2(p1.x, p0.y),
                 color,
                 kind,
-                uv: [uv1[0], uv0[1]],
+                uv: vec2(uv1.x, uv0.y),
             });
             vertices.push(Vertex {
                 position: vec2(p0.x, p1.y),
                 color,
                 kind,
-                uv: [uv0[0], uv1[1]],
+                uv: vec2(uv0.x, uv1.y),
             });
             vertices.push(Vertex {
                 position: p1,

@@ -4,14 +4,14 @@ use std::{
 };
 
 use arboard::Clipboard;
-use glam::{DVec2, DVec4, dvec4};
+use glam::{DVec2, DVec4, dvec2, dvec4};
 use winit::{
     event::{ElementState, KeyEvent, MouseButton, WindowEvent},
     keyboard::ModifiersState,
     window::{CursorIcon, Window},
 };
 
-use crate::utility::AsGlam;
+use crate::utility::{AsGlam, mix};
 
 pub struct Context {
     clipboard: Arc<Mutex<Option<Clipboard>>>,
@@ -76,6 +76,12 @@ impl Context {
     /// value.
     pub fn round(&self, x: f64) -> f64 {
         (x * self.scale_factor).round() / self.scale_factor
+    }
+
+    /// Floor a logical value to an integer physical value, returning a logical
+    /// value.
+    pub fn floor(&self, x: f64) -> f64 {
+        (x * self.scale_factor).floor() / self.scale_factor
     }
 
     /// Ceil a logical value to an integer physical value, returning a logical
@@ -388,6 +394,19 @@ impl Quad {
             ..Default::default()
         }
     }
+
+    pub fn pixel_snap(self, ctx: &Context) -> Quad {
+        let f = |a, b| if a < b { ctx.floor(a) } else { ctx.ceil(a) };
+        let p0 = dvec2(f(self.p0.x, self.p1.x), f(self.p0.y, self.p1.y));
+        let p1 = dvec2(f(self.p1.x, self.p0.x), f(self.p1.y, self.p0.y));
+        Quad {
+            p0,
+            p1,
+            uv0: mix(self.uv0, self.uv1, (p0 - self.p0) / (self.p1 - self.p0)),
+            uv1: mix(self.uv0, self.uv1, (p1 - self.p0) / (self.p1 - self.p0)),
+            ..self
+        }
+    }
 }
 
 pub enum QuadKind {
@@ -399,4 +418,61 @@ pub enum QuadKind {
     OutputValueBox,
     SliderPausedButton,
     SliderPlayingButton,
+}
+
+pub struct AnimatedValue {
+    duration: f64,
+    start_time: f64,
+    target: f64,
+    a: f64,
+    b: f64,
+    n: i32,
+}
+
+impl AnimatedValue {
+    pub fn new(value: f64) -> AnimatedValue {
+        AnimatedValue {
+            duration: -f64::INFINITY,
+            start_time: -f64::INFINITY,
+            target: value,
+            a: 0.0,
+            b: 0.0,
+            n: 0,
+        }
+    }
+
+    pub fn get(&self, current_time: f64) -> f64 {
+        let t = current_time - self.start_time;
+        if t >= self.duration {
+            return self.target;
+        }
+
+        self.target + (self.duration - t).powi(self.n + 1) * (self.a + self.b * t)
+    }
+
+    pub fn is_animating(&self, current_time: f64) -> bool {
+        current_time - self.start_time < self.duration
+    }
+
+    /// Starts an animation towards `target` over the next `duration` seconds
+    /// while matching the current position and velocity and ensuring the first
+    /// `n` derivatives are zero at `target` by using a degree `n+2` polynomial.
+    pub fn animate_towards(&mut self, target: f64, duration: f64, n: u32, current_time: f64) {
+        let p = self.get(current_time);
+        let t = current_time - self.start_time;
+        let v = if t < self.duration {
+            (self.duration - t).powi(self.n)
+                * (self.a + self.duration * self.b - (self.n as f64 + 2.0) * (self.a + self.b * t))
+        } else {
+            0.0
+        };
+        let c = 1.0 / duration;
+        self.n = n as i32;
+        let e = c.powi(self.n + 1);
+        self.a = (p - target) * e;
+        self.b = (self.n + 1) as f64 * self.a * c + v * e;
+        self.duration = duration;
+        self.start_time = current_time;
+        self.target = target;
+    }
 }

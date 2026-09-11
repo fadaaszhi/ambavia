@@ -195,6 +195,8 @@ impl App {
             self.window.set_cursor_visible(true);
         }
 
+        // TODO this isn't a good solution to setting cursor icon because sometimes
+        // things won't respond to all events to remember to set their cursor icons
         match response.cursor_mode {
             CursorMode::NoPreference => {
                 self.window.set_cursor(CursorIcon::Default);

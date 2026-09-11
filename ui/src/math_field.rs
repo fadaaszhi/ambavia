@@ -986,7 +986,10 @@ impl From<&latex_tree::Nodes<'_>> for MathField {
 
 #[derive(Debug, PartialEq)]
 pub enum Message {
-    ContentsChanged,
+    ContentsChanged {
+        /// A user driven content change means the expression will be scrolled into view.
+        user_driven: bool,
+    },
     Left,
     Right,
     Up,
@@ -2303,7 +2306,7 @@ impl MathField {
         if self.tree_changed {
             assert_eq!(message, None);
             self.tree_changed = false;
-            message = Some(Message::ContentsChanged);
+            message = Some(Message::ContentsChanged { user_driven: true });
         }
 
         (response, message)

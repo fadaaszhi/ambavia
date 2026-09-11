@@ -7,7 +7,7 @@ mod timer;
 mod ui;
 mod utility;
 
-use std::{f64, sync::Arc};
+use std::{f64, sync::Arc, time::Instant};
 
 use glam::{DVec2, UVec2, dvec2, vec2};
 use winit::{
@@ -52,19 +52,22 @@ fn main() -> Result<(), winit::error::EventLoopError> {
 }
 
 struct App {
-    events: Vec<WindowEvent>,
+    events: Vec<(WindowEvent, f64)>,
     request_redraw: bool,
     window: Arc<Window>,
     graphics: AppGraphics,
     main_thing: MainThing,
     context: Context,
+    start_time: Instant,
 }
+
 pub struct AppGraphics {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub config: wgpu::SurfaceConfiguration,
     pub surface: wgpu::Surface<'static>,
 }
+
 impl AppGraphics {
     fn new(window: &Arc<Window>) -> Self {
         let instance =
@@ -113,6 +116,7 @@ impl AppGraphics {
         }
     }
 }
+
 impl App {
     fn new(event_loop: &ActiveEventLoop) -> App {
         let window = Arc::new(
@@ -136,6 +140,7 @@ impl App {
             context,
             main_thing,
             graphics,
+            start_time: Instant::now(),
         }
     }
 
@@ -145,6 +150,8 @@ impl App {
         window_id: WindowId,
         event: WindowEvent,
     ) {
+        let time = self.start_time.elapsed().as_secs_f64();
+
         if true {
             // Pool events and only execute them on RedrawRequested to work around a
             // weird issue where taking more than 8ms during a non-RedrawRequested
@@ -155,22 +162,46 @@ impl App {
             // true by fake_window_event.
             if event != WindowEvent::RedrawRequested {
                 self.window.request_redraw();
-                self.events.push(event);
+                self.events.push((event, time));
                 return;
             }
 
-            self.request_redraw = false;
-            for event in std::mem::take(&mut self.events).drain(..) {
-                self.fake_window_event(event_loop, window_id, event);
+            for (event, time) in std::mem::take(&mut self.events).drain(..) {
+                self.fake_window_event(event_loop, window_id, event, time);
             }
+
             if self.request_redraw {
-                self.fake_window_event(event_loop, window_id, WindowEvent::RedrawRequested);
+                self.request_redraw = false;
+                self.fake_window_event(event_loop, window_id, WindowEvent::RedrawRequested, time);
+                // AnimationFrame might have requested redraw
+                if self.request_redraw {
+                    self.window.request_redraw();
+                }
             }
         } else {
-            self.request_redraw = false;
-            self.fake_window_event(event_loop, window_id, event);
+            self.fake_window_event(event_loop, window_id, event, time);
             if self.request_redraw {
+                self.request_redraw = false;
                 self.window.request_redraw();
+            }
+        }
+    }
+
+    fn update_main_thing(&mut self, event: &Event, bounds: Bounds) {
+        let response = self.main_thing.update(&self.context, event, bounds);
+        self.request_redraw |= response.requested_redraw;
+
+        if matches!(event, Event::CursorMoved { .. }) {
+            self.window.set_cursor_visible(true);
+        }
+
+        match response.cursor_mode {
+            CursorMode::NoPreference => {
+                self.window.set_cursor(CursorIcon::Default);
+            }
+            CursorMode::Hidden => self.window.set_cursor_visible(false),
+            CursorMode::Icon(icon) => {
+                self.window.set_cursor(icon);
             }
         }
     }
@@ -180,9 +211,10 @@ impl App {
         event_loop: &ActiveEventLoop,
         _window_id: WindowId,
         event: WindowEvent,
+        time: f64,
     ) {
         let previous_cursor = self.context.cursor;
-        self.context.update(&event);
+        self.context.update(&event, time);
         let bounds = Bounds {
             pos: DVec2::ZERO,
             size: self.window.inner_size().as_glam().as_dvec2() / self.context.scale_factor,
@@ -207,22 +239,7 @@ impl App {
                 WindowEvent::PinchGesture { delta, .. } => Event::PinchGesture(delta),
                 _ => break 'update,
             };
-            let response = self.main_thing.update(&self.context, &my_event, bounds);
-            self.request_redraw |= response.requested_redraw;
-
-            if matches!(my_event, Event::CursorMoved { .. }) {
-                self.window.set_cursor_visible(true);
-            }
-
-            match response.cursor_mode {
-                CursorMode::NoPreference => {
-                    self.window.set_cursor(CursorIcon::Default);
-                }
-                CursorMode::Hidden => self.window.set_cursor_visible(false),
-                CursorMode::Icon(icon) => {
-                    self.window.set_cursor(icon);
-                }
-            }
+            self.update_main_thing(&my_event, bounds);
         }
 
         match event {
@@ -235,6 +252,11 @@ impl App {
                 let Some(surface_texture) = self.graphics.get_surface_texture() else {
                     return;
                 };
+
+                // TODO bit gross that we are reaching into context here
+                self.context.time = self.start_time.elapsed().as_secs_f64();
+                self.update_main_thing(&Event::AnimationFrame, bounds);
+
                 let surface_view = surface_texture.texture.create_view(&Default::default());
                 let command_buffer =
                     self.main_thing

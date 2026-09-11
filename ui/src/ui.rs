@@ -15,6 +15,8 @@ use crate::utility::AsGlam;
 
 pub struct Context {
     clipboard: Arc<Mutex<Option<Clipboard>>>,
+    /// The number of seconds elapsed since the application started
+    pub time: f64,
     /// The cursor's current logical position
     pub cursor: DVec2,
     /// The window's scale factor
@@ -26,13 +28,16 @@ impl Context {
     pub fn new(window: &Window) -> Self {
         Self {
             clipboard: Arc::new(Mutex::new(None)),
+            time: 0.0,
             cursor: DVec2::ZERO,
             scale_factor: window.scale_factor(),
             modifiers: Default::default(),
         }
     }
 
-    pub fn update(&mut self, event: &WindowEvent) {
+    pub fn update(&mut self, event: &WindowEvent, time: f64) {
+        self.time = time;
+
         match &event {
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
             WindowEvent::CursorMoved { position, .. } => {
@@ -109,6 +114,9 @@ impl Context {
 #[derive(Debug, PartialEq)]
 pub enum Event {
     Resized,
+    /// Sent once right before every redraw. If you request a redraw during this
+    /// event, it will trigger an additional redraw next frame.
+    AnimationFrame,
     KeyboardInput(KeyEvent),
     CursorMoved {
         /// The cursor's previous logical position

@@ -189,7 +189,8 @@ struct SliderUi {
 
     play_button_hovered: bool,
     play_button_click_tracker: ClickDragTracker,
-    is_playing: bool,
+    animated_value: f64,
+    expected_value: f64,
 }
 
 struct SliderEditLayout {
@@ -243,7 +244,8 @@ impl SliderUi {
 
             play_button_hovered: false,
             play_button_click_tracker: Default::default(),
-            is_playing: false,
+            animated_value: 0.0,
+            expected_value: 0.0,
         }
     }
 
@@ -427,10 +429,16 @@ impl SliderUi {
         field_has_focus: bool,
         slider: &mut Slider,
     ) -> (Response, Option<f64>, Option<Message>, Bounds) {
-        match self.layout(ctx, padding, top_left, width, field_has_focus, slider) {
+        let result = match self.layout(ctx, padding, top_left, width, field_has_focus, slider) {
             SliderLayout::Edit(layout) => self.update_slider_edit(ctx, event, slider, layout),
             SliderLayout::Bar(layout) => self.update_slider_bar(ctx, event, slider, layout),
+        };
+
+        if event == &Event::AnimationFrame {
+            slider.previous_update_time = ctx.time;
         }
+
+        result
     }
 
     fn update_slider_edit(
@@ -445,7 +453,7 @@ impl SliderUi {
         let (step_response, mut step_message) = slider.step.0.update(ctx, event, l.step_field);
 
         match min_message {
-            Some(Message::ContentsChanged) => {
+            Some(Message::ContentsChanged { .. }) => {
                 slider.soft_min = SLIDER_SOFT_MIN_DEFAULT;
                 if !slider.hard_min.0.is_empty() {
                     slider.hard_min.1 = parse_standalone_expression(&slider.hard_min.0.to_latex());
@@ -463,14 +471,14 @@ impl SliderUi {
             Some(Message::Remove) => {
                 min_message = None;
                 if set(&mut slider.soft_min, SLIDER_SOFT_MIN_DEFAULT) {
-                    min_message = Some(Message::ContentsChanged);
+                    min_message = Some(Message::ContentsChanged { user_driven: true });
                 }
             }
             None => {}
         }
 
         match max_message {
-            Some(Message::ContentsChanged) => {
+            Some(Message::ContentsChanged { .. }) => {
                 slider.soft_max = SLIDER_SOFT_MAX_DEFAULT;
                 if !slider.hard_max.0.is_empty() {
                     slider.hard_max.1 = parse_standalone_expression(&slider.hard_max.0.to_latex());
@@ -492,14 +500,14 @@ impl SliderUi {
             Some(Message::Remove) => {
                 max_message = None;
                 if set(&mut slider.soft_max, SLIDER_SOFT_MAX_DEFAULT) {
-                    max_message = Some(Message::ContentsChanged);
+                    max_message = Some(Message::ContentsChanged { user_driven: true });
                 }
             }
             None => {}
         }
 
         match step_message {
-            Some(Message::ContentsChanged) => {
+            Some(Message::ContentsChanged { .. }) => {
                 if slider.step.0.is_empty() {
                     slider.step.1 = Ok(ast::Expression::Number(0.0));
                 } else {
@@ -541,7 +549,8 @@ impl SliderUi {
         let new_slider_max_hovered = l.max_field.contains(ctx.cursor);
 
         let mut new_value = None;
-        let mut slider_touched = false;
+        let original_value = *value;
+        let mut should_update_soft_bounds = false;
 
         match event {
             // drag point
@@ -552,7 +561,7 @@ impl SliderUi {
                 *value = mix(*min, *max, unmix(point_x, l.bar_left, l.bar_right));
                 *value = apply_slider(*value, *min, *max, *step);
                 new_value = Some(*value);
-                slider_touched = true;
+                should_update_soft_bounds = true;
                 response.consume_event();
                 response.request_redraw();
             }
@@ -560,16 +569,19 @@ impl SliderUi {
                 if new_point_hovered {
                     // start dragging point
                     self.dragging = Some(l.point.x - ctx.cursor.x);
-                    slider_touched = true;
+                    should_update_soft_bounds = true;
+                    slider.is_playing = false;
                     response.consume_event();
                 } else if new_slider_min_hovered {
                     // select min field
                     slider.hard_min.0.select_all();
+                    slider.is_playing = false;
                     response.consume_event();
                     response.request_redraw()
                 } else if new_slider_max_hovered {
                     // select max field
                     slider.hard_max.0.select_all();
+                    slider.is_playing = false;
                     response.consume_event();
                     response.request_redraw()
                 }
@@ -580,13 +592,42 @@ impl SliderUi {
                 self.dragging = None;
                 response.consume_event();
             }
+            Event::AnimationFrame if slider.is_playing => {
+                // animated_value is the raw unstepped value used to maintain
+                // correct timing. check if it got invalidated by something like
+                // an action updating the slider value
+                if apply_slider(self.expected_value, *min, *max, *step)
+                    != apply_slider(*value, *min, *max, *step)
+                {
+                    println!("unsynced!");
+                    self.animated_value = *value;
+                }
+
+                let dt = ctx.time - slider.previous_update_time;
+                let x = unmix(self.animated_value, *min, *max);
+                let y = x + slider.play_direction * dt / slider.animation_period;
+                let z = 1.0 - (y.rem_euclid(2.0) - 1.0).abs();
+                slider.play_direction *= 1.0 - y.rem_euclid(2.0).floor() * 2.0;
+                self.animated_value = mix(*min, *max, z);
+
+                // TODO round value to fewest required decimal places based on animatino period,framerate,max-min,step
+                if set(value, apply_slider(self.animated_value, *min, *max, *step)) {
+                    new_value = Some(*value);
+                    self.expected_value = *value;
+                }
+
+                should_update_soft_bounds = true;
+                // TODO make sliders with a step only request an animation frame when
+                // they actually need to change. we'd need to use ControlFlow::WaitUntil
+                // or something and add a new method response.request_redraw_at(Instant)
+                response.request_redraw();
+            }
             _ => {}
         }
 
-        // update soft min/max if slider was interacted with
-        if slider_touched {
-            slider.soft_min = slider.soft_min.min(*value);
-            slider.soft_max = slider.soft_max.max(*value);
+        if should_update_soft_bounds {
+            slider.soft_min = slider.soft_min.min(*value).min(original_value);
+            slider.soft_max = slider.soft_max.max(*value).max(original_value);
         }
 
         if set(
@@ -657,6 +698,7 @@ impl SliderUi {
         let (Some(min), Some(max), Some(step)) = (self.min, self.max, self.step) else {
             unreachable!("only None if error in which case slider edit shown")
         };
+        let opacity = if min == max { 0.3 } else { 1.0 };
         let bar_radius = ctx.round_nonzero(Self::SLIDER_BAR_RADIUS);
         let tick_radius = ctx.round_nonzero(Self::SLIDER_TICK_RADIUS);
 
@@ -664,7 +706,7 @@ impl SliderUi {
         draw_quad(Quad::pill(
             (l.bar_left, l.point.y - bar_radius),
             (l.bar_right, l.point.y + bar_radius),
-            [0.9; 3],
+            [0.9; 3].with_opacity(opacity),
         ));
 
         // step ticks on slider bar
@@ -676,7 +718,11 @@ impl SliderUi {
                     mix(l.bar_left, l.bar_right, unmix(value, min, max)),
                     l.point.y,
                 );
-                draw_quad(Quad::pill(tick - tick_radius, tick + tick_radius, [1.0; 3]));
+                draw_quad(Quad::pill(
+                    tick - tick_radius,
+                    tick + tick_radius,
+                    [1.0; 3].with_opacity(opacity),
+                ));
             }
         }
 
@@ -689,7 +735,7 @@ impl SliderUi {
             draw_quad(Quad::pill(
                 tick - tick_radius,
                 tick + tick_radius,
-                (0, 0, 0, 0.35),
+                (0, 0, 0, 0.35).with_opacity(opacity),
             ));
         }
 
@@ -697,7 +743,7 @@ impl SliderUi {
         draw_quad(Quad::pill(
             l.point - l.point_radius,
             l.point + l.point_radius,
-            PRIMARY_COLOR.with_opacity(0.25),
+            PRIMARY_COLOR.with_opacity(0.25).with_opacity(opacity),
         ));
         let inner_radius = if self.point_hovered {
             l.point_radius
@@ -707,7 +753,7 @@ impl SliderUi {
         draw_quad(Quad::pill(
             l.point - inner_radius,
             l.point + inner_radius,
-            PRIMARY_COLOR,
+            PRIMARY_COLOR.with_opacity(opacity),
         ));
 
         // min/max field
@@ -717,7 +763,19 @@ impl SliderUi {
         l.bounds.size.y
     }
 
-    fn layout_gutter(&self, ctx: &Context, bounds: Bounds) -> SliderGutterLayout {
+    fn layout_gutter(&self, ctx: &Context, bounds: Bounds) -> Option<SliderGutterLayout> {
+        // TODO when slider modes are implemented, "play indefinitely" only requires step to be Some
+        let (Some(_value), Some(min), Some(max), Some(_step)) =
+            (self.value, self.min, self.max, self.step)
+        else {
+            return None;
+        };
+
+        // TODO find a way to not repeat this validity check
+        if min > max {
+            return None;
+        }
+
         let play_button_center = bounds.pos + bounds.size.x * dvec2(0.5, 0.752);
         let play_button_radius = 0.392 * bounds.size.x;
         let round = |p: DVec2| p.map(|x| ctx.round(x));
@@ -727,16 +785,24 @@ impl SliderUi {
             pos: p0,
             size: p1 - p0,
         };
-        SliderGutterLayout {
+        Some(SliderGutterLayout {
             play_button_center,
             play_button_radius,
             play_button,
-        }
+        })
     }
 
-    fn update_gutter(&mut self, ctx: &Context, event: &Event, bounds: Bounds) -> Response {
-        let l = self.layout_gutter(ctx, bounds);
+    fn update_gutter(
+        &mut self,
+        ctx: &Context,
+        event: &Event,
+        slider: &mut Slider,
+        bounds: Bounds,
+    ) -> Response {
         let mut response = Response::default();
+        let Some(l) = self.layout_gutter(ctx, bounds) else {
+            return response;
+        };
 
         match event {
             Event::MouseInput(ElementState::Pressed, MouseButton::Left)
@@ -761,7 +827,15 @@ impl SliderUi {
             Event::MouseInput(ElementState::Released, MouseButton::Left)
                 if self.play_button_click_tracker.release().was_clicked() =>
             {
-                self.is_playing ^= true;
+                slider.is_playing ^= true;
+                if slider.is_playing {
+                    let value = self.value.expect("play button only shows if no error");
+                    slider.soft_min = slider.soft_min.min(value);
+                    slider.soft_max = slider.soft_max.max(value);
+                    slider.previous_update_time = ctx.time;
+                    self.animated_value = value;
+                    self.expected_value = value;
+                }
                 response.request_redraw();
             }
             _ => {}
@@ -779,11 +853,14 @@ impl SliderUi {
         ctx: &Context,
         bounds: Bounds,
         expression_is_focussed: bool,
+        slider: &mut Slider,
         draw_quad: &mut impl FnMut(Quad),
     ) {
-        let l = self.layout_gutter(ctx, bounds);
+        let Some(l) = self.layout_gutter(ctx, bounds) else {
+            return;
+        };
         draw_quad(Quad {
-            kind: if self.is_playing {
+            kind: if slider.is_playing {
                 QuadKind::SliderPlayingButton
             } else {
                 QuadKind::SliderPausedButton
@@ -969,7 +1046,7 @@ impl ParametricDomainUi {
         let (max_response, mut max_message) = domain.max.0.update(ctx, event, l.max_field);
 
         match min_message {
-            Some(Message::ContentsChanged) => {
+            Some(Message::ContentsChanged { .. }) => {
                 let mut latex = domain.min.0.to_latex();
                 if latex.is_empty() {
                     latex = domain.min.0.get_placeholder();
@@ -987,7 +1064,7 @@ impl ParametricDomainUi {
         }
 
         match max_message {
-            Some(Message::ContentsChanged) => {
+            Some(Message::ContentsChanged { .. }) => {
                 let mut latex = domain.max.0.to_latex();
                 if latex.is_empty() {
                     latex = domain.max.0.get_placeholder();
@@ -1115,6 +1192,7 @@ impl OutputUi {
         let ui = match self {
             OutputUi::Slider(ui) => ui,
             _ => {
+                slider.is_playing = false;
                 *self = OutputUi::Slider(SliderUi::new(name.into()));
                 match self {
                     OutputUi::Slider(ui) => ui,
@@ -1245,6 +1323,12 @@ struct Slider {
     hard_max: (InlineField, Result<parse::ast::Expression, String>),
     soft_max: f64,
     step: (InlineField, Result<parse::ast::Expression, String>),
+    is_playing: bool,
+    previous_update_time: f64,
+    /// `1.0` or `-1.0`
+    play_direction: f64,
+    /// In seconds
+    animation_period: f64,
     /// This is what is displayed to the user when a slider is shown instead of
     /// the actual math field. It's to handle desync between the actual value vs
     /// clamped slider value, e.g., when slider bounds get animated.
@@ -1300,6 +1384,10 @@ impl Expression {
                 ),
                 soft_max: SLIDER_SOFT_MAX_DEFAULT,
                 step: (InlineField::new(""), Ok(ast::Expression::Number(0.0))),
+                is_playing: false,
+                previous_update_time: 0.0,
+                play_direction: 1.0,
+                animation_period: 4.0,
                 fake_field: Default::default(),
                 fake_field_value: 0.0,
             },
@@ -1379,7 +1467,9 @@ impl Expression {
         // Update new value from slider
         if let Some(value) = new_value {
             self.set_latex(&create_slider_latex(&self.field, value));
-            message = Some(Message::ContentsChanged);
+            // TODO distinguish between value changed because user dragged
+            // slider (user driven) vs slider animation (not user driven)
+            message = Some(Message::ContentsChanged { user_driven: false });
         }
 
         response = response.or(output_response);
@@ -1392,6 +1482,11 @@ impl Expression {
         };
         let (field_response, field_message) =
             field.update(ctx, event, field_bounds, Some(field_hit_test_bounds));
+
+        if field.has_focus() {
+            self.slider.is_playing = false;
+        }
+
         if !field.has_focus() && use_fake_field {
             self.field.unfocus();
         }
@@ -1444,7 +1539,7 @@ impl Expression {
         // Maybe the parametric domain or slider settings got changed
         if let Some(m) = output_message {
             message = match m {
-                Message::ContentsChanged | Message::Down | Message::Add => Some(m),
+                Message::ContentsChanged { .. } | Message::Down | Message::Add => Some(m),
                 Message::Left | Message::Right | Message::Remove => unreachable!(),
                 Message::Up => {
                     self.focus();
@@ -1461,7 +1556,7 @@ impl Expression {
 
     fn update_gutter(&mut self, ctx: &Context, event: &Event, bounds: Bounds) -> Response {
         match &mut self.output.ui {
-            OutputUi::Slider(ui) => ui.update_gutter(ctx, event, bounds),
+            OutputUi::Slider(ui) => ui.update_gutter(ctx, event, &mut self.slider, bounds),
             _ => Response::default(),
         }
     }
@@ -1489,6 +1584,7 @@ impl Expression {
     fn focus(&mut self) {
         self.field.focus();
         self.slider.fake_field.focus();
+        self.slider.is_playing = false;
     }
 
     fn unfocus(&mut self) {
@@ -1569,7 +1665,9 @@ impl Expression {
         draw_quad: &mut impl FnMut(Quad),
     ) {
         match &mut self.output.ui {
-            OutputUi::Slider(ui) => ui.render_gutter(ctx, bounds, has_focus, draw_quad),
+            OutputUi::Slider(ui) => {
+                ui.render_gutter(ctx, bounds, has_focus, &mut self.slider, draw_quad)
+            }
             _ => {}
         }
     }
@@ -2044,8 +2142,8 @@ impl ExpressionList {
                     if gutter_response.consumed_event && has_focus {
                         // We would've just lost focus after we clicked on gutter, refocus if so
                         if has_focus {
-                            // TODO make this not lose where specifically we were focussed inside the expression
-                            expression.focus();
+                            // TODO add this back but make it not let user edit slider without it pausing
+                            // expression.focus();
                         }
                     }
 
@@ -2074,8 +2172,8 @@ impl ExpressionList {
 
                             // We would've just lost focus after we started dragging, refocus if so
                             if has_focus {
-                                // TODO make this not lose where specifically we were focussed inside the expression
-                                expression.focus();
+                                // TODO add this back but make it not let user edit slider without it pausing
+                                // expression.focus();
                             }
                         }
 
@@ -2101,9 +2199,11 @@ impl ExpressionList {
 
                 if let Some((i, m)) = message {
                     match m {
-                        Message::ContentsChanged => {
+                        Message::ContentsChanged { user_driven } => {
                             self.expressions_changed = true;
-                            self.scroll_into_view(ctx, i);
+                            if user_driven {
+                                self.scroll_into_view(ctx, i);
+                            }
                         }
                         Message::Left | Message::Right => {}
                         Message::Up => {

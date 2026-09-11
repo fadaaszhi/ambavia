@@ -604,7 +604,7 @@ impl SliderUi {
                 }
 
                 let dt = ctx.time - slider.previous_update_time;
-                let x = unmix(self.animated_value, *min, *max);
+                let x = unmix(self.animated_value.clamp(*min, *max), *min, *max);
                 let y = x + slider.play_direction * dt / slider.animation_period;
                 let z = 1.0 - (y.rem_euclid(2.0) - 1.0).abs();
                 slider.play_direction *= 1.0 - y.rem_euclid(2.0).floor() * 2.0;

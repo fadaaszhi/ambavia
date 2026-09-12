@@ -16,7 +16,8 @@ use crate::{
         OPERATORNAMES, TexturedQuad, Tree, ends_in_operatorname, new_big_op, new_bracket, new_char,
         new_frac, new_radical, new_script, new_script_lower, new_script_upper, new_sqrt, to_latex,
     },
-    ui::{Bounds, Context, CursorMode, Event, Quad, QuadKind, Response},
+    quad_renderer::{Quad, QuadKind},
+    ui::{Bounds, Context, CursorMode, Event, Response},
     utility::{mix, set, snap},
 };
 use parse::{

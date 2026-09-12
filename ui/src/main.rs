@@ -3,6 +3,7 @@ mod graph;
 mod katex_font;
 mod label;
 mod math_field;
+mod quad_renderer;
 mod timer;
 mod ui;
 mod utility;
@@ -280,6 +281,7 @@ struct MainThing {
     raw_resizer_size: f64,
     clamped_resizer_size: f64,
     dragging: Option<f64>,
+    quad_renderer: quad_renderer::QuadRenderer,
     expression_list: expression_list::ExpressionList,
     graph_paper: graph::GraphPaper,
 }
@@ -290,7 +292,8 @@ impl MainThing {
             raw_resizer_size: f64::NAN,
             clamped_resizer_size: 0.0,
             dragging: None,
-            expression_list: expression_list::ExpressionList::new(graphics),
+            quad_renderer: quad_renderer::QuadRenderer::new(graphics),
+            expression_list: expression_list::ExpressionList::new(),
             graph_paper: graph::GraphPaper::new(graphics),
         }
     }
@@ -431,8 +434,16 @@ impl MainThing {
         // which would otherwise overwrite the expression list
         self.graph_paper
             .render(ctx, graphics, view, &mut encoder, right);
-        self.expression_list
-            .render(ctx, graphics, view, &mut encoder, left);
+
+        let mut indices = vec![];
+        let mut vertices = vec![];
+        let draw_quad = &mut |quad: quad_renderer::Quad| {
+            quad.into_triangles(ctx, &mut vertices, &mut indices);
+        };
+
+        self.expression_list.render(ctx, left, draw_quad);
+        self.quad_renderer
+            .render(ctx, graphics, view, &mut encoder, &vertices, &indices);
         Some(encoder.finish())
     }
 }

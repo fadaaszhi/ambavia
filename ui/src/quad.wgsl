@@ -36,7 +36,7 @@ fn flip_y(v: vec2f) -> vec2f {
 }
 
 @vertex
-fn vs_latex(v: Vertex) -> VertexOutput {
+fn vs_quad(v: Vertex) -> VertexOutput {
     let p_clip = vec4(flip_y(2.0 * v.position - uniforms.resolution) / uniforms.resolution, 0.0, 1.0);
     return VertexOutput(p_clip,  v.color, v.kind, v.uv);
 }
@@ -77,7 +77,7 @@ fn sqr(x: vec3f) -> vec3f {
 
 @diagnostic(off, derivative_uniformity)
 @fragment
-fn fs_latex(in: VertexOutput) -> @location(0) vec4f {
+fn fs_quad(in: VertexOutput) -> @location(0) vec4f {
     let size = 1.0 / vec2(dpdx(in.uv.x), dpdy(in.uv.y));
 
     switch in.kind {

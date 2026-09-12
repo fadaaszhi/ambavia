@@ -4,14 +4,14 @@ use std::{
 };
 
 use arboard::Clipboard;
-use glam::{DVec2, DVec4, dvec2, dvec4};
+use glam::{DVec2, DVec4, dvec4};
 use winit::{
     event::{ElementState, KeyEvent, MouseButton, WindowEvent},
     keyboard::ModifiersState,
     window::{CursorIcon, Window},
 };
 
-use crate::utility::{AsGlam, mix};
+use crate::utility::AsGlam;
 
 pub struct Context {
     clipboard: Arc<Mutex<Option<Clipboard>>>,
@@ -290,28 +290,6 @@ impl ClickDragTracker {
     }
 }
 
-pub struct Quad {
-    pub kind: QuadKind,
-    pub p0: DVec2,
-    pub p1: DVec2,
-    pub uv0: DVec2,
-    pub uv1: DVec2,
-    pub color: DVec4,
-}
-
-impl Default for Quad {
-    fn default() -> Self {
-        Self {
-            kind: QuadKind::Rectangle,
-            p0: DVec2::ZERO,
-            p1: DVec2::ZERO,
-            uv0: DVec2::ZERO,
-            uv1: DVec2::ONE,
-            color: DVec4::ZERO,
-        }
-    }
-}
-
 pub const PRIMARY_COLOR: [u8; 3] = [47, 114, 220];
 
 pub trait Color {
@@ -372,52 +350,6 @@ impl Color for [u8; 3] {
     fn to_rgbaf64(self) -> DVec4 {
         (self[0], self[1], self[2]).to_rgbaf64()
     }
-}
-
-impl Quad {
-    pub fn rectangle(p0: impl Into<DVec2>, p1: impl Into<DVec2>, color: impl Color) -> Quad {
-        Quad {
-            kind: QuadKind::Rectangle,
-            p0: p0.into(),
-            p1: p1.into(),
-            color: color.to_rgbaf64(),
-            ..Default::default()
-        }
-    }
-
-    pub fn pill(p0: impl Into<DVec2>, p1: impl Into<DVec2>, color: impl Color) -> Quad {
-        Quad {
-            kind: QuadKind::Pill,
-            p0: p0.into(),
-            p1: p1.into(),
-            color: color.to_rgbaf64(),
-            ..Default::default()
-        }
-    }
-
-    pub fn pixel_snap(self, ctx: &Context) -> Quad {
-        let f = |a, b| if a < b { ctx.floor(a) } else { ctx.ceil(a) };
-        let p0 = dvec2(f(self.p0.x, self.p1.x), f(self.p0.y, self.p1.y));
-        let p1 = dvec2(f(self.p1.x, self.p0.x), f(self.p1.y, self.p0.y));
-        Quad {
-            p0,
-            p1,
-            uv0: mix(self.uv0, self.uv1, (p0 - self.p0) / (self.p1 - self.p0)),
-            uv1: mix(self.uv0, self.uv1, (p1 - self.p0) / (self.p1 - self.p0)),
-            ..self
-        }
-    }
-}
-
-pub enum QuadKind {
-    Rectangle,
-    Pill,
-    MsdfGlyph,
-    AlphaGradientU,
-    AlphaGradientV2,
-    OutputValueBox,
-    SliderPausedButton,
-    SliderPlayingButton,
 }
 
 pub struct AnimatedValue {

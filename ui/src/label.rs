@@ -2,7 +2,8 @@ use glam::{DVec2, dvec2};
 
 use crate::{
     katex_font::{Font, get_glyph},
-    ui::{Bounds, Color, Quad, QuadKind},
+    quad_renderer::{Quad, QuadKind},
+    ui::{Bounds, Color},
 };
 
 pub struct Label<'a> {

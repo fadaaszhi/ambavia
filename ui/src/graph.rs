@@ -26,10 +26,11 @@ use crate::{
         tile_fill::{Segment, TILE_SIZE, Tile},
     },
     quad_renderer::{Quad, QuadKind},
-    ui::{Color, CursorMode},
-    utility::{flip_y, set, snap},
+    ui::{AnimatedValue, Color, CursorMode},
+    utility::{flip_y, mix, set, snap},
 };
 
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct Viewport {
     center: DVec2,
     width: f64,
@@ -473,7 +474,9 @@ impl GraphPaper {
         event: &Event,
         bounds: Bounds,
     ) -> (Response, Option<(ExpressionId, DVec2)>) {
-        let (mut response, buttons_hovered) = self.graph_buttons.update(ctx, event, bounds);
+        let (mut response, buttons_hovered) =
+            self.graph_buttons
+                .update(ctx, event, bounds, &mut self.viewport);
 
         if response.consumed_event {
             return (response, None);
@@ -989,7 +992,7 @@ impl Button {
 
         let new_hovered =
             bounds.contains(ctx.cursor) && (self.pressed || !ctx.left_mouse_button_already_pressed);
-        if set(&mut self.hovered, new_hovered) {
+        if set(&mut self.hovered, new_hovered) && !self.pressed {
             response.request_redraw();
         }
         let mut clicked = false;
@@ -1000,7 +1003,7 @@ impl Button {
                 response.consume_event();
                 response.request_redraw();
             }
-            Event::MouseInput(ElementState::Released, MouseButton::Left) => {
+            Event::MouseInput(ElementState::Released, MouseButton::Left) if self.pressed => {
                 self.pressed = false;
                 response.request_redraw();
                 clicked = self.hovered;
@@ -1016,10 +1019,49 @@ impl Button {
     }
 }
 
+struct ViewportAnimation {
+    start: Viewport,
+    end: Viewport,
+    start_time: f64,
+    duration: f64,
+}
+
+impl ViewportAnimation {
+    fn is_animating(&self, time: f64) -> bool {
+        time - self.start_time < self.duration
+    }
+
+    fn get(&self, time: f64) -> Viewport {
+        if !self.is_animating(time) {
+            return self.end;
+        }
+
+        let t = (time - self.start_time) / self.duration;
+        let t = t * t * (10.0 + t * (-20.0 + t * (15.0 - 4.0 * t)));
+
+        let r = self.end.width / self.start.width;
+        let a = (r.ln() * t).exp_m1();
+        let width = (a + 1.0) * self.start.width;
+        let center = mix(self.start.center, self.end.center, a / (r - 1.0));
+
+        if width.is_finite() && center.is_finite() {
+            Viewport { center, width }
+        } else {
+            Viewport {
+                center: mix(self.start.center, self.end.center, t),
+                width: mix(self.start.width, self.end.width, t),
+            }
+        }
+    }
+}
+
 struct GraphButtons {
     plus: Button,
     minus: Button,
     home: Button,
+    viewport_animation: Option<ViewportAnimation>,
+    home_button_showing: bool,
+    home_button_showing_amount: AnimatedValue,
 }
 
 impl GraphButtons {
@@ -1028,17 +1070,41 @@ impl GraphButtons {
             plus: Default::default(),
             minus: Default::default(),
             home: Default::default(),
+            viewport_animation: None,
+            home_button_showing: false,
+            home_button_showing_amount: AnimatedValue::new(0.0),
         }
     }
 
-    fn update(&mut self, ctx: &Context, event: &Event, bounds: Bounds) -> (Response, bool) {
+    fn update(
+        &mut self,
+        ctx: &Context,
+        event: &Event,
+        bounds: Bounds,
+        viewport: &mut Viewport,
+    ) -> (Response, bool) {
+        let mut response = Response::default();
+
         if matches!(event, Event::MouseInput(ElementState::Pressed, _))
             && !bounds.contains(ctx.cursor)
         {
-            return Default::default();
+            return (response, false);
         }
 
-        let mut response = Response::default();
+        if event == &Event::AnimationFrame {
+            if let Some(animation) = &self.viewport_animation {
+                *viewport = animation.get(ctx.time);
+                if animation.is_animating(ctx.time) {
+                    response.request_redraw();
+                } else {
+                    self.viewport_animation = None;
+                }
+            }
+            if self.home_button_showing_amount.is_animating(ctx.time) {
+                response.request_redraw();
+            }
+        }
+
         let size = 37.0;
         let padding = 5.0;
         let stroke_width = 1.0; // hardcoded in quad.wgsl too
@@ -1064,15 +1130,74 @@ impl GraphButtons {
         );
         response = response.or(r);
         offset.y += size - stroke_width * 0.5 + padding;
-        let (r, home_clicked) = self.home.update(
-            ctx,
-            event,
-            Bounds {
-                pos: offset,
-                size: DVec2::splat(size),
-            },
-        );
-        response = response.or(r);
+
+        let home_clicked = if self.home_button_showing {
+            let (r, home_clicked) = self.home.update(
+                ctx,
+                event,
+                Bounds {
+                    pos: offset,
+                    size: DVec2::splat(size),
+                },
+            );
+            response = response.or(r);
+            home_clicked
+        } else {
+            self.home.hovered = false;
+            false
+        };
+
+        let reference_viewport = match &self.viewport_animation {
+            Some(animation) => animation.end,
+            None => *viewport,
+        };
+
+        // check if we need to show the home button
+        let home_viewport = Viewport::default();
+        let pixels_off_center = reference_viewport.center.distance(home_viewport.center)
+            / reference_viewport.width
+            * bounds.size.x
+            * ctx.scale_factor;
+
+        if set(
+            &mut self.home_button_showing,
+            pixels_off_center > 0.4 || home_viewport.width != reference_viewport.width,
+        ) {
+            self.home_button_showing_amount.animate_towards(
+                if self.home_button_showing { 1.0 } else { 0.0 },
+                0.2,
+                2,
+                ctx.time,
+            );
+            response.request_redraw();
+        }
+
+        // start any necessary zoom animations
+        let end = if plus_clicked {
+            Some(Viewport {
+                width: reference_viewport.width / 2.0,
+                ..reference_viewport
+            })
+        } else if minus_clicked {
+            Some(Viewport {
+                width: reference_viewport.width * 2.0,
+                ..reference_viewport
+            })
+        } else if home_clicked {
+            Some(Viewport::default())
+        } else {
+            None
+        };
+
+        if let Some(end) = end {
+            self.viewport_animation = Some(ViewportAnimation {
+                start: *viewport,
+                end,
+                start_time: ctx.time,
+                duration: 0.2,
+            });
+            response.request_redraw();
+        }
 
         let any_button_hovered = self.plus.hovered || self.minus.hovered || self.home.hovered;
 
@@ -1142,21 +1267,33 @@ impl GraphButtons {
         offset.y += size + padding;
 
         // home
-        draw_quad(Quad {
+        let home_animation = self.home_button_showing_amount.get(ctx.time);
+        let home_opacity = home_animation.powi(2);
+        let home_center = offset + size / 2.0;
+        let home_size = home_animation;
+        let mut draw_home_quad = |quad: Quad| {
+            draw_quad(Quad {
+                p0: (quad.p0 - home_center) * home_size + home_center,
+                p1: (quad.p1 - home_center) * home_size + home_center,
+                color: quad.color.with_opacity(home_opacity),
+                ..quad
+            })
+        };
+        draw_home_quad(Quad {
             kind: QuadKind::GraphButtonShadow,
             p0: offset - shadow_radius,
             p1: offset + size + shadow_radius,
             color: shadow_color,
             ..Default::default()
         });
-        draw_quad(Quad {
+        draw_home_quad(Quad {
             kind: QuadKind::GraphButton,
             p0: offset,
             p1: offset + size,
             color: self.home.fill_color(),
             ..Default::default()
         });
-        draw_quad(Quad {
+        draw_home_quad(Quad {
             kind: QuadKind::HomeIcon,
             p0: offset + dvec2(10.7, 12.3),
             p1: offset + dvec2(26.3, 24.7),

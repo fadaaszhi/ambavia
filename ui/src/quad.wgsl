@@ -12,10 +12,11 @@ const Rectangle = 0u;
 const Pill = 1u;
 const MsdfGlyph = 2u;
 const AlphaGradientU = 3u;
-const AlphaGradientV2 = 4u;
-const OutputValueBox = 5u;
-const SliderPausedButton = 6u;
-const SliderPlayingButton = 7u;
+const AlphaGradientU2 = 4u;
+const AlphaGradientV2 = 5u;
+const OutputValueBox = 6u;
+const SliderPausedButton = 7u;
+const SliderPlayingButton = 8u;
 
 struct Vertex {
     @location(0) position: vec2f,
@@ -110,6 +111,9 @@ fn fs_quad(in: VertexOutput) -> @location(0) vec4f {
         }
         case AlphaGradientU {
             return in.color * vec4(1.0, 1.0, 1.0, in.uv.x);
+        }
+        case AlphaGradientU2 {
+            return in.color * vec4(1.0, 1.0, 1.0, in.uv.x * in.uv.x);
         }
         case AlphaGradientV2 {
             return in.color * vec4(1.0, 1.0, 1.0, in.uv.y * in.uv.y);

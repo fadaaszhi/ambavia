@@ -2739,6 +2739,15 @@ impl ExpressionList {
             return;
         }
 
+        // shadow cast on graph by expression list
+        draw_quad(Quad {
+            kind: QuadKind::AlphaGradientU2,
+            p0: dvec2(bounds.right() + 6.0, bounds.top()),
+            p1: dvec2(bounds.right(), bounds.bottom()),
+            color: (0, 0, 0, 0.11).to_rgbaf64(),
+            ..Default::default()
+        });
+
         let separator_width = ctx.round_nonzero(Self::SEPARATOR_WIDTH);
         let gutter_width = ctx.round_nonzero(Self::GUTTER_WIDTH);
         let expression_width = bounds.size.x - 2.0 * separator_width - gutter_width;

@@ -13,6 +13,7 @@ pub enum QuadKind {
     Pill,
     MsdfGlyph,
     AlphaGradientU,
+    AlphaGradientU2,
     AlphaGradientV2,
     OutputValueBox,
     SliderPausedButton,

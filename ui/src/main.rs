@@ -225,6 +225,7 @@ impl App {
 
         'update: {
             let my_event = match event.clone() {
+                WindowEvent::ModifiersChanged(_) => Event::ModifiersChanged,
                 WindowEvent::KeyboardInput { event, .. } => Event::KeyboardInput(event),
                 // Ignore redundant CursorMoved events that happen sometimes (at least on macOS)
                 WindowEvent::CursorMoved { .. } if previous_cursor != self.context.cursor => {

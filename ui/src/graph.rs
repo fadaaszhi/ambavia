@@ -27,13 +27,14 @@ use crate::{
     },
     quad_renderer::{Quad, QuadKind},
     ui::{AnimatedValue, Color, CursorMode},
-    utility::{flip_y, mix, set, snap},
+    utility::{ClampToBounds, IfFiniteElse, flip_y, mix, set, snap},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Viewport {
     center: DVec2,
     width: f64,
+    height: Option<f64>,
 }
 
 impl Default for Viewport {
@@ -41,7 +42,15 @@ impl Default for Viewport {
         Self {
             center: DVec2::ZERO,
             width: 20.0,
+            height: None,
         }
+    }
+}
+
+impl Viewport {
+    fn size(&self, bounds: Bounds) -> DVec2 {
+        let h = self.width * (bounds.size.y / bounds.size.x).if_finite_else(1.0);
+        dvec2(self.width, self.height.unwrap_or(h))
     }
 }
 
@@ -68,11 +77,47 @@ pub struct Geometry {
     pub kind: GeometryKind,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Axis {
+    X,
+    Y,
+}
+
+impl Axis {
+    fn get(self, p: DVec2) -> f64 {
+        match self {
+            Axis::X => p.x,
+            Axis::Y => p.y,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum DragTarget {
+    Point(ExpressionId),
+    Axis {
+        axis: Axis,
+        inital_viewport: Viewport,
+        initial_cursor: DVec2,
+    },
+    GraphPaper,
+}
+
+impl DragTarget {
+    fn axis(&self) -> Option<Axis> {
+        if let DragTarget::Axis { axis, .. } = self {
+            Some(*axis)
+        } else {
+            None
+        }
+    }
+}
+
 pub struct GraphPaper {
     graph_buttons: GraphButtons,
     viewport: Viewport,
-    dragging: Option<Option<ExpressionId>>,
-    hovered_point: Option<ExpressionId>,
+    dragging: Option<DragTarget>,
+    hovered: DragTarget,
     geometry: Vec<Geometry>,
     vm_vars: vm::Vars,
 
@@ -444,7 +489,7 @@ impl GraphPaper {
             graph_buttons: GraphButtons::new(),
             viewport: Default::default(),
             dragging: None,
-            hovered_point: None,
+            hovered: DragTarget::GraphPaper,
             geometry: vec![],
             vm_vars: Default::default(),
 
@@ -483,27 +528,67 @@ impl GraphPaper {
         }
 
         let to_vp = |vp: &Viewport, p: DVec2| {
-            flip_y(p - bounds.pos - 0.5 * bounds.size) / bounds.size.x * vp.width + vp.center
+            flip_y(p - bounds.pos - 0.5 * bounds.size) / bounds.size * vp.size(bounds) + vp.center
         };
         let from_vp = |vp: &Viewport, p: DVec2| {
-            flip_y(p - vp.center) / vp.width * bounds.size.x + bounds.pos + 0.5 * bounds.size
+            flip_y(p - vp.center) / vp.size(bounds) * bounds.size + bounds.pos + 0.5 * bounds.size
         };
-        let zoom = |vp: &mut Viewport, amount: f64| {
+        let zoom = |vp: &mut Viewport, amount: f64, about: DVec2, axis: Option<Axis>| {
             let origin = from_vp(vp, DVec2::ZERO);
-            let p = if amount > 1.0 && (ctx.cursor - origin).abs().max_element() < 25.0 {
+            let p = if amount > 1.0 && (about - origin).abs().max_element() < 25.0 {
                 origin
             } else {
-                ctx.cursor
+                about
             };
             let p_vp = to_vp(vp, p);
-            vp.width /= amount;
+
+            if let Some(axis) = axis {
+                let mut size = vp.size(bounds);
+                match axis {
+                    Axis::X => size.x /= amount,
+                    Axis::Y => size.y /= amount,
+                }
+                vp.width = size.x;
+                vp.height = Some(size.y);
+            } else {
+                vp.width /= amount;
+                if let Some(height) = &mut vp.height {
+                    *height /= amount;
+                }
+            }
+
             vp.center += p_vp - to_vp(vp, p);
         };
+
         let mut dragged_point = None;
-        let new_hovered_point = self.dragging.unwrap_or_else(|| {
+        let origin_clamped = from_vp(&self.viewport, DVec2::ZERO).clampb(bounds);
+        let new_hovered = self.dragging.unwrap_or_else(|| {
             if buttons_hovered || ctx.left_mouse_button_already_pressed {
-                return None;
+                return DragTarget::GraphPaper;
             }
+
+            if ctx.modifiers.shift_key() && bounds.contains(ctx.cursor) {
+                let offset = (origin_clamped - ctx.cursor).abs();
+                let axis_resize_radius = 40.0;
+                if offset.x < axis_resize_radius
+                    && (self.hovered.axis() == Some(Axis::Y)
+                        || offset.x < offset.y && self.hovered.axis() != Some(Axis::X))
+                {
+                    return DragTarget::Axis {
+                        axis: Axis::Y,
+                        inital_viewport: self.viewport,
+                        initial_cursor: ctx.cursor,
+                    };
+                }
+                if offset.y < axis_resize_radius {
+                    return DragTarget::Axis {
+                        axis: Axis::X,
+                        inital_viewport: self.viewport,
+                        initial_cursor: ctx.cursor,
+                    };
+                }
+            }
+
             for g in self.geometry.iter().rev() {
                 if let GeometryKind::Point {
                     p,
@@ -513,12 +598,13 @@ impl GraphPaper {
                     && from_vp(&self.viewport, p).distance(ctx.cursor)
                         < draggable_point_width(g.width) as f64 / 2.0
                 {
-                    return Some(i);
+                    return DragTarget::Point(i);
                 }
             }
-            None
+
+            DragTarget::GraphPaper
         });
-        if set(&mut self.hovered_point, new_hovered_point) {
+        if set(&mut self.hovered, new_hovered) {
             response.request_redraw();
         }
 
@@ -526,56 +612,102 @@ impl GraphPaper {
             Event::MouseInput(ElementState::Pressed, MouseButton::Left)
                 if bounds.contains(ctx.cursor) =>
             {
-                self.dragging = Some(self.hovered_point.or(None));
+                self.dragging = Some(self.hovered);
                 response.consume_event();
             }
             Event::MouseInput(ElementState::Released, MouseButton::Left)
                 if self.dragging.is_some() =>
             {
                 self.dragging = None;
+                // TODO check why consuming release
                 response.consume_event();
             }
             Event::CursorMoved { previous_cursor } => {
-                if let Some(point) = self.dragging {
+                if let Some(target) = &mut self.dragging {
                     let diff =
                         to_vp(&self.viewport, ctx.cursor) - to_vp(&self.viewport, *previous_cursor);
 
-                    if let Some(i) = point {
-                        if let Some(p) = self.geometry.iter().find_map(|g| {
-                            if let GeometryKind::Point { p, draggable } = g.kind
-                                && draggable == Some(i)
-                            {
-                                Some(p)
+                    match target {
+                        DragTarget::Point(i) => {
+                            if let Some(p) = self.geometry.iter().find_map(|g| {
+                                if let GeometryKind::Point { p, draggable } = g.kind
+                                    && draggable == Some(*i)
+                                {
+                                    Some(p)
+                                } else {
+                                    None
+                                }
+                            }) {
+                                dragged_point = Some((*i, p + diff));
                             } else {
-                                None
+                                self.dragging = None;
                             }
-                        }) {
-                            dragged_point = Some((i, p + diff));
-                        } else {
-                            self.dragging = None;
                         }
-                    } else {
-                        self.viewport.center -= diff;
+                        DragTarget::Axis {
+                            axis,
+                            inital_viewport,
+                            initial_cursor,
+                        } => {
+                            let min = 5.0;
+                            let origin = axis.get(origin_clamped);
+                            let initial = axis.get(*initial_cursor) - origin;
+                            let current = axis.get(ctx.cursor) - origin;
+                            if initial.abs() < min {
+                                // cursor is too close to origin. let the direction the user drags
+                                // in determine what ends up happening
+                                *initial_cursor = ctx.cursor.clampb(bounds);
+                            } else {
+                                let current = if initial > 0.0 {
+                                    current.max(min)
+                                } else {
+                                    current.min(-min)
+                                };
+                                self.viewport = *inital_viewport;
+                                zoom(
+                                    &mut self.viewport,
+                                    current / initial,
+                                    origin_clamped,
+                                    Some(*axis),
+                                )
+                            };
+                        }
+                        DragTarget::GraphPaper => self.viewport.center -= diff,
                     }
+
                     response.request_redraw();
                     response.consume_event();
                 }
             }
             Event::MouseWheel(delta) if bounds.contains(ctx.cursor) => {
-                zoom(&mut self.viewport, (delta.y * 0.0015).exp2());
+                zoom(
+                    &mut self.viewport,
+                    (delta.y * 0.0015).exp2(),
+                    ctx.cursor,
+                    self.hovered.axis(),
+                );
                 response.request_redraw();
                 response.consume_event();
             }
             Event::PinchGesture(delta) if bounds.contains(ctx.cursor) => {
-                zoom(&mut self.viewport, delta.exp());
+                zoom(
+                    &mut self.viewport,
+                    delta.exp(),
+                    ctx.cursor,
+                    self.hovered.axis(),
+                );
                 response.request_redraw();
                 response.consume_event();
             }
             _ => {}
         }
 
-        if self.hovered_point.is_some() && !buttons_hovered {
-            response.cursor_mode = CursorMode::Icon(CursorIcon::AllScroll);
+        if !buttons_hovered {
+            response.cursor_mode = match self.hovered {
+                DragTarget::Point(_) => CursorMode::Icon(CursorIcon::AllScroll),
+                DragTarget::Axis { axis: Axis::X, .. } => CursorMode::Icon(CursorIcon::EwResize),
+                DragTarget::Axis { axis: Axis::Y, .. } => CursorMode::Icon(CursorIcon::NsResize),
+                DragTarget::GraphPaper => CursorMode::NoPreference,
+            };
         }
 
         (response, dragged_point)
@@ -672,27 +804,30 @@ impl GraphPaper {
         let mut vertices = vec![];
         let mut segments = vec![];
         let vp = &self.viewport;
-        let vp_size = dvec2(vp.width, vp.width * bounds.size.y / bounds.size.x);
+        let vp_size = vp.size(bounds);
         let physical = ctx.to_physical(bounds);
 
-        let s = vp.width / bounds.size.x * 80.0;
-        let (mut major, mut minor) = (f64::INFINITY, 0.0);
+        let s = vp_size / bounds.size * 80.0;
+        let (mut major, mut minor) = (DVec2::INFINITY, DVec2::ZERO);
         for (a, b) in [(1.0, 5.0), (2.0, 4.0), (5.0, 5.0)] {
-            let c = a * 10f64.powf((s / a).log10().ceil());
-            if c < major {
-                major = c;
-                minor = c / b;
+            let c = a * (s / a).map(f64::log10).ceil().map(|x| 10f64.powf(x));
+            if c.x < major.x {
+                major.x = c.x;
+                minor.x = c.x / b;
+            }
+            if c.y < major.y {
+                major.y = c.y;
+                minor.y = c.y / b;
             }
         }
 
-        let mut draw_grid = |step: f64, color: [f32; 4], width: u32| {
+        let mut draw_grid = |step: DVec2, color: [f32; 4], width: u32| {
             let shape = shapes.len() as u32;
             shapes.push(Shape::line(color, width as f32));
-            let s = DVec2::splat(step);
             let a = (0.5 * vp_size / step).ceil();
             let n = 2 * a.as_uvec2() + 2;
-            let b = flip_y(s / vp_size * physical.size);
-            let c = (0.5 - flip_y(vp.center.rem_euclid(s) + a * s) / vp_size) * physical.size
+            let b = flip_y(step / vp_size * physical.size);
+            let c = (0.5 - flip_y(vp.center.rem_euclid(step) + a * step) / vp_size) * physical.size
                 + physical.pos;
 
             for i in 0..n.x {
@@ -728,18 +863,31 @@ impl GraphPaper {
         );
 
         let to_physical = |p: DVec2| {
-            flip_y(p - vp.center) / vp.width * physical.size.x + 0.5 * physical.size + physical.pos
+            flip_y(p - vp.center) / vp_size * physical.size + 0.5 * physical.size + physical.pos
         };
 
         let w = ctx.round_nonzero_as_physical(1.5);
         let origin = to_physical(DVec2::ZERO).map(|x| snap(x, w)).as_vec2();
-        let shape = shapes.len() as u32;
-        shapes.push(Shape::line([0.098, 0.098, 0.098, 1.0], w as f32));
-        vertices.push(Vertex::new((origin.x, physical.top() as f32), shape));
-        vertices.push(Vertex::new((origin.x, physical.bottom() as f32), shape));
-        vertices.push(Vertex::BREAK);
-        vertices.push(Vertex::new((physical.left() as f32, origin.y), shape));
-        vertices.push(Vertex::new((physical.right() as f32, origin.y), shape));
+        let axis_color = |axis| {
+            if self.hovered.axis() == Some(axis) {
+                [0.4, 0.7, 0.9, 1.0]
+            } else {
+                [0.098, 0.098, 0.098, 1.0]
+            }
+        };
+        let mut shape_y = shapes.len() as u32;
+        shapes.push(Shape::line(axis_color(Axis::Y), w as f32));
+        let mut shape_x = shapes.len() as u32;
+        shapes.push(Shape::line(axis_color(Axis::X), w as f32));
+        if self.hovered.axis() == Some(Axis::Y) {
+            // make it render on top
+            shapes.swap(shape_x as usize, shape_y as usize);
+            (shape_x, shape_y) = (shape_y, shape_x);
+        }
+        vertices.push(Vertex::new((origin.x, physical.top() as f32), shape_y));
+        vertices.push(Vertex::new((origin.x, physical.bottom() as f32), shape_y));
+        vertices.push(Vertex::new((physical.left() as f32, origin.y), shape_x));
+        vertices.push(Vertex::new((physical.right() as f32, origin.y), shape_x));
 
         for Geometry { width, color, kind } in &self.geometry {
             match kind {
@@ -753,7 +901,7 @@ impl GraphPaper {
                     shapes.push(Shape::line(*color, ctx.scale_factor as f32 * width));
 
                     let mut vm = Vm::new(instructions, std::mem::take(&mut self.vm_vars), []);
-                    let pixels_per_math = vp.width / physical.size.x;
+                    let pixels_per_math = vp_size / physical.size;
 
                     let buffer = 0.5 * ctx.scale_factor * *width as f64 * pixels_per_math;
                     let vp_min = vp.center - vp_size * 0.5 - buffer;
@@ -906,7 +1054,7 @@ impl GraphPaper {
                     let p = to_physical(*p).as_vec2();
                     let mut width = *width;
 
-                    if draggable.is_some() {
+                    if let Some(id) = *draggable {
                         let shape = shapes.len() as u32;
                         let mut color = *color;
                         color[3] *= 0.35;
@@ -917,7 +1065,7 @@ impl GraphPaper {
                         ));
                         vertices.push(Vertex::new(p, shape));
 
-                        if self.hovered_point == *draggable {
+                        if self.hovered == DragTarget::Point(id) {
                             width = draggable_width;
                         }
                     }
@@ -1031,7 +1179,7 @@ impl ViewportAnimation {
         time - self.start_time < self.duration
     }
 
-    fn get(&self, time: f64) -> Viewport {
+    fn get(&self, time: f64, bounds: Bounds) -> Viewport {
         if !self.is_animating(time) {
             return self.end;
         }
@@ -1039,18 +1187,27 @@ impl ViewportAnimation {
         let t = (time - self.start_time) / self.duration;
         let t = t * t * (10.0 + t * (-20.0 + t * (15.0 - 4.0 * t)));
 
-        let r = self.end.width / self.start.width;
-        let a = (r.ln() * t).exp_m1();
-        let width = (a + 1.0) * self.start.width;
-        let center = mix(self.start.center, self.end.center, a / (r - 1.0));
+        let start_size = self.start.size(bounds);
+        let end_size = self.end.size(bounds);
+        let r = end_size / start_size;
+        let a = (r.ln() * t).map(f64::exp_m1);
+        let mut size = (a + 1.0) * start_size;
+        let mut center = mix(self.start.center, self.end.center, a / (r - 1.0));
 
-        if width.is_finite() && center.is_finite() {
-            Viewport { center, width }
-        } else {
-            Viewport {
-                center: mix(self.start.center, self.end.center, t),
-                width: mix(self.start.width, self.end.width, t),
-            }
+        if !size.x.is_finite() || !center.x.is_finite() {
+            size.x = mix(start_size.x, end_size.x, t);
+            center.x = mix(self.start.center.x, self.end.center.x, t);
+        }
+
+        if !size.y.is_finite() || !center.y.is_finite() {
+            size.y = mix(start_size.y, end_size.y, t);
+            center.y = mix(self.start.center.y, self.end.center.y, t);
+        }
+
+        Viewport {
+            center,
+            width: size.x,
+            height: (self.start.height.is_some() || self.end.height.is_some()).then_some(size.y),
         }
     }
 }
@@ -1093,7 +1250,7 @@ impl GraphButtons {
 
         if event == &Event::AnimationFrame {
             if let Some(animation) = &self.viewport_animation {
-                *viewport = animation.get(ctx.time);
+                *viewport = animation.get(ctx.time, bounds);
                 if animation.is_animating(ctx.time) {
                     response.request_redraw();
                 } else {
@@ -1161,7 +1318,9 @@ impl GraphButtons {
 
         if set(
             &mut self.home_button_showing,
-            pixels_off_center > 0.4 || home_viewport.width != reference_viewport.width,
+            pixels_off_center > 0.4
+                || home_viewport.width != reference_viewport.width
+                || home_viewport.height != reference_viewport.height,
         ) {
             self.home_button_showing_amount.animate_towards(
                 if self.home_button_showing { 1.0 } else { 0.0 },
@@ -1176,11 +1335,13 @@ impl GraphButtons {
         let end = if plus_clicked {
             Some(Viewport {
                 width: reference_viewport.width / 2.0,
+                height: reference_viewport.height.map(|h| h / 2.0),
                 ..reference_viewport
             })
         } else if minus_clicked {
             Some(Viewport {
                 width: reference_viewport.width * 2.0,
+                height: reference_viewport.height.map(|h| h * 2.0),
                 ..reference_viewport
             })
         } else if home_clicked {

@@ -2,9 +2,10 @@ use glam::DVec2;
 
 use crate::utility::mix;
 
-fn sd_segment_squared(p: DVec2, a: DVec2, b: DVec2) -> (f64, f64) {
-    let ap = p - a;
-    let ab = b - a;
+/// `s` is an aspect ratio parameter to handle non-square viewport zooms
+fn sd_segment_squared(p: DVec2, a: DVec2, b: DVec2, s: DVec2) -> (f64, f64) {
+    let ap = (p - a) * s;
+    let ab = (b - a) * s;
     let t = (ap.dot(ab) / ab.length_squared()).clamp(0.0, 1.0);
     (ap.distance_squared(ab * t), t)
 }
@@ -22,7 +23,7 @@ struct Sampler<F> {
     f: F,
     vp_min: DVec2,
     vp_max: DVec2,
-    tolerance_squared: f64,
+    inverse_tolerance: DVec2,
     points: Vec<DVec2>,
 }
 
@@ -72,10 +73,10 @@ impl<F: FnMut(f64) -> DVec2> Sampler<F> {
         let p = (self.f)(t);
 
         if p0.is_finite() && p.is_finite() && p1.is_finite() {
-            let (d2, u) = sd_segment_squared(p, p0, p1);
+            let (d2, u) = sd_segment_squared(p, p0, p1, self.inverse_tolerance);
             let u_bound = 0.1;
 
-            if d2 < self.tolerance_squared && u_bound < u && u < 1.0 - u_bound {
+            if d2 < 1.0 && u_bound < u && u < 1.0 - u_bound {
                 self.points.push(p);
                 self.points.push(p1);
                 return;
@@ -93,7 +94,7 @@ pub fn sample_explicit(
     t_max: f64,
     vp_min: DVec2,
     vp_max: DVec2,
-    tolerance: f64,
+    tolerance: DVec2,
     uniform_sample_count: usize,
 ) -> Vec<DVec2> {
     let half_uniform_sample_count = uniform_sample_count / 2;
@@ -102,7 +103,7 @@ pub fn sample_explicit(
         f,
         vp_min,
         vp_max,
-        tolerance_squared: tolerance.powi(2),
+        inverse_tolerance: 1.0 / tolerance,
         points: vec![if p.is_finite() { p } else { DVec2::NAN }],
     };
 

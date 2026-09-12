@@ -52,9 +52,19 @@ impl Mix<DVec2> for DVec2 {
     }
 }
 
+pub trait IfFiniteElse {
+    /// Returns `self` if `self.is_finite()`, otherwise returns `fallback`.
+    fn if_finite_else(self, fallback: Self) -> Self;
+}
+
+impl IfFiniteElse for f64 {
+    fn if_finite_else(self, fallback: Self) -> Self {
+        if self.is_finite() { self } else { fallback }
+    }
+}
+
 pub fn unmix(t: f64, x: f64, y: f64) -> f64 {
-    let z = (t - x) / (y - x);
-    if z.is_finite() { z } else { 0.0 }
+    ((t - x) / (y - x)).if_finite_else(0.0)
 }
 
 pub fn snap(x: f64, w: u32) -> f64 {
@@ -70,6 +80,16 @@ pub fn union(bounds: impl IntoIterator<Item = Bounds>) -> Bounds {
     let mut bounds = bounds.into_iter();
     let first = bounds.next().expect("need at least one bound to union");
     bounds.fold(first, Bounds::union)
+}
+
+pub trait ClampToBounds {
+    fn clampb(self, bounds: Bounds) -> Self;
+}
+
+impl ClampToBounds for DVec2 {
+    fn clampb(self, bounds: Bounds) -> Self {
+        self.clamp(bounds.pos, bounds.pos + bounds.size)
+    }
 }
 
 /// If the provided values differ then this sets the first argument to the second

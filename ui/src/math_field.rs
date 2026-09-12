@@ -18,7 +18,7 @@ use crate::{
     },
     quad_renderer::{Quad, QuadKind},
     ui::{Bounds, Context, CursorMode, Event, Response},
-    utility::{mix, set, snap},
+    utility::{set, snap},
 };
 use parse::{
     latex_parser::parse_latex,
@@ -2336,10 +2336,10 @@ impl MathField {
         // This version of draw_quad expects physical coordinates
         // TODO change this to expect logical coordinates
         let draw_quad = &mut |quad: Quad| {
-            let p0 = quad.p0.clamp(top_left, bottom_right);
-            let p1 = quad.p1.clamp(top_left, bottom_right);
-            let uv0 = mix(quad.uv0, quad.uv1, (p0 - quad.p0) / (quad.p1 - quad.p0));
-            let uv1 = mix(quad.uv0, quad.uv1, (p1 - quad.p0) / (quad.p1 - quad.p0));
+            let quad = quad.clip(Bounds {
+                pos: top_left,
+                size: bottom_right - top_left,
+            });
 
             let mut color = quad.color;
             if self.grayed {
@@ -2349,12 +2349,10 @@ impl MathField {
             };
 
             draw_quad(Quad {
-                kind: quad.kind,
-                p0: p0 / ctx.scale_factor,
-                p1: p1 / ctx.scale_factor,
-                uv0,
-                uv1,
+                p0: quad.p0 / ctx.scale_factor,
+                p1: quad.p1 / ctx.scale_factor,
                 color,
+                ..quad
             })
         };
         let height = tree.bounds.height;

@@ -17,6 +17,12 @@ const AlphaGradientV2 = 5u;
 const OutputValueBox = 6u;
 const SliderPausedButton = 7u;
 const SliderPlayingButton = 8u;
+const GraphButtonShadow = 9u;
+const GraphButton = 10u;
+const GraphButtonUpper = 11u;
+const GraphButtonLower = 12u;
+const HomeIcon = 13u;
+
 
 struct Vertex {
     @location(0) position: vec2f,
@@ -50,8 +56,8 @@ fn median(x: f32, y: f32, z: f32) -> f32 {
 fn sd_rounded_box(p: vec2f, b: vec2f, r: vec4f) -> f32 {
     var r1 = select(r.zw, r.xy, p.x > 0.0);
     r1.x  = select(r1.y, r1.x, p.y > 0.0);
-    let q = abs(p) - b + r.x;
-    return min(max(q.x, q.y), 0.0) + length(max(q, vec2(0.0))) - r.x;
+    let q = abs(p) - b + r1.x;
+    return min(max(q.x, q.y), 0.0) + length(max(q, vec2(0.0))) - r1.x;
 }
 
 // Calculate the Jacobian matrix for bilinear texture sampling
@@ -79,7 +85,7 @@ fn sqr(x: vec3f) -> vec3f {
 @diagnostic(off, derivative_uniformity)
 @fragment
 fn fs_quad(in: VertexOutput) -> @location(0) vec4f {
-    let size = 1.0 / vec2(dpdx(in.uv.x), dpdy(in.uv.y));
+    let size = 1.0 / abs(vec2(dpdx(in.uv.x), dpdy(in.uv.y)));
 
     switch in.kind {
         case Rectangle, default {
@@ -140,6 +146,57 @@ fn fs_quad(in: VertexOutput) -> @location(0) vec4f {
             } else {
                 sd = min(sd, max(abs(abs(p.x) - 0.22) - 0.14, abs(p.y) - 0.35));
             }
+
+            sd *= size.x / 2.0;
+            let opacity = saturate(0.5 - sd);
+            return in.color * vec4(1.0, 1.0, 1.0, opacity);
+        }
+        case GraphButtonShadow {
+            const SHADOW_RADIUS = 5.0;
+            const RADIUS = 5.0;
+
+            let shadow_radius = SHADOW_RADIUS * uniforms.scale_factor;
+            let radius = RADIUS * uniforms.scale_factor;
+            let sd = sd_rounded_box(size * (in.uv - 0.5), size / 2.0 - shadow_radius, vec4(radius));
+            let shadow = saturate(1.0 - sd / shadow_radius);
+            return in.color * vec4(1.0, 1.0, 1.0, shadow * shadow);
+        }
+        case GraphButton, GraphButtonUpper, GraphButtonLower {
+            const RADIUS = 5.0;
+            const STROKE_BRIGHTNESS = 0.9;
+            const STROKE_WIDTH = 1.0;
+
+            let radius = RADIUS * uniforms.scale_factor;
+            let stroke_width = max(round(STROKE_WIDTH * uniforms.scale_factor), 1.0);
+
+            var roundness: vec4f;
+            switch in.kind {
+                case GraphButton, default {
+                    roundness = vec4(radius);
+                }
+                case GraphButtonUpper {
+                    roundness = vec4(0.0, radius, 0.0, radius);
+                }
+                case GraphButtonLower {
+                    roundness = vec4(radius, 0.0, radius, 0.0);
+                }
+            }
+
+            let sd = sd_rounded_box(size * (in.uv - 0.5), size / 2.0, roundness);
+            let stroke = mix(STROKE_BRIGHTNESS, 1.0, saturate(0.5 - (sd + stroke_width)));
+            let opacity = saturate(0.5 - sd);
+            return in.color * vec4(vec3(stroke), opacity);
+        }
+        case HomeIcon {
+            let p = in.uv * 2.0 - 1.0;
+            let y = p.y;
+            let x = abs(p.x);
+
+            var sd = min(min(
+                max(abs(x - y - 0.86) - 0.13, x + y - 1.0) / sqrt(2.0),
+                max(max((x - y) / sqrt(2.0) - 0.4, x - 0.7), min(y - 0.4, 0.16 - x))),
+                max(abs(p.x - 0.55) - 0.15, 0.86 + y - p.x)
+            );
 
             sd *= size.x / 2.0;
             let opacity = saturate(0.5 - sd);

@@ -441,6 +441,7 @@ impl MainThing {
             quad.into_triangles(ctx, &mut vertices, &mut indices);
         };
 
+        self.graph_paper.render_buttons(ctx, right, draw_quad);
         self.expression_list.render(ctx, left, draw_quad);
         self.quad_renderer
             .render(ctx, graphics, view, &mut encoder, &vertices, &indices);

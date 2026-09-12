@@ -3,7 +3,7 @@ use glam::{DVec2, DVec4, Vec2, dvec2, uvec2, vec2};
 
 use crate::{
     AppGraphics,
-    ui::{Color, Context},
+    ui::{Bounds, Color, Context},
     utility::mix,
 };
 
@@ -18,6 +18,11 @@ pub enum QuadKind {
     OutputValueBox,
     SliderPausedButton,
     SliderPlayingButton,
+    GraphButtonShadow,
+    GraphButton,
+    GraphButtonUpper,
+    GraphButtonLower,
+    HomeIcon,
 }
 
 pub struct Quad {
@@ -72,6 +77,20 @@ impl Quad {
             p1,
             uv0: mix(self.uv0, self.uv1, (p0 - self.p0) / (self.p1 - self.p0)),
             uv1: mix(self.uv0, self.uv1, (p1 - self.p0) / (self.p1 - self.p0)),
+            ..self
+        }
+    }
+
+    pub fn clip(self, bounds: Bounds) -> Quad {
+        let p0 = self.p0.clamp(bounds.pos, bounds.pos + bounds.size);
+        let p1 = self.p1.clamp(bounds.pos, bounds.pos + bounds.size);
+        let uv0 = mix(self.uv0, self.uv1, (p0 - self.p0) / (self.p1 - self.p0));
+        let uv1 = mix(self.uv0, self.uv1, (p1 - self.p0) / (self.p1 - self.p0));
+        Quad {
+            p0,
+            p1,
+            uv0,
+            uv1,
             ..self
         }
     }

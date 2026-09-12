@@ -10,7 +10,7 @@ use std::{
 
 use bytemuck::Zeroable;
 use eval::vm::{self, Instruction, VarIndex, Vm};
-use glam::{DVec2, Vec2, dvec2, uvec2};
+use glam::{DVec2, DVec4, Vec2, dvec2, uvec2};
 use parse::analyze_expression_list::PlotKind;
 use winit::{
     event::{ElementState, MouseButton},
@@ -25,8 +25,9 @@ use crate::{
         sample_implicit::sample_implicit,
         tile_fill::{Segment, TILE_SIZE, Tile},
     },
-    ui::CursorMode,
-    utility::{flip_y, snap},
+    quad_renderer::{Quad, QuadKind},
+    ui::{Color, CursorMode},
+    utility::{flip_y, set, snap},
 };
 
 struct Viewport {
@@ -67,6 +68,7 @@ pub struct Geometry {
 }
 
 pub struct GraphPaper {
+    graph_buttons: GraphButtons,
     viewport: Viewport,
     dragging: Option<Option<ExpressionId>>,
     hovered_point: Option<ExpressionId>,
@@ -438,6 +440,7 @@ impl GraphPaper {
             &segments_buffer,
         );
         GraphPaper {
+            graph_buttons: GraphButtons::new(),
             viewport: Default::default(),
             dragging: None,
             hovered_point: None,
@@ -470,7 +473,11 @@ impl GraphPaper {
         event: &Event,
         bounds: Bounds,
     ) -> (Response, Option<(ExpressionId, DVec2)>) {
-        let mut response = Response::default();
+        let (mut response, buttons_hovered) = self.graph_buttons.update(ctx, event, bounds);
+
+        if response.consumed_event {
+            return (response, None);
+        }
 
         let to_vp = |vp: &Viewport, p: DVec2| {
             flip_y(p - bounds.pos - 0.5 * bounds.size) / bounds.size.x * vp.width + vp.center
@@ -491,6 +498,9 @@ impl GraphPaper {
         };
         let mut dragged_point = None;
         let new_hovered_point = self.dragging.unwrap_or_else(|| {
+            if buttons_hovered || ctx.left_mouse_button_already_pressed {
+                return None;
+            }
             for g in self.geometry.iter().rev() {
                 if let GeometryKind::Point {
                     p,
@@ -505,8 +515,7 @@ impl GraphPaper {
             }
             None
         });
-        if new_hovered_point != self.hovered_point {
-            self.hovered_point = new_hovered_point;
+        if set(&mut self.hovered_point, new_hovered_point) {
             response.request_redraw();
         }
 
@@ -562,7 +571,7 @@ impl GraphPaper {
             _ => {}
         }
 
-        if self.hovered_point.is_some() {
+        if self.hovered_point.is_some() && !buttons_hovered {
             response.cursor_mode = CursorMode::Icon(CursorIcon::AllScroll);
         }
 
@@ -939,5 +948,220 @@ impl GraphPaper {
         vertices.push(Vertex::BREAK);
 
         (shapes, vertices, segments)
+    }
+
+    pub fn render_buttons(
+        &mut self,
+        ctx: &Context,
+        bounds: Bounds,
+        draw_quad: &mut impl FnMut(Quad),
+    ) {
+        self.graph_buttons.render(ctx, bounds, draw_quad);
+    }
+}
+
+#[derive(Default)]
+struct Button {
+    hovered: bool,
+    pressed: bool,
+}
+
+impl Button {
+    fn fill_color(&self) -> DVec4 {
+        if self.pressed { [232; 3] } else { [237; 3] }.to_rgbaf64()
+    }
+
+    fn icon_color(&self) -> DVec4 {
+        if self.pressed {
+            [0; 3]
+        } else if self.hovered {
+            [24; 3]
+        } else {
+            [95; 3]
+        }
+        .to_rgbaf64()
+    }
+}
+
+impl Button {
+    fn update(&mut self, ctx: &Context, event: &Event, bounds: Bounds) -> (Response, bool) {
+        let mut response = Response::default();
+
+        let new_hovered =
+            bounds.contains(ctx.cursor) && (self.pressed || !ctx.left_mouse_button_already_pressed);
+        if set(&mut self.hovered, new_hovered) {
+            response.request_redraw();
+        }
+        let mut clicked = false;
+
+        match event {
+            Event::MouseInput(ElementState::Pressed, MouseButton::Left) if self.hovered => {
+                self.pressed = true;
+                response.consume_event();
+                response.request_redraw();
+            }
+            Event::MouseInput(ElementState::Released, MouseButton::Left) => {
+                self.pressed = false;
+                response.request_redraw();
+                clicked = self.hovered;
+            }
+            _ => {}
+        }
+
+        if self.pressed || self.hovered {
+            response.cursor_mode = CursorMode::Icon(CursorIcon::Pointer);
+        }
+
+        (response, clicked)
+    }
+}
+
+struct GraphButtons {
+    plus: Button,
+    minus: Button,
+    home: Button,
+}
+
+impl GraphButtons {
+    fn new() -> Self {
+        Self {
+            plus: Default::default(),
+            minus: Default::default(),
+            home: Default::default(),
+        }
+    }
+
+    fn update(&mut self, ctx: &Context, event: &Event, bounds: Bounds) -> (Response, bool) {
+        if matches!(event, Event::MouseInput(ElementState::Pressed, _))
+            && !bounds.contains(ctx.cursor)
+        {
+            return Default::default();
+        }
+
+        let mut response = Response::default();
+        let size = 37.0;
+        let padding = 5.0;
+        let stroke_width = 1.0; // hardcoded in quad.wgsl too
+        let mut offset = dvec2(bounds.right() - size - padding, bounds.top() + padding);
+
+        let (r, plus_clicked) = self.plus.update(
+            ctx,
+            event,
+            Bounds {
+                pos: offset,
+                size: dvec2(size, size - stroke_width * 0.5),
+            },
+        );
+        response = response.or(r);
+        offset.y += size - stroke_width * 0.5;
+        let (r, minus_clicked) = self.minus.update(
+            ctx,
+            event,
+            Bounds {
+                pos: offset,
+                size: dvec2(size, size - stroke_width * 0.5),
+            },
+        );
+        response = response.or(r);
+        offset.y += size - stroke_width * 0.5 + padding;
+        let (r, home_clicked) = self.home.update(
+            ctx,
+            event,
+            Bounds {
+                pos: offset,
+                size: DVec2::splat(size),
+            },
+        );
+        response = response.or(r);
+
+        let any_button_hovered = self.plus.hovered || self.minus.hovered || self.home.hovered;
+
+        (response, any_button_hovered)
+    }
+
+    fn render(&mut self, ctx: &Context, bounds: Bounds, draw_quad: &mut impl FnMut(Quad)) {
+        let mut draw_quad = |quad: Quad| draw_quad(quad.clip(bounds));
+        let size = 37.0;
+        let padding = 5.0;
+        let stroke_width = 1.0; // hardcoded in quad.wgsl
+        let mut offset = dvec2(bounds.right() - size - padding, bounds.top() + padding);
+        let shadow_color = (0, 0, 0, 0.055).to_rgbaf64();
+        let shadow_radius = 5.0; // hardcoded in quad.wgsl
+
+        // +- shadow
+        draw_quad(Quad {
+            kind: QuadKind::GraphButtonShadow,
+            p0: offset - shadow_radius,
+            p1: offset + dvec2(size, 2.0 * size - stroke_width) + shadow_radius,
+            color: shadow_color,
+            ..Default::default()
+        });
+
+        // +
+        draw_quad(Quad {
+            kind: QuadKind::GraphButtonUpper,
+            p0: offset,
+            p1: offset + size,
+            color: self.plus.fill_color(),
+            ..Default::default()
+        });
+        draw_quad(
+            Quad::rectangle(
+                offset + size / 2.0 - dvec2(1.25, 6.0),
+                offset + size / 2.0 + dvec2(1.25, 6.0),
+                self.plus.icon_color(),
+            )
+            .pixel_snap(ctx),
+        );
+        draw_quad(
+            Quad::rectangle(
+                offset + size / 2.0 - dvec2(6.0, 1.25),
+                offset + size / 2.0 + dvec2(6.0, 1.25),
+                self.plus.icon_color(),
+            )
+            .pixel_snap(ctx),
+        );
+        offset.y += size - stroke_width;
+
+        // -
+        draw_quad(Quad {
+            kind: QuadKind::GraphButtonLower,
+            p0: offset,
+            p1: offset + size,
+            color: self.minus.fill_color(),
+            ..Default::default()
+        });
+        draw_quad(
+            Quad::rectangle(
+                offset + size / 2.0 - dvec2(6.0, 1.25),
+                offset + size / 2.0 + dvec2(6.0, 1.25),
+                self.minus.icon_color(),
+            )
+            .pixel_snap(ctx),
+        );
+        offset.y += size + padding;
+
+        // home
+        draw_quad(Quad {
+            kind: QuadKind::GraphButtonShadow,
+            p0: offset - shadow_radius,
+            p1: offset + size + shadow_radius,
+            color: shadow_color,
+            ..Default::default()
+        });
+        draw_quad(Quad {
+            kind: QuadKind::GraphButton,
+            p0: offset,
+            p1: offset + size,
+            color: self.home.fill_color(),
+            ..Default::default()
+        });
+        draw_quad(Quad {
+            kind: QuadKind::HomeIcon,
+            p0: offset + dvec2(10.7, 12.3),
+            p1: offset + dvec2(26.3, 24.7),
+            color: self.home.icon_color(),
+            ..Default::default()
+        });
     }
 }

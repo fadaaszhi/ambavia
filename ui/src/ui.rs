@@ -19,6 +19,8 @@ pub struct Context {
     pub time: f64,
     /// The cursor's current logical position
     pub cursor: DVec2,
+    left_mouse_button_pressed: bool,
+    pub left_mouse_button_already_pressed: bool,
     /// The window's scale factor
     pub scale_factor: f64,
     pub modifiers: ModifiersState,
@@ -30,6 +32,8 @@ impl Context {
             clipboard: Arc::new(Mutex::new(None)),
             time: 0.0,
             cursor: DVec2::ZERO,
+            left_mouse_button_pressed: false,
+            left_mouse_button_already_pressed: false,
             scale_factor: window.scale_factor(),
             modifiers: Default::default(),
         }
@@ -37,6 +41,7 @@ impl Context {
 
     pub fn update(&mut self, event: &WindowEvent, time: f64) {
         self.time = time;
+        self.left_mouse_button_already_pressed = self.left_mouse_button_pressed;
 
         match &event {
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
@@ -45,6 +50,14 @@ impl Context {
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 self.scale_factor = *scale_factor
+            }
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.left_mouse_button_pressed = state.is_pressed();
+                self.left_mouse_button_already_pressed &= state.is_pressed();
             }
             _ => {}
         }
@@ -174,7 +187,7 @@ impl Bounds {
     }
 }
 
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub enum CursorMode {
     #[default]
     NoPreference,

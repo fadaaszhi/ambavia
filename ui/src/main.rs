@@ -225,7 +225,6 @@ impl App {
 
         'update: {
             let my_event = match event.clone() {
-                WindowEvent::Resized { .. } => Event::Resized,
                 WindowEvent::KeyboardInput { event, .. } => Event::KeyboardInput(event),
                 // Ignore redundant CursorMoved events that happen sometimes (at least on macOS)
                 WindowEvent::CursorMoved { .. } if previous_cursor != self.context.cursor => {
@@ -248,6 +247,7 @@ impl App {
         match event {
             WindowEvent::Resized(new_size) => {
                 self.graphics.resize(new_size);
+                self.request_redraw = true;
             }
             WindowEvent::ScaleFactorChanged { .. } => self.request_redraw = true,
             WindowEvent::Occluded(false) => self.request_redraw = true,
@@ -372,11 +372,6 @@ impl MainThing {
             pos: dvec2(x, bounds.pos.y),
             size: dvec2(bounds.right() - x, bounds.size.y),
         };
-
-        if resized {
-            self.expression_list.update(ctx, &Event::Resized, left);
-            self.graph_paper.update(ctx, &Event::Resized, right);
-        }
 
         response.or_else(|| {
             let (r_graph, dragged_point) = self.graph_paper.update(ctx, event, right);

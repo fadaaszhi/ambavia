@@ -1158,10 +1158,6 @@ impl MathField {
         }
 
         match event {
-            Event::Resized => {
-                self.scroll(0.0);
-                response.request_redraw();
-            }
             Event::KeyboardInput(KeyEvent {
                 logical_key,
                 state: ElementState::Pressed,

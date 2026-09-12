@@ -132,7 +132,6 @@ impl Context {
 
 #[derive(Debug, PartialEq)]
 pub enum Event {
-    Resized,
     /// Sent once right before every redraw. If you request a redraw during this
     /// event, it will trigger an additional redraw next frame.
     AnimationFrame,

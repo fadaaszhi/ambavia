@@ -7,6 +7,7 @@ use crate::{
     utility::mix,
 };
 
+// Needs to manually keep synced with quad.wgsl
 #[derive(Debug, Clone, Copy)]
 pub enum QuadKind {
     Rectangle,
@@ -23,6 +24,10 @@ pub enum QuadKind {
     GraphButtonUpper,
     GraphButtonLower,
     HomeIcon,
+    LoopForwardReverseIcon,
+    LoopForwardIcon,
+    PlayOnceIcon,
+    PlayIndefinitelyIcon,
 }
 
 pub struct Quad {

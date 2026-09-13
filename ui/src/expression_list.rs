@@ -175,6 +175,87 @@ const SLIDER_STEP_DEFAULT: f64 = 0.0;
 const PARAMETRIC_DOMAIN_MIN_DEFAULT: f64 = 0.0;
 const PARAMETRIC_DOMAIN_MAX_DEFAULT: f64 = 1.0;
 
+#[derive(Default)]
+struct GutterButton {
+    hovered: bool,
+    click_tracker: ClickDragTracker,
+}
+
+impl GutterButton {
+    fn update(
+        &mut self,
+        ctx: &Context,
+        event: &Event,
+        hovered: bool,
+        on_click: impl FnOnce(&mut Response),
+    ) -> Response {
+        let mut response = Response::default();
+
+        if set(&mut self.hovered, hovered) {
+            response.request_redraw();
+        }
+
+        match event {
+            Event::MouseInput(ElementState::Pressed, MouseButton::Left) if self.hovered => {
+                self.click_tracker.press(ctx.cursor);
+                response.consume_event();
+                response.request_redraw();
+            }
+            Event::CursorMoved { .. } => {
+                if self.click_tracker.drag(ctx.cursor) {
+                    response.request_redraw();
+                }
+            }
+            Event::MouseInput(ElementState::Released, MouseButton::Left)
+                if self.click_tracker.release().was_clicked() =>
+            {
+                on_click(&mut response);
+                response.request_redraw();
+            }
+            _ => {}
+        }
+
+        if self.hovered {
+            response.cursor_mode = CursorMode::Icon(CursorIcon::Pointer);
+        }
+
+        response
+    }
+
+    fn render(
+        &self,
+        kind: QuadKind,
+        bounds: Bounds,
+        expression_is_focussed: bool,
+        draw_quad: &mut impl FnMut(Quad),
+    ) {
+        draw_quad(Quad {
+            kind,
+            p0: bounds.pos,
+            p1: bounds.pos + bounds.size,
+            color: if expression_is_focussed {
+                let opacity = if self.hovered || self.click_tracker.is_pressed() {
+                    1.0
+                } else {
+                    0.9
+                };
+                (255, 255, 255, opacity)
+            } else {
+                let opacity = if self.click_tracker.is_pressed() {
+                    0.9
+                } else if self.hovered {
+                    0.7
+                } else {
+                    0.5
+                };
+                (0, 0, 0, opacity)
+            }
+            .to_rgbaf64(),
+            ..Default::default()
+        });
+    }
+}
+
 struct SliderUi {
     value: Option<f64>,
     min: Option<f64>,
@@ -187,8 +268,8 @@ struct SliderUi {
     name_field: MathField,
     step_label: Label<'static>,
 
-    play_button_hovered: bool,
-    play_button_click_tracker: ClickDragTracker,
+    play_button: GutterButton,
+    mode_button: GutterButton,
     animated_value: f64,
     expected_value: f64,
 }
@@ -223,6 +304,8 @@ struct SliderGutterLayout {
     play_button_center: DVec2,
     play_button_radius: f64,
     play_button: Bounds,
+    mode_button: Bounds,
+    mode_button_hitbox: Bounds,
 }
 
 impl SliderUi {
@@ -244,8 +327,8 @@ impl SliderUi {
             name,
             step_label: Label::new("Step:", 15.7, Font::MainRegular),
 
-            play_button_hovered: false,
-            play_button_click_tracker: Default::default(),
+            play_button: Default::default(),
+            mode_button: Default::default(),
             animated_value: 0.0,
             expected_value: 0.0,
         }
@@ -808,17 +891,28 @@ impl SliderUi {
 
         let play_button_center = bounds.pos + bounds.size.x * dvec2(0.5, 0.752);
         let play_button_radius = 0.392 * bounds.size.x;
-        let round = |p: DVec2| p.map(|x| ctx.round(x));
-        let p0 = round(play_button_center - play_button_radius);
-        let p1 = round(play_button_center + play_button_radius);
-        let play_button = Bounds {
-            pos: p0,
-            size: p1 - p0,
+        let play_button = ctx.roundb(Bounds {
+            pos: play_button_center - play_button_radius,
+            size: DVec2::splat(play_button_radius * 2.0),
+        });
+        let mode_button_center = bounds.pos + bounds.size.x * dvec2(0.5, 1.588);
+        let mode_button_size = bounds.size.x * dvec2(0.39, 0.355);
+        let mode_button = ctx.roundb(Bounds {
+            pos: mode_button_center - mode_button_size / 2.0,
+            size: mode_button_size,
+        });
+        let mode_button_hitbox_size = 1.5 * mode_button_size;
+        let mode_button_hitbox = Bounds {
+            pos: mode_button_center - mode_button_hitbox_size / 2.0,
+            size: mode_button_hitbox_size,
         };
+
         Some(SliderGutterLayout {
             play_button_center,
             play_button_radius,
             play_button,
+            mode_button,
+            mode_button_hitbox,
         })
     }
 
@@ -834,29 +928,11 @@ impl SliderUi {
             return response;
         };
 
-        match event {
-            Event::MouseInput(ElementState::Pressed, MouseButton::Left)
-                if self.play_button_hovered =>
-            {
-                self.play_button_click_tracker.press(ctx.cursor);
-                response.consume_event();
-                response.request_redraw();
-            }
-            Event::CursorMoved { .. } => {
-                if set(
-                    &mut self.play_button_hovered,
-                    ctx.cursor.distance(l.play_button_center) <= l.play_button_radius,
-                ) {
-                    response.request_redraw();
-                }
-
-                if self.play_button_click_tracker.drag(ctx.cursor) {
-                    response.request_redraw();
-                }
-            }
-            Event::MouseInput(ElementState::Released, MouseButton::Left)
-                if self.play_button_click_tracker.release().was_clicked() =>
-            {
+        response = response.or(self.play_button.update(
+            ctx,
+            event,
+            ctx.cursor.distance(l.play_button_center) <= l.play_button_radius,
+            |response| {
                 slider.is_playing ^= true;
                 if slider.is_playing {
                     let value = self.value.expect("play button only shows if no error");
@@ -867,14 +943,23 @@ impl SliderUi {
                     self.expected_value = value;
                 }
                 response.request_redraw();
-            }
-            _ => {}
-        }
+            },
+        ));
 
-        if self.play_button_hovered {
-            response.cursor_mode = CursorMode::Icon(CursorIcon::Pointer);
-        }
-
+        response = response.or(self.mode_button.update(
+            ctx,
+            event,
+            l.mode_button_hitbox.contains(ctx.cursor),
+            |response| {
+                slider.loop_mode = match slider.loop_mode {
+                    SliderLoopMode::LoopForwardReverse => SliderLoopMode::LoopForward,
+                    SliderLoopMode::LoopForward => SliderLoopMode::PlayOnce,
+                    SliderLoopMode::PlayOnce => SliderLoopMode::PlayIndefinitely,
+                    SliderLoopMode::PlayIndefinitely => SliderLoopMode::LoopForwardReverse,
+                };
+                response.request_redraw();
+            },
+        ));
         response
     }
 
@@ -889,35 +974,27 @@ impl SliderUi {
         let Some(l) = self.layout_gutter(ctx, bounds) else {
             return;
         };
-        draw_quad(Quad {
-            kind: if slider.is_playing {
+        self.play_button.render(
+            if slider.is_playing {
                 QuadKind::SliderPlayingButton
             } else {
                 QuadKind::SliderPausedButton
             },
-            p0: l.play_button.pos,
-            p1: l.play_button.pos + l.play_button.size,
-            color: if expression_is_focussed {
-                let opacity =
-                    if self.play_button_hovered || self.play_button_click_tracker.is_pressed() {
-                        1.0
-                    } else {
-                        0.9
-                    };
-                (255, 255, 255, opacity)
-            } else {
-                let opacity = if self.play_button_click_tracker.is_pressed() {
-                    0.9
-                } else if self.play_button_hovered {
-                    0.7
-                } else {
-                    0.5
-                };
-                (0, 0, 0, opacity)
-            }
-            .to_rgbaf64(),
-            ..Default::default()
-        });
+            l.play_button,
+            expression_is_focussed,
+            draw_quad,
+        );
+        self.mode_button.render(
+            match slider.loop_mode {
+                SliderLoopMode::LoopForwardReverse => QuadKind::LoopForwardReverseIcon,
+                SliderLoopMode::LoopForward => QuadKind::LoopForwardIcon,
+                SliderLoopMode::PlayOnce => QuadKind::PlayOnceIcon,
+                SliderLoopMode::PlayIndefinitely => QuadKind::PlayIndefinitelyIcon,
+            },
+            l.mode_button,
+            expression_is_focussed,
+            draw_quad,
+        );
     }
 }
 
@@ -1346,6 +1423,15 @@ fn get_numeric_literal(expr: &parse::ast::Expression) -> Option<f64> {
     }
 }
 
+#[derive(Default)]
+enum SliderLoopMode {
+    #[default]
+    LoopForwardReverse,
+    LoopForward,
+    PlayOnce,
+    PlayIndefinitely,
+}
+
 /// If the hard bound is empty, then the soft bound is used.
 struct Slider {
     hard_min: (InlineField, Result<parse::ast::Expression, String>),
@@ -1359,6 +1445,7 @@ struct Slider {
     play_direction: f64,
     /// In seconds
     animation_period: f64,
+    loop_mode: SliderLoopMode,
     /// This is what is displayed to the user when a slider is shown instead of
     /// the actual math field. It's to handle desync between the actual value vs
     /// clamped slider value, e.g., when slider bounds get animated.
@@ -1418,6 +1505,7 @@ impl Expression {
                 previous_update_time: 0.0,
                 play_direction: 1.0,
                 animation_period: 4.0,
+                loop_mode: Default::default(),
                 fake_field: Default::default(),
                 fake_field_value: 0.0,
             },

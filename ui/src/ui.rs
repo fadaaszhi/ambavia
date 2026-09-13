@@ -200,6 +200,17 @@ impl Context {
         }
     }
 
+    /// Round the corners of a logical bound to integer physical values,
+    /// returning a logical bound.
+    pub fn roundb(&self, logical: Bounds) -> Bounds {
+        let top_left = logical.pos.map(|x| self.round(x));
+        let bottom_left = (logical.pos + logical.size).map(|x| self.round(x));
+        Bounds {
+            pos: top_left,
+            size: bottom_left - top_left,
+        }
+    }
+
     pub fn set_scissor_rect(&self, pass: &mut wgpu::RenderPass, logical: Bounds) {
         let b = self.to_physical(logical);
         let q = b.pos.max(DVec2::ZERO).round();

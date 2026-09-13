@@ -22,6 +22,10 @@ const GraphButton = 10u;
 const GraphButtonUpper = 11u;
 const GraphButtonLower = 12u;
 const HomeIcon = 13u;
+const LoopForwardReverseIcon = 14u;
+const LoopForwardIcon = 15u;
+const PlayOnceIcon = 16u;
+const PlayIndefinitelyIcon = 17u;
 
 
 struct Vertex {
@@ -80,6 +84,14 @@ fn jacobian(texture: texture_2d<f32>, uv: vec2f) -> mat2x3f {
 
 fn sqr(x: vec3f) -> vec3f {
     return x * x;
+}
+
+fn hypot(x: f32, y: f32) -> f32 {
+    return length(vec2(x, y));
+}
+
+fn modf32(x: f32, y: f32) -> f32 {
+    return x - floor(x / y) * y;
 }
 
 @diagnostic(off, derivative_uniformity)
@@ -197,6 +209,54 @@ fn fs_quad(in: VertexOutput) -> @location(0) vec4f {
                 max(max((x - y) / sqrt(2.0) - 0.4, x - 0.7), min(y - 0.4, 0.16 - x))),
                 max(abs(p.x - 0.55) - 0.15, 0.86 + y - p.x)
             );
+
+            sd *= size.x / 2.0;
+            let opacity = saturate(0.5 - sd);
+            return in.color * vec4(1.0, 1.0, 1.0, opacity);
+        }
+        case LoopForwardReverseIcon, LoopForwardIcon, PlayOnceIcon, PlayIndefinitelyIcon {
+            let p = (in.uv * 2.0 - 1.0) * vec2(1.0, -0.912);
+            var x = p.x;
+            var y = p.y;
+
+            switch in.kind {
+                case LoopForwardReverseIcon {
+                    y -= 0.0694;
+                    if y < 0.07 {
+                        x = -x;
+                        y = -y;
+                    }
+                }
+                case LoopForwardIcon {
+                    y += select(-0.0694, 0.8566, y < 0.07);
+                }
+                default {
+                    y += 0.275;
+                }
+            }
+
+            var sd = min(
+                max(0.77 * abs(y - 0.463) + 0.65 * x - 0.65, 0.554 - x),
+                max(max(
+                    select(abs(y - 0.294) - 0.294, hypot(x + 0.65, y - 0.238) - 0.35, x < -0.65),
+                    select(0.338 - y, 0.48 - hypot(x + 0.56, y + 0.143), x < -0.56)),
+                    x - 0.77
+                )
+            );
+            x = p.x;
+            y = p.y;
+
+            if in.kind == PlayOnceIcon {
+                sd = min(sd, max(max(
+                    hypot(x + 0.478, y + 0.495) - 0.42,
+                    min(0.06 - abs(x + 0.463), 0.29 - abs(y + 0.49))),
+                    min(0.085 - abs(y - x - 0.238), 0.15 - abs(y + x + 0.873)) / sqrt(2.0)
+                ));
+            }
+            
+            if in.kind == PlayIndefinitelyIcon && abs(x + 0.003) < 0.557 {
+                sd = hypot(0.154875 - abs(modf32(x + 0.56, 0.30975) - 0.154875), y - 0.188) - 0.125;
+            }
 
             sd *= size.x / 2.0;
             let opacity = saturate(0.5 - sd);

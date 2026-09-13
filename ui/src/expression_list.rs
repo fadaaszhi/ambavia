@@ -1831,6 +1831,17 @@ impl ExpressionList {
         let mut redraw_geometry = false;
 
         if let Some((drag_tracker, i, offset)) = &mut self.dragged_expression {
+            if drag_tracker.drag(ctx.cursor) {
+                #[cfg(not(windows))]
+                let grabbing = CursorIcon::Grabbing;
+
+                // https://github.com/rust-windowing/winit/issues/1043
+                #[cfg(windows)]
+                let grabbing = CursorIcon::NsResize;
+
+                response.cursor_mode = CursorMode::Icon(grabbing);
+            }
+
             match event {
                 Event::MouseInput(ElementState::Released, MouseButton::Left) => {
                     if drag_tracker.release().was_dragged() {
@@ -1895,14 +1906,6 @@ impl ExpressionList {
                     // TODO keep it scrolling even when cursor isn't moving and make it FPS-independent
                     self.scroll_y_into_view(ctx, ctx.cursor.y - (bounds.pos.y - self.scroll));
 
-                    #[cfg(not(windows))]
-                    let grabbing = CursorIcon::Grabbing;
-
-                    // https://github.com/rust-windowing/winit/issues/1043
-                    #[cfg(windows)]
-                    let grabbing = CursorIcon::NsResize;
-
-                    response.cursor_mode = CursorMode::Icon(grabbing);
                     response.consume_event();
                     response.request_redraw();
                 }

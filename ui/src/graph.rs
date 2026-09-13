@@ -1248,7 +1248,7 @@ impl GraphButtons {
             return (response, false);
         }
 
-        if event == &Event::AnimationFrame {
+        if event.is_animation_frame() {
             if let Some(animation) = &self.viewport_animation {
                 *viewport = animation.get(ctx.time, bounds);
                 if animation.is_animating(ctx.time) {

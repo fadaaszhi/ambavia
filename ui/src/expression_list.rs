@@ -271,13 +271,17 @@ struct SliderUi {
     play_button: GutterButton,
     mode_button: GutterButton,
     animated_value: f64,
-    expected_value: f64,
+    expected_value: Option<f64>,
 }
 
-struct SliderEditLayout {
+struct SliderEditMinNameMaxLayout {
     min_field: Bounds,
     name: Bounds,
     max_field: Bounds,
+}
+
+struct SliderEditLayout {
+    min_name_max: Option<SliderEditMinNameMaxLayout>,
     step_label: Bounds,
     step_field: Bounds,
     bounds: Bounds,
@@ -330,7 +334,7 @@ impl SliderUi {
             play_button: Default::default(),
             mode_button: Default::default(),
             animated_value: 0.0,
-            expected_value: 0.0,
+            expected_value: None,
         }
     }
 
@@ -373,13 +377,15 @@ impl SliderUi {
         field_has_focus: bool,
         slider: &mut Slider,
     ) -> SliderLayout {
+        let is_play_indefinitely = slider.loop_mode == SliderLoopMode::PlayIndefinitely;
         let is_slider_edit_shown = field_has_focus
             || slider.hard_min.0.has_focus()
             || slider.hard_max.0.has_focus()
             || slider.step.0.has_focus()
             || slider.hard_min.0.underline.error
             || slider.hard_max.0.underline.error
-            || slider.step.0.underline.error;
+            || slider.step.0.underline.error
+            || is_play_indefinitely;
 
         for field in [&mut slider.hard_max, &mut slider.hard_min] {
             field.0.use_placeholder_if_empty = !is_slider_edit_shown;
@@ -396,17 +402,22 @@ impl SliderUi {
         let max_field_size = slider.hard_max.0.expression_size(ctx, is_slider_edit_shown);
 
         if is_slider_edit_shown {
+            // TODO currently uses a dumb way to calculate layout for PlayIndefinitely, make it more efficient
             let name_size = self.name_field.expression_size().map(|s| ctx.ceil(s));
             let step_label_size = self.step_label.size();
             let step_field_size = slider.step.0.expression_size(ctx, true);
 
-            let height = max([
-                min_field_size.y,
-                name_size.y,
-                max_field_size.y,
-                step_label_size.y,
-                step_field_size.y,
-            ]);
+            let height = if is_play_indefinitely {
+                max([step_label_size.y, step_field_size.y])
+            } else {
+                max([
+                    min_field_size.y,
+                    name_size.y,
+                    max_field_size.y,
+                    step_label_size.y,
+                    step_field_size.y,
+                ])
+            };
 
             let min_field = Bounds {
                 pos: dvec2(
@@ -425,7 +436,11 @@ impl SliderUi {
             };
             let step_label = Bounds {
                 pos: dvec2(
-                    max_field.right() + 11.0,
+                    if is_play_indefinitely {
+                        top_left.x + padding
+                    } else {
+                        max_field.right() + 11.0
+                    },
                     top_left.y + (height - step_label_size.y) / 2.0,
                 ),
                 size: step_label_size,
@@ -438,12 +453,18 @@ impl SliderUi {
                 size: step_field_size,
             };
 
-            let bounds = union([min_field, name, max_field, step_label, step_field]);
+            let bounds = if is_play_indefinitely {
+                union([step_label, step_field])
+            } else {
+                union([min_field, name, max_field, step_label, step_field])
+            };
 
             SliderLayout::Edit(SliderEditLayout {
-                min_field,
-                name,
-                max_field,
+                min_name_max: (!is_play_indefinitely).then_some(SliderEditMinNameMaxLayout {
+                    min_field,
+                    name,
+                    max_field,
+                }),
                 step_label,
                 step_field,
                 bounds,
@@ -520,16 +541,10 @@ impl SliderUi {
         field_has_focus: bool,
         slider: &mut Slider,
     ) -> (Response, Option<f64>, Option<Message>, Bounds) {
-        let result = match self.layout(ctx, padding, top_left, width, field_has_focus, slider) {
+        match self.layout(ctx, padding, top_left, width, field_has_focus, slider) {
             SliderLayout::Edit(layout) => self.update_slider_edit(ctx, event, slider, layout),
             SliderLayout::Bar(layout) => self.update_slider_bar(ctx, event, slider, layout),
-        };
-
-        if event == &Event::AnimationFrame {
-            slider.previous_update_time = ctx.time;
         }
-
-        result
     }
 
     fn update_slider_edit(
@@ -539,63 +554,74 @@ impl SliderUi {
         slider: &mut Slider,
         l: SliderEditLayout,
     ) -> (Response, Option<f64>, Option<Message>, Bounds) {
-        let (min_response, mut min_message) = slider.hard_min.0.update(ctx, event, l.min_field);
-        let (max_response, mut max_message) = slider.hard_max.0.update(ctx, event, l.max_field);
+        let mut response = Response::default();
+        let mut message = None;
+
+        if let Some(l) = &l.min_name_max {
+            let (min_response, mut min_message) = slider.hard_min.0.update(ctx, event, l.min_field);
+            let (max_response, mut max_message) = slider.hard_max.0.update(ctx, event, l.max_field);
+
+            match min_message {
+                Some(Message::ContentsChanged { .. }) => {
+                    slider.soft_min = SLIDER_SOFT_MIN_DEFAULT;
+                    if !slider.hard_min.0.is_empty() {
+                        slider.hard_min.1 =
+                            parse_standalone_expression(&slider.hard_min.0.to_latex());
+                    }
+                }
+                Some(Message::Left) => min_message = None,
+                Some(Message::Right) => {
+                    min_message = None;
+                    slider.hard_min.0.unfocus();
+                    slider.hard_max.0.select_all();
+                }
+                Some(Message::Up | Message::Down | Message::Add) => {
+                    slider.hard_min.0.unfocus();
+                }
+                Some(Message::Remove) => {
+                    min_message = None;
+                    if set(&mut slider.soft_min, SLIDER_SOFT_MIN_DEFAULT) {
+                        min_message = Some(Message::ContentsChanged { user_driven: true });
+                    }
+                }
+                None => {}
+            }
+
+            match max_message {
+                Some(Message::ContentsChanged { .. }) => {
+                    slider.soft_max = SLIDER_SOFT_MAX_DEFAULT;
+                    if !slider.hard_max.0.is_empty() {
+                        slider.hard_max.1 =
+                            parse_standalone_expression(&slider.hard_max.0.to_latex());
+                    }
+                }
+                Some(Message::Left) => {
+                    max_message = None;
+                    slider.hard_max.0.unfocus();
+                    slider.hard_min.0.select_all();
+                }
+                Some(Message::Right) => {
+                    max_message = None;
+                    slider.hard_max.0.unfocus();
+                    slider.step.0.select_all();
+                }
+                Some(Message::Up | Message::Down | Message::Add) => {
+                    slider.hard_max.0.unfocus();
+                }
+                Some(Message::Remove) => {
+                    max_message = None;
+                    if set(&mut slider.soft_max, SLIDER_SOFT_MAX_DEFAULT) {
+                        max_message = Some(Message::ContentsChanged { user_driven: true });
+                    }
+                }
+                None => {}
+            }
+
+            response = response.or(min_response).or(max_response);
+            message = message.or(min_message).or(max_message);
+        }
+
         let (step_response, mut step_message) = slider.step.0.update(ctx, event, l.step_field);
-
-        match min_message {
-            Some(Message::ContentsChanged { .. }) => {
-                slider.soft_min = SLIDER_SOFT_MIN_DEFAULT;
-                if !slider.hard_min.0.is_empty() {
-                    slider.hard_min.1 = parse_standalone_expression(&slider.hard_min.0.to_latex());
-                }
-            }
-            Some(Message::Left) => min_message = None,
-            Some(Message::Right) => {
-                min_message = None;
-                slider.hard_min.0.unfocus();
-                slider.hard_max.0.select_all();
-            }
-            Some(Message::Up | Message::Down | Message::Add) => {
-                slider.hard_min.0.unfocus();
-            }
-            Some(Message::Remove) => {
-                min_message = None;
-                if set(&mut slider.soft_min, SLIDER_SOFT_MIN_DEFAULT) {
-                    min_message = Some(Message::ContentsChanged { user_driven: true });
-                }
-            }
-            None => {}
-        }
-
-        match max_message {
-            Some(Message::ContentsChanged { .. }) => {
-                slider.soft_max = SLIDER_SOFT_MAX_DEFAULT;
-                if !slider.hard_max.0.is_empty() {
-                    slider.hard_max.1 = parse_standalone_expression(&slider.hard_max.0.to_latex());
-                }
-            }
-            Some(Message::Left) => {
-                max_message = None;
-                slider.hard_max.0.unfocus();
-                slider.hard_min.0.select_all();
-            }
-            Some(Message::Right) => {
-                max_message = None;
-                slider.hard_max.0.unfocus();
-                slider.step.0.select_all();
-            }
-            Some(Message::Up | Message::Down | Message::Add) => {
-                slider.hard_max.0.unfocus();
-            }
-            Some(Message::Remove) => {
-                max_message = None;
-                if set(&mut slider.soft_max, SLIDER_SOFT_MAX_DEFAULT) {
-                    max_message = Some(Message::ContentsChanged { user_driven: true });
-                }
-            }
-            None => {}
-        }
 
         match step_message {
             Some(Message::ContentsChanged { .. }) => {
@@ -605,21 +631,66 @@ impl SliderUi {
                     slider.step.1 = parse_standalone_expression(&slider.step.0.to_latex());
                 }
             }
-            Some(Message::Left) => {
+            Some(Message::Left) if l.min_name_max.is_some() => {
                 step_message = None;
                 slider.step.0.unfocus();
                 slider.hard_max.0.select_all();
             }
-            Some(Message::Right | Message::Remove) => step_message = None,
+            Some(Message::Left | Message::Right | Message::Remove) => step_message = None,
             Some(Message::Up | Message::Down | Message::Add) => {
                 slider.step.0.unfocus();
             }
             None => {}
         }
 
-        let response = min_response.or(max_response).or(step_response);
-        let message = min_message.or(max_message).or(step_message);
-        (response, None, message, l.bounds)
+        if slider.step.0.has_focus() && set(&mut slider.is_playing, false) {
+            response.request_redraw();
+        }
+
+        let mut new_value = None;
+
+        if slider.loop_mode != SliderLoopMode::PlayIndefinitely
+            || self.value.is_none()
+            || self.step.is_none()
+        {
+            // We didn't update the slider animation so next animation step it shouldn't apply any delta time
+            slider.previous_update_time = None;
+        } else if event.is_animation_frame()
+            && slider.is_playing
+            && let (Some(value), Some(step)) = (&mut self.value, self.step)
+        {
+            // animated_value is the raw unstepped value used to maintain
+            // correct timing. check if it got invalidated by something like
+            // an action updating the slider value
+            if let Some(expected) = self.expected_value
+                && apply_slider(expected, f64::NAN, f64::NAN, step)
+                    != apply_slider(*value, f64::NAN, f64::NAN, step)
+            {
+                self.animated_value = *value;
+            }
+
+            let dt = ctx.time - slider.previous_update_time.unwrap_or(ctx.time);
+            let speed = 4.0 / slider.animation_period * if step == 0.0 { 1.0 } else { step.abs() };
+            self.animated_value += speed * dt;
+
+            // TODO round value to fewest required decimal places based on animation period,framerate,step
+            if set(
+                value,
+                apply_slider(self.animated_value, f64::NAN, f64::NAN, step),
+            ) {
+                new_value = Some(*value);
+                self.expected_value = Some(*value);
+            }
+
+            // TODO make sliders with a step only request an animation frame when
+            // they actually need to change using ctx.request_redraw_after
+            slider.previous_update_time = Some(ctx.time);
+            response.request_redraw();
+        }
+
+        response = response.or(step_response);
+        message = message.or(step_message);
+        (response, new_value, message, l.bounds)
     }
 
     fn update_slider_bar(
@@ -701,30 +772,47 @@ impl SliderUi {
                     // animated_value is the raw unstepped value used to maintain
                     // correct timing. check if it got invalidated by something like
                     // an action updating the slider value
-                    if apply_slider(self.expected_value, *min, *max, *step)
-                        != apply_slider(*value, *min, *max, *step)
+                    if let Some(expected) = self.expected_value
+                        && apply_slider(expected, *min, *max, *step)
+                            != apply_slider(*value, *min, *max, *step)
                     {
-                        println!("unsynced!");
                         self.animated_value = *value;
                     }
 
-                    let dt = ctx.time - slider.previous_update_time;
+                    let dt = ctx.time - slider.previous_update_time.unwrap_or(ctx.time);
                     let x = unmix(self.animated_value.clamp(*min, *max), *min, *max);
                     let y = x + slider.play_direction * dt / slider.animation_period;
-                    let z = 1.0 - (y.rem_euclid(2.0) - 1.0).abs();
-                    slider.play_direction *= 1.0 - y.rem_euclid(2.0).floor() * 2.0;
+                    let z = match slider.loop_mode {
+                        SliderLoopMode::LoopForwardReverse => {
+                            slider.play_direction *= 1.0 - y.rem_euclid(2.0).floor() * 2.0;
+                            1.0 - (y.rem_euclid(2.0) - 1.0).abs()
+                        }
+                        SliderLoopMode::LoopForward => y.rem_euclid(1.0),
+                        SliderLoopMode::PlayOnce => y.clamp(0.0, 1.0),
+                        SliderLoopMode::PlayIndefinitely => {
+                            unreachable!("handled in update_slider_edit")
+                        }
+                    };
                     self.animated_value = mix(*min, *max, z);
 
-                    // TODO round value to fewest required decimal places based on animatino period,framerate,max-min,step
+                    // TODO round value to fewest required decimal places based on animation period,framerate,max-min,step
                     if set(value, apply_slider(self.animated_value, *min, *max, *step)) {
                         new_value = Some(*value);
-                        self.expected_value = *value;
+                        self.expected_value = Some(*value);
                     }
 
                     should_update_soft_bounds = true;
                     // TODO make sliders with a step only request an animation frame when
                     // they actually need to change using ctx.request_redraw_after
-                    response.request_redraw();
+                    if *min == *max
+                        || slider.loop_mode == SliderLoopMode::PlayOnce
+                            && self.animated_value >= *max
+                    {
+                        slider.previous_update_time = None;
+                    } else {
+                        slider.previous_update_time = Some(ctx.time);
+                        response.request_redraw();
+                    }
                 }
             }
             _ => {}
@@ -788,9 +876,11 @@ impl SliderUi {
         draw_quad: &mut impl FnMut(Quad),
         l: SliderEditLayout,
     ) -> f64 {
-        slider.hard_min.0.render(ctx, l.min_field, draw_quad);
-        self.name_field.render(ctx, l.name, draw_quad);
-        slider.hard_max.0.render(ctx, l.max_field, draw_quad);
+        if let Some(l) = &l.min_name_max {
+            slider.hard_min.0.render(ctx, l.min_field, draw_quad);
+            self.name_field.render(ctx, l.name, draw_quad);
+            slider.hard_max.0.render(ctx, l.max_field, draw_quad);
+        }
         self.step_label
             .render_from_top_left(l.step_label.pos, [0; 3], draw_quad);
         slider.step.0.render(ctx, l.step_field, draw_quad);
@@ -933,14 +1023,22 @@ impl SliderUi {
             event,
             ctx.cursor.distance(l.play_button_center) <= l.play_button_radius,
             |response| {
-                slider.is_playing ^= true;
+                let max = self.max.expect("play button only shows when no error");
+                slider.is_playing = !(slider.is_playing
+                    && (slider.loop_mode != SliderLoopMode::PlayOnce || self.animated_value < max));
                 if slider.is_playing {
                     let value = self.value.expect("play button only shows if no error");
                     slider.soft_min = slider.soft_min.min(value);
                     slider.soft_max = slider.soft_max.max(value);
-                    slider.previous_update_time = ctx.time;
-                    self.animated_value = value;
-                    self.expected_value = value;
+                    slider.previous_update_time = Some(ctx.time);
+                    if slider.loop_mode == SliderLoopMode::PlayOnce && value >= max {
+                        self.animated_value =
+                            self.min.expect("play button only shows when no error");
+                        self.expected_value = None;
+                    } else {
+                        self.animated_value = value;
+                        self.expected_value = Some(value);
+                    }
                 }
                 response.request_redraw();
             },
@@ -951,12 +1049,30 @@ impl SliderUi {
             event,
             l.mode_button_hitbox.contains(ctx.cursor),
             |response| {
+                let original_loop_mode = slider.loop_mode;
                 slider.loop_mode = match slider.loop_mode {
                     SliderLoopMode::LoopForwardReverse => SliderLoopMode::LoopForward,
                     SliderLoopMode::LoopForward => SliderLoopMode::PlayOnce,
                     SliderLoopMode::PlayOnce => SliderLoopMode::PlayIndefinitely,
                     SliderLoopMode::PlayIndefinitely => SliderLoopMode::LoopForwardReverse,
                 };
+                slider.play_direction = 1.0;
+
+                if slider.loop_mode == SliderLoopMode::PlayIndefinitely {
+                    slider.hard_min.0.clear();
+                    slider.hard_max.0.clear();
+                } else if slider.is_playing {
+                    self.animated_value = self.min.expect("button only shows if no error");
+                    self.expected_value = None;
+
+                    if original_loop_mode == SliderLoopMode::PlayIndefinitely {
+                        // TODO fix soft bounds resetting, it's not working because
+                        // somewhere later they are getting set based on stale value
+                        slider.soft_min = SLIDER_SOFT_MIN_DEFAULT;
+                        slider.soft_max = SLIDER_SOFT_MAX_DEFAULT;
+                    }
+                }
+
                 response.request_redraw();
             },
         ));
@@ -975,7 +1091,11 @@ impl SliderUi {
             return;
         };
         self.play_button.render(
-            if slider.is_playing {
+            if slider.is_playing
+                && (slider.loop_mode != SliderLoopMode::PlayOnce
+                    || self.animated_value
+                        < self.max.expect("play button only shows when no error"))
+            {
                 QuadKind::SliderPlayingButton
             } else {
                 QuadKind::SliderPausedButton
@@ -1423,7 +1543,7 @@ fn get_numeric_literal(expr: &parse::ast::Expression) -> Option<f64> {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone, Copy, PartialEq)]
 enum SliderLoopMode {
     #[default]
     LoopForwardReverse,
@@ -1440,7 +1560,8 @@ struct Slider {
     soft_max: f64,
     step: (InlineField, Result<parse::ast::Expression, String>),
     is_playing: bool,
-    previous_update_time: f64,
+    /// `None` means that the next time the slider animates it will use a delta time of zero
+    previous_update_time: Option<f64>,
     /// `1.0` or `-1.0`
     play_direction: f64,
     /// In seconds
@@ -1502,7 +1623,7 @@ impl Expression {
                 soft_max: SLIDER_SOFT_MAX_DEFAULT,
                 step: (InlineField::new(""), Ok(ast::Expression::Number(0.0))),
                 is_playing: false,
-                previous_update_time: 0.0,
+                previous_update_time: Some(0.0),
                 play_direction: 1.0,
                 animation_period: 4.0,
                 loop_mode: Default::default(),

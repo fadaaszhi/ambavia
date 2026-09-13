@@ -235,6 +235,12 @@ pub enum Event {
     PinchGesture(f64),
 }
 
+impl Event {
+    pub fn is_animation_frame(&self) -> bool {
+        matches!(self, Event::AnimationFrame)
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Bounds {
     pub pos: DVec2,

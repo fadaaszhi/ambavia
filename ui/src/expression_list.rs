@@ -640,8 +640,7 @@ impl SliderUi {
 
                     should_update_soft_bounds = true;
                     // TODO make sliders with a step only request an animation frame when
-                    // they actually need to change. we'd need to use ControlFlow::WaitUntil
-                    // or something and add a new method response.request_redraw_at(Instant)
+                    // they actually need to change using ctx.request_redraw_after
                     response.request_redraw();
                 }
             }

@@ -17,7 +17,7 @@ use crate::{
         new_frac, new_radical, new_script, new_script_lower, new_script_upper, new_sqrt, to_latex,
     },
     quad_renderer::{Quad, QuadKind},
-    ui::{Bounds, Context, CursorMode, Event, Response},
+    ui::{Bounds, Context, CursorMode, Event, RedrawRequest, Response},
     utility::{set, snap},
 };
 use parse::{
@@ -915,6 +915,9 @@ impl Interactiveness {
     }
 }
 
+/// How many seconds it takes for the cursor to complete one blink cycle (on + off)
+const CURSOR_BLINK_PERIOD: f64 = 1.0;
+
 #[derive(Debug, Clone)]
 pub struct MathField {
     tree: Tree,
@@ -938,6 +941,8 @@ pub struct MathField {
     scroll: f64,
     dragging: bool,
     selection: Option<UserSelection>,
+    restart_cursor_blink: bool,
+    cursor_blink: Option<(f64, RedrawRequest)>,
     tree_changed: bool,
 }
 
@@ -963,6 +968,8 @@ impl Default for MathField {
             scroll: 0.0,
             dragging: false,
             selection: None,
+            restart_cursor_blink: false,
+            cursor_blink: None,
             tree_changed: false,
         }
     }
@@ -1064,6 +1071,7 @@ impl MathField {
         let cursor_edge = self.scale * CURSOR_EDGE;
         let x1 = x.min(self.width - cursor_edge).max(cursor_edge);
         self.scroll(x1 - x);
+        self.restart_cursor_blink = true;
     }
 
     pub fn select_all(&mut self) {
@@ -1166,6 +1174,7 @@ impl MathField {
                 use winit::keyboard::{Key, NamedKey};
                 let Selection { mut path, span } = self.selection.as_ref().unwrap().into();
                 let mut hide_cursor = true;
+                let mut restart_cursor_blink = true;
 
                 match &logical_key {
                     Key::Named(NamedKey::Enter) if write => {
@@ -2239,14 +2248,16 @@ impl MathField {
                             response.request_redraw();
                             response.consume_event();
                         }
-                        _ => {}
+                        _ => restart_cursor_blink = false,
                     },
-                    _ => {}
+                    _ => restart_cursor_blink = false,
                 }
 
                 if hide_cursor {
                     response.cursor_mode = CursorMode::Hidden;
                 }
+
+                self.restart_cursor_blink |= restart_cursor_blink;
             }
             Event::CursorMoved { .. } if self.dragging => {
                 if let Some(hovered) = hovered {
@@ -2278,6 +2289,7 @@ impl MathField {
             }
             Event::MouseInput(ElementState::Released, MouseButton::Left) if self.dragging => {
                 self.dragging = false;
+                self.restart_cursor_blink = true;
 
                 if select && !write {
                     let s = self.selection.as_ref().unwrap();
@@ -2287,6 +2299,14 @@ impl MathField {
                 }
 
                 response.consume_event();
+            }
+            Event::AnimationFrame if self.cursor_blink.is_some() => {
+                let (start_time, request) = self.cursor_blink.as_mut().unwrap();
+                if !ctx.is_redraw_request_pending(request) {
+                    let p = CURSOR_BLINK_PERIOD / 2.0;
+                    let next_blink = p - (ctx.time - *start_time) % p;
+                    *request = ctx.request_redraw_after(next_blink);
+                }
             }
             _ => {}
         }
@@ -2298,6 +2318,29 @@ impl MathField {
         {
             self.unfocus();
             response.request_redraw();
+        }
+
+        let selection_is_cursor = self.selection.as_ref().is_some_and(|s| s.anchor == s.focus);
+
+        // stop current cursor blink
+        if (!selection_is_cursor || self.dragging || self.restart_cursor_blink)
+            && let Some((_, request)) = self.cursor_blink.take()
+        {
+            ctx.cancel_redraw_request(request);
+        }
+
+        if self.restart_cursor_blink {
+            self.restart_cursor_blink = false;
+            assert!(
+                self.cursor_blink.is_none(),
+                "existing should have already been cancelled"
+            );
+            if selection_is_cursor && !self.dragging {
+                self.cursor_blink = Some((
+                    ctx.time,
+                    ctx.request_redraw_after(CURSOR_BLINK_PERIOD / 2.0),
+                ));
+            }
         }
 
         if self.tree_changed {
@@ -2359,7 +2402,11 @@ impl MathField {
         };
         match &self.selection {
             Some(selection)
-                if self.interactiveness.allows_writing() || selection.anchor != selection.focus =>
+                if self.interactiveness.allows_writing()
+                    && self.cursor_blink.as_ref().is_none_or(|(t, _)| {
+                        (ctx.time - t) % CURSOR_BLINK_PERIOD < CURSOR_BLINK_PERIOD / 2.0
+                    })
+                    || selection.anchor != selection.focus =>
             {
                 let selection: Selection = selection.into();
                 let nodes = tree.walk_mut(&selection.path);

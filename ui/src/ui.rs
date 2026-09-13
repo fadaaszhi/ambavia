@@ -1,5 +1,7 @@
 use std::{
     borrow::Cow,
+    cell::RefCell,
+    collections::BTreeSet,
     sync::{Arc, Mutex},
 };
 
@@ -13,6 +15,56 @@ use winit::{
 
 use crate::utility::AsGlam;
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RedrawRequest {
+    absolute_time_bits: u64,
+    id: u64,
+}
+
+#[derive(Debug, Default)]
+pub struct RedrawRequests {
+    next_id: u64,
+    requests: BTreeSet<RedrawRequest>,
+}
+
+impl RedrawRequests {
+    fn request_redraw_at(&mut self, absolute_time: f64) -> RedrawRequest {
+        let absolute_time_bits = absolute_time.max(0.0).to_bits();
+        let id = self.next_id;
+        self.next_id += 1;
+        let request = RedrawRequest {
+            absolute_time_bits,
+            id,
+        };
+        self.requests.insert(request.clone());
+        request
+    }
+
+    fn is_request_pending(&self, request: &RedrawRequest) -> bool {
+        self.requests.contains(request)
+    }
+
+    fn cancel_request(&mut self, request: RedrawRequest) {
+        self.requests.remove(&request);
+    }
+
+    /// Removes all requests that have absolute_time <= time
+    fn remove_completed(&mut self, time: f64) {
+        if (0.0..f64::INFINITY).contains(&time) {
+            self.requests = self.requests.split_off(&RedrawRequest {
+                absolute_time_bits: time.to_bits() + 1,
+                id: 0,
+            })
+        }
+    }
+
+    fn get_min_absolute_time(&self) -> Option<f64> {
+        self.requests
+            .first()
+            .map(|r| f64::from_bits(r.absolute_time_bits))
+    }
+}
+
 pub struct Context {
     clipboard: Arc<Mutex<Option<Clipboard>>>,
     /// The number of seconds elapsed since the application started
@@ -24,6 +76,8 @@ pub struct Context {
     /// The window's scale factor
     pub scale_factor: f64,
     pub modifiers: ModifiersState,
+    // refcell because i'm lazy
+    redraw_requests: RefCell<RedrawRequests>,
 }
 
 impl Context {
@@ -36,6 +90,7 @@ impl Context {
             left_mouse_button_already_pressed: false,
             scale_factor: window.scale_factor(),
             modifiers: Default::default(),
+            redraw_requests: RefCell::default(),
         }
     }
 
@@ -61,6 +116,29 @@ impl Context {
             }
             _ => {}
         }
+    }
+
+    // TODO unify Response::request_redraw and Context::request_redraw_after
+    pub fn request_redraw_after(&self, seconds: f64) -> RedrawRequest {
+        self.redraw_requests
+            .borrow_mut()
+            .request_redraw_at(self.time + seconds)
+    }
+
+    pub fn cancel_redraw_request(&self, request: RedrawRequest) {
+        self.redraw_requests.borrow_mut().cancel_request(request)
+    }
+
+    pub fn is_redraw_request_pending(&self, request: &RedrawRequest) -> bool {
+        self.redraw_requests.borrow().is_request_pending(request)
+    }
+
+    pub fn remove_completed_redraw_requests(&mut self) {
+        self.redraw_requests.get_mut().remove_completed(self.time);
+    }
+
+    pub fn get_next_requested_redraw_time(&self) -> Option<f64> {
+        self.redraw_requests.borrow().get_min_absolute_time()
     }
 
     pub fn clipboard<T, F>(&self, f: F) -> Result<T, arboard::Error>

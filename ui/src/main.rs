@@ -8,13 +8,17 @@ mod timer;
 mod ui;
 mod utility;
 
-use std::{f64, sync::Arc, time::Instant};
+use std::{
+    f64,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use glam::{DVec2, UVec2, dvec2, vec2};
 use winit::{
     dpi::PhysicalSize,
-    event::{ElementState, MouseButton, WindowEvent},
-    event_loop::{ActiveEventLoop, EventLoop},
+    event::{ElementState, MouseButton, StartCause, WindowEvent},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     window::{CursorIcon, Window, WindowAttributes, WindowId},
 };
 
@@ -30,6 +34,12 @@ fn main() -> Result<(), winit::error::EventLoopError> {
         fn resumed(&mut self, event_loop: &ActiveEventLoop) {
             if self.0.is_none() {
                 self.0 = Some(App::new(event_loop));
+            }
+        }
+
+        fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
+            if let Some(app) = &mut self.0 {
+                app.new_events(event_loop, cause);
             }
         }
 
@@ -55,6 +65,9 @@ fn main() -> Result<(), winit::error::EventLoopError> {
 struct App {
     events: Vec<(WindowEvent, f64)>,
     request_redraw: bool,
+    /// Used to limit `ControlFlowWait` usage to only when redraw hasn't already
+    /// been requested.
+    redraw_has_been_requested: bool,
     window: Arc<Window>,
     graphics: AppGraphics,
     main_thing: MainThing,
@@ -137,11 +150,21 @@ impl App {
         App {
             events: vec![],
             request_redraw: false,
+            redraw_has_been_requested: false,
             window,
             context,
             main_thing,
             graphics,
             start_time: Instant::now(),
+        }
+    }
+
+    fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
+        if matches!(cause, StartCause::ResumeTimeReached { .. }) {
+            self.request_redraw = true;
+            self.redraw_has_been_requested = true;
+            self.window.request_redraw();
+            event_loop.set_control_flow(ControlFlow::Wait);
         }
     }
 
@@ -253,25 +276,40 @@ impl App {
             WindowEvent::ScaleFactorChanged { .. } => self.request_redraw = true,
             WindowEvent::Occluded(false) => self.request_redraw = true,
             WindowEvent::RedrawRequested => {
-                let Some(surface_texture) = self.graphics.get_surface_texture() else {
-                    return;
-                };
+                if let Some(surface_texture) = self.graphics.get_surface_texture() {
+                    // TODO bit gross that we are reaching into context here
+                    self.context.time = self.start_time.elapsed().as_secs_f64();
+                    self.context.remove_completed_redraw_requests();
+                    self.redraw_has_been_requested = false;
+                    self.update_main_thing(&Event::AnimationFrame, bounds);
 
-                // TODO bit gross that we are reaching into context here
-                self.context.time = self.start_time.elapsed().as_secs_f64();
-                self.update_main_thing(&Event::AnimationFrame, bounds);
-
-                let surface_view = surface_texture.texture.create_view(&Default::default());
-                let command_buffer =
-                    self.main_thing
-                        .render(&self.context, &self.graphics, &surface_view, bounds);
-                self.graphics.queue.submit(command_buffer);
-                self.window.pre_present_notify();
-                surface_texture.present();
+                    let surface_view = surface_texture.texture.create_view(&Default::default());
+                    let command_buffer = self.main_thing.render(
+                        &self.context,
+                        &self.graphics,
+                        &surface_view,
+                        bounds,
+                    );
+                    self.graphics.queue.submit(command_buffer);
+                    self.window.pre_present_notify();
+                    surface_texture.present();
+                }
             }
             WindowEvent::CloseRequested => event_loop.exit(),
             _ => {}
         };
+
+        self.redraw_has_been_requested |= self.request_redraw;
+        if !self.redraw_has_been_requested
+            && let Some(time) = self.context.get_next_requested_redraw_time()
+            && time < f64::INFINITY
+        {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(
+                self.start_time + Duration::from_secs_f64(time.max(0.0)),
+            ));
+        } else {
+            event_loop.set_control_flow(ControlFlow::Wait)
+        }
     }
 }
 

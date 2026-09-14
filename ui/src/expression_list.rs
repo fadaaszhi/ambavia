@@ -1462,8 +1462,8 @@ impl SliderUi {
 
         draw_quad(Quad {
             kind: QuadKind::IncreaseSliderSpeedIcon, // x mirrored
-            p0: l.decrease_speed_button.pos + l.decrease_speed_button.size * dvec2(0.645, 0.337),
-            p1: l.decrease_speed_button.pos + l.decrease_speed_button.size * dvec2(0.355, 0.663),
+            p0: l.decrease_speed_button.pos + l.decrease_speed_button.size * dvec2(0.615, 0.337),
+            p1: l.decrease_speed_button.pos + l.decrease_speed_button.size * dvec2(0.325, 0.663),
             color: if decreased.is_some() {
                 [[102, 34, 0][self.decrease_speed_button.state()]; 3].to_rgbaf64()
             } else {
@@ -1496,8 +1496,8 @@ impl SliderUi {
 
         draw_quad(Quad {
             kind: QuadKind::IncreaseSliderSpeedIcon,
-            p0: l.increase_speed_button.pos + l.increase_speed_button.size * dvec2(0.355, 0.337),
-            p1: l.increase_speed_button.pos + l.increase_speed_button.size * dvec2(0.645, 0.663),
+            p0: l.increase_speed_button.pos + l.increase_speed_button.size * dvec2(0.385, 0.337),
+            p1: l.increase_speed_button.pos + l.increase_speed_button.size * dvec2(0.675, 0.663),
             color: if increased.is_some() {
                 [[102, 34, 0][self.increase_speed_button.state()]; 3].to_rgbaf64()
             } else {

@@ -14,6 +14,7 @@ use crate::katex_font::Font;
 use crate::label::{Label, render_label};
 use crate::quad_renderer::{Quad, QuadKind};
 use crate::ui::{AnimatedValue, ClickDragTracker, Color, PRIMARY_COLOR};
+use crate::utility::IfFiniteElse;
 use crate::{
     graph::{Geometry, GeometryKind},
     math_field::{Cursor, Interactiveness, MathField, Message, UserSelection},
@@ -671,7 +672,7 @@ impl SliderUi {
 
             let dt = ctx.time - slider.previous_update_time.unwrap_or(ctx.time);
             let speed = 4.0 / slider.animation_period * if step == 0.0 { 1.0 } else { step.abs() };
-            self.animated_value += speed * dt;
+            self.animated_value = (self.animated_value + speed * dt).if_finite_else(*value);
 
             // TODO round value to fewest required decimal places based on animation period,framerate,step
             if set(
@@ -780,8 +781,14 @@ impl SliderUi {
                     }
 
                     let dt = ctx.time - slider.previous_update_time.unwrap_or(ctx.time);
-                    let x = unmix(self.animated_value.clamp(*min, *max), *min, *max);
-                    let y = x + slider.play_direction * dt / slider.animation_period;
+                    let (smin, smax, speed) = if slider.loop_mode == SliderLoopMode::LoopForward {
+                        let speed = 1.0 - *step / (*max - *min + *step);
+                        (*min - *step / 2.0, *max + *step / 2.0, speed)
+                    } else {
+                        (*min, *max, 1.0)
+                    };
+                    let x = unmix(self.animated_value.clamp(smin, smax), smin, smax);
+                    let y = x + slider.play_direction * dt * speed / slider.animation_period;
                     let z = match slider.loop_mode {
                         SliderLoopMode::LoopForwardReverse => {
                             slider.play_direction *= 1.0 - y.rem_euclid(2.0).floor() * 2.0;
@@ -793,7 +800,7 @@ impl SliderUi {
                             unreachable!("handled in update_slider_edit")
                         }
                     };
-                    self.animated_value = mix(*min, *max, z);
+                    self.animated_value = mix(smin, smax, z).if_finite_else(*value);
 
                     // TODO round value to fewest required decimal places based on animation period,framerate,max-min,step
                     if set(value, apply_slider(self.animated_value, *min, *max, *step)) {

@@ -26,6 +26,17 @@ const LoopForwardReverseIcon = 14u;
 const LoopForwardIcon = 15u;
 const PlayOnceIcon = 16u;
 const PlayIndefinitelyIcon = 17u;
+const PopupShadow = 18u;
+const PopupBackground = 19u;
+const PopupArrow = 20u;
+const PopupRadioLeft = 21u;
+const PopupRadioMiddle = 22u;
+const PopupRadioRight = 23u;
+const PopupRadioSelectedLeft = 24u;
+const PopupRadioSelectedMiddle = 25u;
+const PopupRadioSelectedRight = 26u;
+const PopupButton = 27u;
+const IncreaseSliderSpeedIcon = 28u;
 
 
 struct Vertex {
@@ -95,6 +106,27 @@ fn modf32(x: f32, y: f32) -> f32 {
 }
 
 @diagnostic(off, derivative_uniformity)
+fn rounded_box_shadow(uv: vec2f, color: vec4f, shadow_radius_: f32, box_radius_: f32) -> vec4f {
+    let size = 1.0 / abs(vec2(dpdx(uv.x), dpdy(uv.y)));
+    let shadow_radius = shadow_radius_ * uniforms.scale_factor;
+    let box_radius = box_radius_ * uniforms.scale_factor;
+    let sd = sd_rounded_box(size * (uv - 0.5), size / 2.0 - 2.0 * shadow_radius, vec4(box_radius));
+    let shadow = saturate(1.0 - sd / (2.0 * shadow_radius));
+    return color * vec4(1.0, 1.0, 1.0, smoothstep(0.0, 1.0, shadow));
+}
+
+fn stroked(sd: f32, fill_color: vec4f, stroke_width_: f32, stroke_color: vec4f) -> vec4f {
+    let stroke_width = max(round(stroke_width_ * uniforms.scale_factor), 1.0);
+    let color = mix(stroke_color, fill_color, saturate(0.5 - (sd + stroke_width)));
+    let opacity = saturate(0.5 - sd);
+    return color * vec4(1.0, 1.0, 1.0, opacity);
+}
+
+fn stroked2(sd: f32, fill_color: vec4f, stroke_width: f32, stroke_brightness: f32) -> vec4f {
+    return stroked(sd, fill_color, stroke_width, fill_color * vec4(vec3(stroke_brightness), 1.0));
+}
+
+@diagnostic(off, derivative_uniformity)
 @fragment
 fn fs_quad(in: VertexOutput) -> @location(0) vec4f {
     let size = 1.0 / abs(vec2(dpdx(in.uv.x), dpdy(in.uv.y)));
@@ -138,16 +170,9 @@ fn fs_quad(in: VertexOutput) -> @location(0) vec4f {
         }
         case OutputValueBox {
             const RADIUS = 4.0;
-            const STROKE_COLOR = vec3(0.84);
-            const FILL_COLOR = vec3(0.96);
-            const STROKE_WIDTH = 1.0;
-
             let radius = RADIUS * uniforms.scale_factor;
-            let stroke_width = max(round(STROKE_WIDTH * uniforms.scale_factor), 1.0);
-
             let sd = sd_rounded_box(size * (in.uv - 0.5), size / 2.0, vec4(radius));
-            let color = mix(STROKE_COLOR, FILL_COLOR, saturate(0.5 - (sd + stroke_width)));
-            return vec4(color, saturate(0.5 - sd));
+            return stroked2(sd, in.color, 1.0, 0.873);
         }
         case SliderPausedButton, SliderPlayingButton {
             let p = in.uv * 2.0 - 1.0;
@@ -164,22 +189,12 @@ fn fs_quad(in: VertexOutput) -> @location(0) vec4f {
             return in.color * vec4(1.0, 1.0, 1.0, opacity);
         }
         case GraphButtonShadow {
-            const SHADOW_RADIUS = 5.0;
-            const RADIUS = 5.0;
-
-            let shadow_radius = SHADOW_RADIUS * uniforms.scale_factor;
-            let radius = RADIUS * uniforms.scale_factor;
-            let sd = sd_rounded_box(size * (in.uv - 0.5), size / 2.0 - shadow_radius, vec4(radius));
-            let shadow = saturate(1.0 - sd / shadow_radius);
-            return in.color * vec4(1.0, 1.0, 1.0, shadow * shadow);
+            return rounded_box_shadow(in.uv, in.color, 5.0, 5.0);
         }
         case GraphButton, GraphButtonUpper, GraphButtonLower {
             const RADIUS = 5.0;
-            const STROKE_BRIGHTNESS = 0.9;
-            const STROKE_WIDTH = 1.0;
 
             let radius = RADIUS * uniforms.scale_factor;
-            let stroke_width = max(round(STROKE_WIDTH * uniforms.scale_factor), 1.0);
 
             var roundness: vec4f;
             switch in.kind {
@@ -195,9 +210,7 @@ fn fs_quad(in: VertexOutput) -> @location(0) vec4f {
             }
 
             let sd = sd_rounded_box(size * (in.uv - 0.5), size / 2.0, roundness);
-            let stroke = mix(STROKE_BRIGHTNESS, 1.0, saturate(0.5 - (sd + stroke_width)));
-            let opacity = saturate(0.5 - sd);
-            return in.color * vec4(vec3(stroke), opacity);
+            return stroked2(sd, in.color, 1.0, 0.9);
         }
         case HomeIcon {
             let p = in.uv * 2.0 - 1.0;
@@ -261,6 +274,80 @@ fn fs_quad(in: VertexOutput) -> @location(0) vec4f {
             sd *= size.x / 2.0;
             let opacity = saturate(0.5 - sd);
             return in.color * vec4(1.0, 1.0, 1.0, opacity);
+        }
+        case PopupShadow {
+            return rounded_box_shadow(in.uv, in.color, 10.0, 6.0);
+        }
+        case PopupBackground {
+            const RADIUS = 6.0;
+            const STROKE_BRIGHTNESS = 0.733;
+            const STROKE_WIDTH = 1.0;
+
+            let radius = RADIUS * uniforms.scale_factor;
+            let stroke_width = max(round(STROKE_WIDTH * uniforms.scale_factor), 1.0);
+            let sd = sd_rounded_box(size * (in.uv - 0.5), size / 2.0, vec4(radius));
+            let stroke = mix(STROKE_BRIGHTNESS, 1.0, saturate(0.5 - (sd + stroke_width)));
+            let opacity = saturate(0.5 - sd);
+            return in.color * vec4(vec3(stroke), opacity);
+        }
+        case PopupArrow {
+            const STROKE_BRIGHTNESS = 0.733;
+            const STROKE_WIDTH = 1.0;
+
+            let stroke_width = max(round(STROKE_WIDTH * uniforms.scale_factor), 1.0);
+            let p = size * vec2(in.uv.x, abs(in.uv.y - 0.5));
+            let sd = dot(p, normalize(vec2(-size.y / 2.0, size.x - stroke_width)));
+            let stroke = mix(STROKE_BRIGHTNESS, 1.0, saturate(0.5 - (sd + stroke_width)));
+            let opacity = saturate(0.5 - sd);
+            return in.color * vec4(vec3(stroke), opacity);
+        }
+        case PopupRadioLeft, PopupRadioMiddle, PopupRadioRight,
+             PopupRadioSelectedLeft, PopupRadioSelectedMiddle, PopupRadioSelectedRight {
+            const RADIUS = 3.0;
+            const STROKE_BRIGHTNESS = 0.7;
+            const STROKE_WIDTH = 1.0;
+
+            let radius = RADIUS * uniforms.scale_factor;
+            let stroke_width = max(round(STROKE_WIDTH * uniforms.scale_factor), 1.0);
+
+            var roundness: vec4f;
+            switch in.kind {
+                case PopupRadioMiddle, PopupRadioSelectedMiddle, default {
+                    roundness = vec4(0.0);
+                }
+                case PopupRadioLeft, PopupRadioSelectedLeft {
+                    roundness = vec4(0.0, 0.0, radius, radius);
+                }
+                case PopupRadioRight, PopupRadioSelectedRight {
+                    roundness = vec4(radius, radius, 0.0, 0.0);
+                }
+            }
+
+            let sd = sd_rounded_box(size * (in.uv - 0.5), size / 2.0, roundness);
+
+            if in.kind == PopupRadioMiddle || in.kind == PopupRadioLeft || in.kind == PopupRadioRight {
+                return stroked2(sd, in.color, 1.0, 0.7);
+            } else {
+                return stroked(sd, in.color * vec4(vec3(1.0), 0.25), 1.0, in.color);
+            }
+        }
+        case IncreaseSliderSpeedIcon {
+            let p = (in.uv * 2.0 - 1.0) * vec2(0.914, 1.0);
+            let y = abs(p.y);
+            let x = vec2(p.x, p.x - 0.76);
+
+            let sd2 = max(0.75 * y - 0.66 * x - 1.217, abs(0.66 * y + 0.75 * x + 0.01) - 0.12);
+            var sd = min(sd2.x, sd2.y);
+
+            sd *= size.y / 2.0;
+            let opacity = saturate(0.5 - sd);
+            return in.color * vec4(1.0, 1.0, 1.0, opacity);
+        }
+        case PopupButton {
+            const RADIUS = 4.0;
+            let radius = RADIUS * uniforms.scale_factor;
+            let sd = sd_rounded_box(size * (in.uv - 0.5), size / 2.0, vec4(radius));
+            return stroked2(sd, in.color, 1.0, 0.8);
         }
     }
 }

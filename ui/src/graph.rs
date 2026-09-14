@@ -10,7 +10,7 @@ use std::{
 
 use bytemuck::Zeroable;
 use eval::vm::{self, Instruction, VarIndex, Vm};
-use glam::{DVec2, DVec4, Vec2, dvec2, uvec2};
+use glam::{DVec2, Vec2, dvec2, uvec2};
 use parse::analyze_expression_list::PlotKind;
 use winit::{
     event::{ElementState, MouseButton},
@@ -26,7 +26,7 @@ use crate::{
         tile_fill::{Segment, TILE_SIZE, Tile},
     },
     quad_renderer::{Quad, QuadKind},
-    ui::{AnimatedValue, Color, CursorMode},
+    ui::{AnimatedValue, Button, Color, CursorMode},
     utility::{ClampToBounds, IfFiniteElse, flip_y, mix, set, snap},
 };
 
@@ -1111,62 +1111,6 @@ impl GraphPaper {
     }
 }
 
-#[derive(Default)]
-struct Button {
-    hovered: bool,
-    pressed: bool,
-}
-
-impl Button {
-    fn fill_color(&self) -> DVec4 {
-        if self.pressed { [232; 3] } else { [237; 3] }.to_rgbaf64()
-    }
-
-    fn icon_color(&self) -> DVec4 {
-        if self.pressed {
-            [0; 3]
-        } else if self.hovered {
-            [24; 3]
-        } else {
-            [95; 3]
-        }
-        .to_rgbaf64()
-    }
-}
-
-impl Button {
-    fn update(&mut self, ctx: &Context, event: &Event, bounds: Bounds) -> (Response, bool) {
-        let mut response = Response::default();
-
-        let new_hovered =
-            bounds.contains(ctx.cursor) && (self.pressed || !ctx.left_mouse_button_already_pressed);
-        if set(&mut self.hovered, new_hovered) && !self.pressed {
-            response.request_redraw();
-        }
-        let mut clicked = false;
-
-        match event {
-            Event::MouseInput(ElementState::Pressed, MouseButton::Left) if self.hovered => {
-                self.pressed = true;
-                response.consume_event();
-                response.request_redraw();
-            }
-            Event::MouseInput(ElementState::Released, MouseButton::Left) if self.pressed => {
-                self.pressed = false;
-                response.request_redraw();
-                clicked = self.hovered;
-            }
-            _ => {}
-        }
-
-        if self.pressed || self.hovered {
-            response.cursor_mode = CursorMode::Icon(CursorIcon::Pointer);
-        }
-
-        (response, clicked)
-    }
-}
-
 struct ViewportAnimation {
     start: Viewport,
     end: Viewport,
@@ -1371,8 +1315,11 @@ impl GraphButtons {
         let padding = 5.0;
         let stroke_width = 1.0; // hardcoded in quad.wgsl
         let mut offset = dvec2(bounds.right() - size - padding, bounds.top() + padding);
-        let shadow_color = (0, 0, 0, 0.055).to_rgbaf64();
+        let shadow_color = (0, 0, 0, 0.1).to_rgbaf64();
         let shadow_radius = 5.0; // hardcoded in quad.wgsl
+
+        let fill_color = |b: &Button| [[237, 237, 232][b.state()]; 3].to_rgbaf64();
+        let icon_color = |b: &Button| [[95, 24, 0][b.state()]; 3].to_rgbaf64();
 
         // +- shadow
         draw_quad(Quad {
@@ -1388,14 +1335,14 @@ impl GraphButtons {
             kind: QuadKind::GraphButtonUpper,
             p0: offset,
             p1: offset + size,
-            color: self.plus.fill_color(),
+            color: fill_color(&self.plus),
             ..Default::default()
         });
         draw_quad(
             Quad::rectangle(
                 offset + size / 2.0 - dvec2(1.25, 6.0),
                 offset + size / 2.0 + dvec2(1.25, 6.0),
-                self.plus.icon_color(),
+                icon_color(&self.plus),
             )
             .pixel_snap(ctx),
         );
@@ -1403,7 +1350,7 @@ impl GraphButtons {
             Quad::rectangle(
                 offset + size / 2.0 - dvec2(6.0, 1.25),
                 offset + size / 2.0 + dvec2(6.0, 1.25),
-                self.plus.icon_color(),
+                icon_color(&self.plus),
             )
             .pixel_snap(ctx),
         );
@@ -1414,14 +1361,14 @@ impl GraphButtons {
             kind: QuadKind::GraphButtonLower,
             p0: offset,
             p1: offset + size,
-            color: self.minus.fill_color(),
+            color: fill_color(&self.minus),
             ..Default::default()
         });
         draw_quad(
             Quad::rectangle(
                 offset + size / 2.0 - dvec2(6.0, 1.25),
                 offset + size / 2.0 + dvec2(6.0, 1.25),
-                self.minus.icon_color(),
+                icon_color(&self.minus),
             )
             .pixel_snap(ctx),
         );
@@ -1451,14 +1398,14 @@ impl GraphButtons {
             kind: QuadKind::GraphButton,
             p0: offset,
             p1: offset + size,
-            color: self.home.fill_color(),
+            color: fill_color(&self.home),
             ..Default::default()
         });
         draw_home_quad(Quad {
             kind: QuadKind::HomeIcon,
             p0: offset + dvec2(10.7, 12.3),
             p1: offset + dvec2(26.3, 24.7),
-            color: self.home.icon_color(),
+            color: icon_color(&self.home),
             ..Default::default()
         });
     }

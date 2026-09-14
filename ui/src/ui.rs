@@ -13,7 +13,7 @@ use winit::{
     window::{CursorIcon, Window},
 };
 
-use crate::utility::AsGlam;
+use crate::utility::{AsGlam, set};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RedrawRequest {
@@ -514,5 +514,56 @@ impl AnimatedValue {
         self.duration = duration;
         self.start_time = current_time;
         self.target = target;
+    }
+}
+
+#[derive(Default)]
+pub struct Button {
+    pub hovered: bool,
+    pub pressed: bool,
+}
+
+impl Button {
+    pub fn state(&self) -> usize {
+        if self.pressed {
+            2
+        } else if self.hovered {
+            1
+        } else {
+            0
+        }
+    }
+}
+
+impl Button {
+    pub fn update(&mut self, ctx: &Context, event: &Event, bounds: Bounds) -> (Response, bool) {
+        let mut response = Response::default();
+
+        let new_hovered =
+            bounds.contains(ctx.cursor) && (self.pressed || !ctx.left_mouse_button_already_pressed);
+        if set(&mut self.hovered, new_hovered) && !self.pressed {
+            response.request_redraw();
+        }
+        let mut clicked = false;
+
+        match event {
+            Event::MouseInput(ElementState::Pressed, MouseButton::Left) if self.hovered => {
+                self.pressed = true;
+                response.consume_event();
+                response.request_redraw();
+            }
+            Event::MouseInput(ElementState::Released, MouseButton::Left) if self.pressed => {
+                self.pressed = false;
+                response.request_redraw();
+                clicked = self.hovered;
+            }
+            _ => {}
+        }
+
+        if self.pressed || self.hovered {
+            response.cursor_mode = CursorMode::Icon(CursorIcon::Pointer);
+        }
+
+        (response, clicked)
     }
 }

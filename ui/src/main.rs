@@ -9,6 +9,7 @@ mod ui;
 mod utility;
 
 use std::{
+    collections::VecDeque,
     f64,
     sync::Arc,
     time::{Duration, Instant},
@@ -62,6 +63,37 @@ fn main() -> Result<(), winit::error::EventLoopError> {
     EventLoop::new()?.run_app(&mut AppRaw(None))
 }
 
+struct FrameTimeTracker {
+    instants: VecDeque<Instant>,
+    smoothing: Duration,
+}
+
+impl FrameTimeTracker {
+    fn new(smoothing: Duration) -> Self {
+        Self {
+            instants: VecDeque::from([Instant::now()]),
+            smoothing,
+        }
+    }
+
+    fn track(&mut self) -> (Duration, u32) {
+        let elapsed = self.instants.front().unwrap().elapsed();
+        let n_frames = self.instants.len() as u32;
+        let frame_time = elapsed / n_frames;
+
+        while self
+            .instants
+            .front()
+            .is_some_and(|i| i.elapsed() >= self.smoothing)
+        {
+            self.instants.pop_front();
+        }
+
+        self.instants.push_back(Instant::now());
+        (frame_time, n_frames)
+    }
+}
+
 struct App {
     events: Vec<(WindowEvent, f64)>,
     request_redraw: bool,
@@ -73,6 +105,7 @@ struct App {
     main_thing: MainThing,
     context: Context,
     start_time: Instant,
+    frame_time_tracker: FrameTimeTracker,
 }
 
 pub struct AppGraphics {
@@ -156,6 +189,7 @@ impl App {
             main_thing,
             graphics,
             start_time: Instant::now(),
+            frame_time_tracker: FrameTimeTracker::new(Duration::from_secs_f64(1.0)),
         }
     }
 
@@ -293,6 +327,14 @@ impl App {
                     self.graphics.queue.submit(command_buffer);
                     self.window.pre_present_notify();
                     surface_texture.present();
+
+                    let (frame_time, n_frames) = self.frame_time_tracker.track();
+                    if false {
+                        println!(
+                            "{n_frames} frame average: {frame_time:#.1?} ({:.1} fps)",
+                            1.0 / frame_time.as_secs_f64()
+                        );
+                    }
                 }
             }
             WindowEvent::CloseRequested => event_loop.exit(),
@@ -377,31 +419,6 @@ impl MainThing {
         let offset = x - ctx.cursor.x;
         let hovering = offset.abs() <= RESIZER_WIDTH / 2.0;
 
-        if let Event::MouseInput(state, MouseButton::Left) = event {
-            match state {
-                ElementState::Pressed if hovering => {
-                    self.dragging = Some(offset);
-                    response.consume_event();
-                }
-                ElementState::Released if self.dragging.is_some() => {
-                    self.dragging = None;
-                    response.consume_event();
-                    self.raw_resizer_size = self.clamped_resizer_size;
-                }
-                _ => {}
-            }
-        }
-
-        if hovering || self.dragging.is_some() {
-            response.cursor_mode = CursorMode::Icon(CursorIcon::ColResize);
-
-            // Really should be using TouchPhase here to not interrupt people
-            // who started using these before we got hovered
-            if matches!(event, Event::MouseWheel(_) | Event::PinchGesture(_)) {
-                response.consume_event();
-            }
-        }
-
         let x = ctx.round(x);
         let left = Bounds {
             pos: bounds.pos,
@@ -411,6 +428,37 @@ impl MainThing {
             pos: dvec2(x, bounds.pos.y),
             size: dvec2(bounds.right() - x, bounds.size.y),
         };
+
+        response = response.or_else(|| self.expression_list.update_popup(ctx, event, left));
+
+        response = response.or_else(|| {
+            let mut response = Response::default();
+            if let Event::MouseInput(state, MouseButton::Left) = event {
+                match state {
+                    ElementState::Pressed if hovering => {
+                        self.dragging = Some(offset);
+                        response.consume_event();
+                    }
+                    ElementState::Released if self.dragging.is_some() => {
+                        self.dragging = None;
+                        response.consume_event();
+                        self.raw_resizer_size = self.clamped_resizer_size;
+                    }
+                    _ => {}
+                }
+            }
+
+            if hovering || self.dragging.is_some() {
+                response.cursor_mode = CursorMode::Icon(CursorIcon::ColResize);
+
+                // Really should be using TouchPhase here to not interrupt people
+                // who started using these before we got hovered
+                if matches!(event, Event::MouseWheel(_) | Event::PinchGesture(_)) {
+                    response.consume_event();
+                }
+            }
+            response
+        });
 
         response.or_else(|| {
             let (r_graph, dragged_point) = self.graph_paper.update(ctx, event, right);
@@ -477,6 +525,7 @@ impl MainThing {
 
         self.graph_paper.render_buttons(ctx, right, draw_quad);
         self.expression_list.render(ctx, left, draw_quad);
+        self.expression_list.render_popup(ctx, left, draw_quad);
         self.quad_renderer
             .render(ctx, graphics, view, &mut encoder, &vertices, &indices);
         Some(encoder.finish())

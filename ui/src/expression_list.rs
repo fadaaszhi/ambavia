@@ -1,4 +1,5 @@
 use std::fmt::Write;
+use std::iter::zip;
 use std::ops::DerefMut;
 use std::{collections::HashMap, ops::Deref};
 
@@ -13,7 +14,7 @@ use winit::{
 use crate::katex_font::Font;
 use crate::label::{Label, render_label};
 use crate::quad_renderer::{Quad, QuadKind};
-use crate::ui::{AnimatedValue, ClickDragTracker, Color, PRIMARY_COLOR};
+use crate::ui::{AnimatedValue, Button, ClickDragTracker, Color, PRIMARY_COLOR};
 use crate::utility::IfFiniteElse;
 use crate::{
     graph::{Geometry, GeometryKind},
@@ -269,10 +270,18 @@ struct SliderUi {
     name_field: MathField,
     step_label: Label<'static>,
 
-    play_button: GutterButton,
-    mode_button: GutterButton,
     animated_value: f64,
     expected_value: Option<f64>,
+    play_button: GutterButton,
+    mode_button: GutterButton,
+
+    is_popup_open: bool,
+    animation_mode_label: Label<'static>,
+    mode_radio_buttons: [Button; 4],
+    speed_label: Label<'static>,
+    decrease_speed_button: Button,
+    increase_speed_button: Button,
+    should_close_popup: bool,
 }
 
 struct SliderEditMinNameMaxLayout {
@@ -313,6 +322,17 @@ struct SliderGutterLayout {
     mode_button_hitbox: Bounds,
 }
 
+struct SliderPopupLayout {
+    animation_mode_cursor: DVec2,
+    mode_buttons: [Bounds; 4],
+    mode_button_hitboxes: [Bounds; 4],
+    speed_cursor: DVec2,
+    decrease_speed_button: Bounds,
+    increase_speed_button: Bounds,
+    arrow: Option<Bounds>,
+    bounds: Bounds,
+}
+
 impl SliderUi {
     const SLIDER_BAR_RADIUS: f64 = 3.0;
     const SLIDER_TICK_RADIUS: f64 = Self::SLIDER_BAR_RADIUS / 3.0;
@@ -332,10 +352,18 @@ impl SliderUi {
             name,
             step_label: Label::new("Step:", 15.7, Font::MainRegular),
 
-            play_button: Default::default(),
-            mode_button: Default::default(),
             animated_value: 0.0,
             expected_value: None,
+            play_button: Default::default(),
+            mode_button: Default::default(),
+
+            is_popup_open: false,
+            animation_mode_label: Label::new("Animation Mode", 16.0, Font::MainRegular),
+            mode_radio_buttons: Default::default(),
+            speed_label: Label::new("Speed", 16.0, Font::MainRegular),
+            decrease_speed_button: Default::default(),
+            increase_speed_button: Default::default(),
+            should_close_popup: false,
         }
     }
 
@@ -542,10 +570,18 @@ impl SliderUi {
         field_has_focus: bool,
         slider: &mut Slider,
     ) -> (Response, Option<f64>, Option<Message>, Bounds) {
-        match self.layout(ctx, padding, top_left, width, field_has_focus, slider) {
+        let mut result = match self.layout(ctx, padding, top_left, width, field_has_focus, slider) {
             SliderLayout::Edit(layout) => self.update_slider_edit(ctx, event, slider, layout),
             SliderLayout::Bar(layout) => self.update_slider_bar(ctx, event, slider, layout),
+        };
+
+        if self.should_close_popup {
+            self.should_close_popup = false;
+            self.is_popup_open = false;
+            result.0.request_redraw();
         }
+
+        result
     }
 
     fn update_slider_edit(
@@ -1056,29 +1092,7 @@ impl SliderUi {
             event,
             l.mode_button_hitbox.contains(ctx.cursor),
             |response| {
-                let original_loop_mode = slider.loop_mode;
-                slider.loop_mode = match slider.loop_mode {
-                    SliderLoopMode::LoopForwardReverse => SliderLoopMode::LoopForward,
-                    SliderLoopMode::LoopForward => SliderLoopMode::PlayOnce,
-                    SliderLoopMode::PlayOnce => SliderLoopMode::PlayIndefinitely,
-                    SliderLoopMode::PlayIndefinitely => SliderLoopMode::LoopForwardReverse,
-                };
-                slider.play_direction = 1.0;
-
-                if slider.loop_mode == SliderLoopMode::PlayIndefinitely {
-                    slider.hard_min.0.clear();
-                    slider.hard_max.0.clear();
-                } else if slider.is_playing {
-                    self.animated_value = self.min.expect("button only shows if no error");
-                    self.expected_value = None;
-
-                    if original_loop_mode == SliderLoopMode::PlayIndefinitely {
-                        // TODO fix soft bounds resetting, it's not working because
-                        // somewhere later they are getting set based on stale value
-                        slider.soft_min = SLIDER_SOFT_MIN_DEFAULT;
-                        slider.soft_max = SLIDER_SOFT_MAX_DEFAULT;
-                    }
-                }
+                self.is_popup_open ^= true;
 
                 response.request_redraw();
             },
@@ -1112,16 +1126,385 @@ impl SliderUi {
             draw_quad,
         );
         self.mode_button.render(
-            match slider.loop_mode {
-                SliderLoopMode::LoopForwardReverse => QuadKind::LoopForwardReverseIcon,
-                SliderLoopMode::LoopForward => QuadKind::LoopForwardIcon,
-                SliderLoopMode::PlayOnce => QuadKind::PlayOnceIcon,
-                SliderLoopMode::PlayIndefinitely => QuadKind::PlayIndefinitelyIcon,
-            },
+            slider.loop_mode.into(),
             l.mode_button,
             expression_is_focussed,
             draw_quad,
         );
+    }
+
+    fn layout_popup(
+        &mut self,
+        ctx: &Context,
+        expression_list_bounds: Bounds,
+        gutter_bounds: Bounds,
+    ) -> Option<SliderPopupLayout> {
+        if !self.is_popup_open {
+            return None;
+        }
+        let Some(g) = self.layout_gutter(ctx, gutter_bounds) else {
+            self.is_popup_open = false;
+            return None;
+        };
+
+        let padding = 13.0;
+        let border_width = 1.0; // hardcoded in quad.wgsl
+        let mode_button_size = dvec2(30.0, 26.0); // including borders
+        const N_MODES: usize = 4;
+        let mode_buttons_width =
+            mode_button_size.x * N_MODES as f64 - (N_MODES - 1) as f64 * border_width;
+        let speed_button_size = dvec2(26.0, 26.0);
+        let speed_number_width = 45.0;
+        let speed_buttons_width = speed_button_size.x * 2.0 + speed_number_width;
+
+        let width = max([
+            self.animation_mode_label.size().x,
+            mode_buttons_width,
+            self.speed_label.size().x,
+            speed_buttons_width,
+        ]) + 2.0 * padding;
+
+        let arrow_tip = g.mode_button.pos + g.mode_button.size * dvec2(1.0, 0.5) + dvec2(3.0, 0.0);
+
+        let top = arrow_tip.y - 19.0;
+        let animation_mode_cursor_y = top + padding + self.animation_mode_label.scale;
+        let mode_buttons_y = animation_mode_cursor_y + 9.0;
+        let speed_cursor_y = mode_buttons_y + mode_button_size.y + 11.0 + self.speed_label.scale;
+        let speed_buttons_y = speed_cursor_y + 9.0;
+        let bottom = speed_buttons_y + speed_button_size.y + padding;
+
+        let clearance = 13.0;
+        let bottom1 = bottom.min(expression_list_bounds.bottom() - clearance);
+        let top1 = top + bottom1 - bottom;
+        let top2 = top1.max(expression_list_bounds.top() + clearance);
+        let bottom2 = bottom1 + top2 - top1;
+
+        let offset_y = top2 - top;
+        let top = top2;
+        let bottom = bottom2;
+
+        let arrow_half_height = 9.0;
+        let arrow_width = arrow_half_height;
+        let corner_radius = 6.0; // hardcoded in quad.wgsl
+        let is_arrow_shown = top + corner_radius < arrow_tip.y - arrow_half_height
+            && arrow_tip.y + arrow_half_height < bottom - corner_radius;
+
+        let arrow = is_arrow_shown.then_some(Bounds {
+            pos: arrow_tip + dvec2(0.0, -arrow_half_height),
+            size: dvec2(arrow_width + border_width, 2.0 * arrow_half_height),
+        });
+
+        let left = arrow_tip.x + arrow_width;
+        let animation_mode_cursor = dvec2(left + padding, animation_mode_cursor_y + offset_y);
+        let mode_buttons = std::array::from_fn::<_, N_MODES, _>(|i| Bounds {
+            pos: dvec2(
+                left + padding + i as f64 * (mode_button_size.x - border_width),
+                mode_buttons_y + offset_y,
+            ),
+            size: mode_button_size,
+        });
+        let mode_button_hitboxes = mode_buttons.map(|b| Bounds {
+            pos: b.pos + dvec2(border_width * 0.5, 0.0),
+            size: b.size - dvec2(border_width, 0.0),
+        });
+        let speed_cursor = dvec2(left + padding, speed_cursor_y + offset_y);
+        let decrease_speed_button = ctx.roundb(Bounds {
+            pos: dvec2(left + padding, speed_buttons_y + offset_y),
+            size: speed_button_size,
+        });
+        let increase_speed_button = ctx.roundb(Bounds {
+            pos: dvec2(
+                decrease_speed_button.right() + speed_number_width,
+                decrease_speed_button.top(),
+            ),
+            size: speed_button_size,
+        });
+
+        let bounds = ctx.roundb(Bounds {
+            pos: dvec2(left, top),
+            size: dvec2(width, bottom - top),
+        });
+
+        Some(SliderPopupLayout {
+            animation_mode_cursor,
+            mode_buttons: mode_buttons.map(|b| ctx.roundb(b)),
+            mode_button_hitboxes,
+            speed_cursor,
+            decrease_speed_button,
+            increase_speed_button,
+            arrow,
+            bounds,
+        })
+    }
+
+    fn decreased_increased_slider_speeds(animation_period: f64) -> (Option<f64>, Option<f64>) {
+        let slider_speeds = [
+            0.05, 0.1, 0.15, 0.2, 0.35, 0.5, 0.75, 1.0, 1.5, 2.0, 3.5, 5.0, 7.5, 10.0, 15.0, 20.0,
+        ];
+        if animation_period <= 0.0 {
+            (slider_speeds.last().cloned(), None)
+        } else {
+            let current_speed = 4.0 / animation_period;
+            let decreased_speed = slider_speeds.into_iter().rev().find(|s| *s < current_speed);
+            let increased_speed = slider_speeds.into_iter().find(|s| *s > current_speed);
+            (decreased_speed, increased_speed)
+        }
+    }
+
+    fn update_popup(
+        &mut self,
+        ctx: &Context,
+        event: &Event,
+        slider: &mut Slider,
+        expression_list_bounds: Bounds,
+        gutter_bounds: Bounds,
+    ) -> Response {
+        let mut response = Response::default();
+        let Some(l) = self.layout_popup(ctx, expression_list_bounds, gutter_bounds) else {
+            return response;
+        };
+
+        for (i, (button, hitbox)) in
+            zip(&mut self.mode_radio_buttons, l.mode_button_hitboxes).enumerate()
+        {
+            let (r, clicked) = button.update(ctx, event, hitbox);
+            response = response.or(r);
+
+            if clicked {
+                let original_loop_mode = slider.loop_mode;
+                slider.loop_mode = [
+                    SliderLoopMode::LoopForwardReverse,
+                    SliderLoopMode::LoopForward,
+                    SliderLoopMode::PlayOnce,
+                    SliderLoopMode::PlayIndefinitely,
+                ][i];
+                slider.play_direction = 1.0;
+
+                if slider.loop_mode == SliderLoopMode::PlayIndefinitely {
+                    slider.hard_min.0.clear();
+                    slider.hard_max.0.clear();
+                } else if slider.is_playing {
+                    self.animated_value = self.min.expect("button only shows if no error");
+                    self.expected_value = None;
+
+                    if original_loop_mode == SliderLoopMode::PlayIndefinitely {
+                        // TODO fix soft bounds resetting, it's not working because
+                        // somewhere later they are getting set based on stale value
+                        slider.soft_min = SLIDER_SOFT_MIN_DEFAULT;
+                        slider.soft_max = SLIDER_SOFT_MAX_DEFAULT;
+                    }
+                }
+                response.request_redraw();
+            }
+        }
+
+        let (decreased, increased) =
+            Self::decreased_increased_slider_speeds(slider.animation_period);
+
+        if let Some(decreased) = decreased {
+            let (r, clicked) =
+                self.decrease_speed_button
+                    .update(ctx, event, l.decrease_speed_button);
+            response = response.or(r);
+            if clicked {
+                slider.animation_period = 4.0 / decreased;
+            }
+        }
+
+        if let Some(increased) = increased {
+            let (r, clicked) =
+                self.increase_speed_button
+                    .update(ctx, event, l.increase_speed_button);
+            response = response.or(r);
+            if clicked {
+                slider.animation_period = 4.0 / increased;
+            }
+        }
+
+        // TODO figure out more robust way to make popups steal the correct inputs from things beneath them
+        if l.bounds.contains(ctx.cursor) {
+            let mut r = Response::default();
+            if matches!(
+                event,
+                Event::MouseInput(ElementState::Pressed, _)
+                    | Event::PinchGesture(_)
+                    | Event::MouseWheel(_)
+            ) {
+                r.consume_event();
+            }
+            r.cursor_mode = CursorMode::Icon(CursorIcon::Default);
+            response = response.or(r)
+        } else if matches!(event, Event::MouseInput(ElementState::Pressed, _))
+            && let Some(l) = self.layout_gutter(ctx, gutter_bounds)
+            && !l.mode_button_hitbox.contains(ctx.cursor)
+        {
+            // don't just set self.is_popup_open = true because then we might
+            // accidentally reopen if we had clicked on mode button
+            self.should_close_popup = true;
+            response.request_redraw();
+        }
+
+        response
+    }
+
+    fn render_popup(
+        &mut self,
+        ctx: &Context,
+        slider: &Slider,
+        expression_list_bounds: Bounds,
+        gutter_bounds: Bounds,
+        draw_quad: &mut impl FnMut(Quad),
+    ) {
+        let Some(l) = self.layout_popup(ctx, expression_list_bounds, gutter_bounds) else {
+            return;
+        };
+
+        let shadow_radius = 10.0; // hardcoded in quad.wgsl
+        let shadow_offset = dvec2(0.0, 5.0);
+        draw_quad(Quad {
+            kind: QuadKind::PopupShadow,
+            p0: l.bounds.pos - shadow_radius + shadow_offset,
+            p1: l.bounds.pos + l.bounds.size + shadow_radius + shadow_offset,
+            color: dvec4(0.0, 0.0, 0.0, 0.2),
+            ..Default::default()
+        });
+
+        draw_quad(Quad {
+            kind: QuadKind::PopupBackground,
+            p0: l.bounds.pos,
+            p1: l.bounds.pos + l.bounds.size,
+            color: DVec4::ONE,
+            ..Default::default()
+        });
+
+        if let Some(arrow) = l.arrow {
+            draw_quad(Quad {
+                kind: QuadKind::PopupArrow,
+                p0: arrow.pos,
+                p1: arrow.pos + arrow.size,
+                color: DVec4::ONE,
+                ..Default::default()
+            });
+        }
+
+        self.animation_mode_label
+            .render_from_cursor(l.animation_mode_cursor, [90; 3], draw_quad);
+
+        let mut order = [
+            (0, SliderLoopMode::LoopForwardReverse),
+            (1, SliderLoopMode::LoopForward),
+            (2, SliderLoopMode::PlayOnce),
+            (3, SliderLoopMode::PlayIndefinitely),
+        ];
+        order.sort_by_key(|(i, mode)| {
+            if *mode == slider.loop_mode {
+                4
+            } else {
+                self.mode_radio_buttons[*i].state()
+            }
+        });
+
+        for (i, mode) in order {
+            let b = &l.mode_buttons[i];
+            draw_quad(Quad {
+                kind: match (i, mode == slider.loop_mode) {
+                    (0, true) => QuadKind::PopupRadioSelectedLeft,
+                    (0, false) => QuadKind::PopupRadioLeft,
+                    (3, true) => QuadKind::PopupRadioSelectedRight,
+                    (3, false) => QuadKind::PopupRadioRight,
+                    (_, true) => QuadKind::PopupRadioSelectedMiddle,
+                    (_, false) => QuadKind::PopupRadioMiddle,
+                },
+                p0: b.pos,
+                p1: b.pos + b.size,
+                color: if mode == slider.loop_mode {
+                    PRIMARY_COLOR
+                } else {
+                    [[255, 245, 204][self.mode_radio_buttons[i].state()]; 3]
+                }
+                .to_rgbaf64(),
+                ..Default::default()
+            });
+            draw_quad(
+                Quad {
+                    kind: mode.into(),
+                    p0: b.pos + b.size * dvec2(0.234, 0.244),
+                    p1: b.pos + b.size * dvec2(0.766, 0.804),
+                    color: if mode == slider.loop_mode {
+                        PRIMARY_COLOR
+                    } else {
+                        [[38, 0, 0][self.mode_radio_buttons[i].state()]; 3]
+                    }
+                    .to_rgbaf64(),
+                    ..Default::default()
+                }
+                .pixel_snap(ctx),
+            );
+        }
+
+        self.speed_label
+            .render_from_cursor(l.speed_cursor, [90; 3], draw_quad);
+
+        let (decreased, increased) =
+            Self::decreased_increased_slider_speeds(slider.animation_period);
+
+        draw_quad(Quad {
+            kind: QuadKind::PopupButton,
+            p0: l.decrease_speed_button.pos,
+            p1: l.decrease_speed_button.pos + l.decrease_speed_button.size,
+            color: if decreased.is_some() {
+                [[255, 245, 204][self.decrease_speed_button.state()]; 3].to_rgbaf64()
+            } else {
+                [255; 3].with_opacity(0.25)
+            },
+            ..Default::default()
+        });
+
+        draw_quad(Quad {
+            kind: QuadKind::IncreaseSliderSpeedIcon, // x mirrored
+            p0: l.decrease_speed_button.pos + l.decrease_speed_button.size * dvec2(0.645, 0.337),
+            p1: l.decrease_speed_button.pos + l.decrease_speed_button.size * dvec2(0.355, 0.663),
+            color: if decreased.is_some() {
+                [[102, 34, 0][self.decrease_speed_button.state()]; 3].to_rgbaf64()
+            } else {
+                [102; 3].with_opacity(0.25)
+            },
+            ..Default::default()
+        });
+
+        let mut speed_number = (4.0 / slider.animation_period).to_string();
+        speed_number.push('×');
+        let label = Label::new(&speed_number, 15.0, Font::MainRegular);
+        let size = label.size();
+        let middle = dvec2(
+            (l.decrease_speed_button.right() + l.increase_speed_button.left()) / 2.0,
+            l.decrease_speed_button.pos.y + l.decrease_speed_button.size.y / 2.0,
+        );
+        label.render_from_top_left(middle - size / 2.0, [0; 3], draw_quad);
+
+        draw_quad(Quad {
+            kind: QuadKind::PopupButton,
+            p0: l.increase_speed_button.pos,
+            p1: l.increase_speed_button.pos + l.increase_speed_button.size,
+            color: if increased.is_some() {
+                [[255, 245, 204][self.increase_speed_button.state()]; 3].to_rgbaf64()
+            } else {
+                [255; 3].with_opacity(0.25)
+            },
+            ..Default::default()
+        });
+
+        draw_quad(Quad {
+            kind: QuadKind::IncreaseSliderSpeedIcon,
+            p0: l.increase_speed_button.pos + l.increase_speed_button.size * dvec2(0.355, 0.337),
+            p1: l.increase_speed_button.pos + l.increase_speed_button.size * dvec2(0.645, 0.663),
+            color: if increased.is_some() {
+                [[102, 34, 0][self.increase_speed_button.state()]; 3].to_rgbaf64()
+            } else {
+                [102; 3].with_opacity(0.25)
+            },
+            ..Default::default()
+        });
     }
 }
 
@@ -1192,6 +1575,7 @@ impl FieldUi {
             kind: QuadKind::OutputValueBox,
             p0: bounds.pos,
             p1: bounds.pos + bounds.size,
+            color: dvec4(0.96, 0.96, 0.96, 1.0),
             ..Default::default()
         });
         self.0.render(ctx, bounds, draw_quad);
@@ -1559,6 +1943,17 @@ enum SliderLoopMode {
     PlayIndefinitely,
 }
 
+impl From<SliderLoopMode> for QuadKind {
+    fn from(value: SliderLoopMode) -> Self {
+        match value {
+            SliderLoopMode::LoopForwardReverse => QuadKind::LoopForwardReverseIcon,
+            SliderLoopMode::LoopForward => QuadKind::LoopForwardIcon,
+            SliderLoopMode::PlayOnce => QuadKind::PlayOnceIcon,
+            SliderLoopMode::PlayIndefinitely => QuadKind::PlayIndefinitelyIcon,
+        }
+    }
+}
+
 /// If the hard bound is empty, then the soft bound is used.
 struct Slider {
     hard_min: (InlineField, Result<parse::ast::Expression, String>),
@@ -1807,6 +2202,25 @@ impl Expression {
         }
     }
 
+    fn update_popup(
+        &mut self,
+        ctx: &Context,
+        event: &Event,
+        expression_list_bounds: Bounds,
+        gutter_bounds: Bounds,
+    ) -> Response {
+        match &mut self.output.ui {
+            OutputUi::Slider(ui) => ui.update_popup(
+                ctx,
+                event,
+                &mut self.slider,
+                expression_list_bounds,
+                gutter_bounds,
+            ),
+            _ => Response::default(),
+        }
+    }
+
     fn set_latex(&mut self, latex: &[latex_tree::Node]) {
         self.field = MathField::from(latex);
         self.parse_ast();
@@ -1914,6 +2328,25 @@ impl Expression {
             OutputUi::Slider(ui) => {
                 ui.render_gutter(ctx, bounds, has_focus, &mut self.slider, draw_quad)
             }
+            _ => {}
+        }
+    }
+
+    fn render_popup(
+        &mut self,
+        ctx: &Context,
+        expression_list_bounds: Bounds,
+        gutter_bounds: Bounds,
+        draw_quad: &mut impl FnMut(Quad),
+    ) {
+        match &mut self.output.ui {
+            OutputUi::Slider(ui) => ui.render_popup(
+                ctx,
+                &self.slider,
+                expression_list_bounds,
+                gutter_bounds,
+                draw_quad,
+            ),
             _ => {}
         }
     }
@@ -3196,6 +3629,53 @@ impl ExpressionList {
                 color,
                 ..Default::default()
             });
+        }
+    }
+
+    pub fn update_popup(&mut self, ctx: &Context, event: &Event, bounds: Bounds) -> Response {
+        let mut response = Response::default();
+        let separator_width = ctx.round_nonzero(Self::SEPARATOR_WIDTH);
+        let gutter_width = ctx.round_nonzero(Self::GUTTER_WIDTH);
+        let mut expression_top = bounds.pos.y - self.scroll;
+
+        for expression in &mut self.expressions {
+            let r = expression.update_popup(
+                ctx,
+                event,
+                bounds,
+                Bounds {
+                    pos: dvec2(bounds.left(), expression_top),
+                    size: dvec2(gutter_width, expression.height()),
+                },
+            );
+            response = response.or(r);
+            expression_top += expression.height() + separator_width;
+        }
+
+        response
+    }
+
+    pub fn render_popup(
+        &mut self,
+        ctx: &Context,
+        bounds: Bounds,
+        draw_quad: &mut impl FnMut(Quad),
+    ) {
+        let separator_width = ctx.round_nonzero(Self::SEPARATOR_WIDTH);
+        let gutter_width = ctx.round_nonzero(Self::GUTTER_WIDTH);
+        let mut expression_top = bounds.pos.y - self.scroll;
+
+        for expression in &mut self.expressions {
+            expression.render_popup(
+                ctx,
+                bounds,
+                Bounds {
+                    pos: dvec2(bounds.left(), expression_top),
+                    size: dvec2(gutter_width, expression.height()),
+                },
+                draw_quad,
+            );
+            expression_top += expression.height() + separator_width;
         }
     }
 }

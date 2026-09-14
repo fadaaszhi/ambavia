@@ -28,6 +28,17 @@ pub enum QuadKind {
     LoopForwardIcon,
     PlayOnceIcon,
     PlayIndefinitelyIcon,
+    PopupShadow,
+    PopupBackground,
+    PopupArrow,
+    PopupRadioLeft,
+    PopupRadioMiddle,
+    PopupRadioRight,
+    PopupRadioSelectedLeft,
+    PopupRadioSelectedMiddle,
+    PopupRadioSelectedRight,
+    PopupButton,
+    IncreaseSliderSpeedIcon,
 }
 
 pub struct Quad {

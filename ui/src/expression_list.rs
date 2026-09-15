@@ -1009,16 +1009,24 @@ impl SliderUi {
         l.bounds.size.y
     }
 
-    fn layout_gutter(&self, ctx: &Context, bounds: Bounds) -> Option<SliderGutterLayout> {
-        // TODO when slider modes are implemented, "play indefinitely" only requires step to be Some
-        let (Some(_value), Some(min), Some(max), Some(_step)) =
-            (self.value, self.min, self.max, self.step)
-        else {
-            return None;
-        };
+    fn layout_gutter(
+        &self,
+        ctx: &Context,
+        bounds: Bounds,
+        slider: &Slider,
+    ) -> Option<SliderGutterLayout> {
+        if slider.loop_mode != SliderLoopMode::PlayIndefinitely {
+            let (Some(_value), Some(min), Some(max), Some(_step)) =
+                (self.value, self.min, self.max, self.step)
+            else {
+                return None;
+            };
 
-        // TODO find a way to not repeat this validity check
-        if min > max {
+            // TODO find a way to not repeat this validity check
+            if min > max {
+                return None;
+            }
+        } else if self.value.is_none() || self.step.is_none() {
             return None;
         }
 
@@ -1057,7 +1065,7 @@ impl SliderUi {
         bounds: Bounds,
     ) -> Response {
         let mut response = Response::default();
-        let Some(l) = self.layout_gutter(ctx, bounds) else {
+        let Some(l) = self.layout_gutter(ctx, bounds, slider) else {
             return response;
         };
 
@@ -1108,7 +1116,7 @@ impl SliderUi {
         slider: &mut Slider,
         draw_quad: &mut impl FnMut(Quad),
     ) {
-        let Some(l) = self.layout_gutter(ctx, bounds) else {
+        let Some(l) = self.layout_gutter(ctx, bounds, slider) else {
             return;
         };
         self.play_button.render(
@@ -1138,11 +1146,12 @@ impl SliderUi {
         ctx: &Context,
         expression_list_bounds: Bounds,
         gutter_bounds: Bounds,
+        slider: &Slider,
     ) -> Option<SliderPopupLayout> {
         if !self.is_popup_open {
             return None;
         }
-        let Some(g) = self.layout_gutter(ctx, gutter_bounds) else {
+        let Some(g) = self.layout_gutter(ctx, gutter_bounds, slider) else {
             self.is_popup_open = false;
             return None;
         };
@@ -1260,7 +1269,7 @@ impl SliderUi {
         gutter_bounds: Bounds,
     ) -> Response {
         let mut response = Response::default();
-        let Some(l) = self.layout_popup(ctx, expression_list_bounds, gutter_bounds) else {
+        let Some(l) = self.layout_popup(ctx, expression_list_bounds, gutter_bounds, slider) else {
             return response;
         };
 
@@ -1335,7 +1344,7 @@ impl SliderUi {
             r.cursor_mode = CursorMode::Icon(CursorIcon::Default);
             response = response.or(r)
         } else if matches!(event, Event::MouseInput(ElementState::Pressed, _))
-            && let Some(l) = self.layout_gutter(ctx, gutter_bounds)
+            && let Some(l) = self.layout_gutter(ctx, gutter_bounds, slider)
             && !l.mode_button_hitbox.contains(ctx.cursor)
         {
             // don't just set self.is_popup_open = true because then we might
@@ -1355,7 +1364,7 @@ impl SliderUi {
         gutter_bounds: Bounds,
         draw_quad: &mut impl FnMut(Quad),
     ) {
-        let Some(l) = self.layout_popup(ctx, expression_list_bounds, gutter_bounds) else {
+        let Some(l) = self.layout_popup(ctx, expression_list_bounds, gutter_bounds, slider) else {
             return;
         };
 

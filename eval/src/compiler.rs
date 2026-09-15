@@ -57,15 +57,18 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
         Expression::ListRange {
             before_ellipsis,
             after_ellipsis,
-        } => {
-            let [start] = &before_ellipsis[..] else {
-                todo!()
-            };
-            let [end] = &after_ellipsis[..] else { todo!() };
-            let start = compile_expression(start, builder);
-            let end = compile_expression(end, builder);
-            builder.instr2(BuildListFromRange, start, end)
-        }
+        } => match (&before_ellipsis[..], &after_ellipsis[..]) {
+            ([start], [end]) => {
+                let start = compile_expression(start, builder);
+                let end = compile_expression(end, builder);
+                builder.instr2(BuildListFromRange, start, end)
+            }
+            ([], [end]) => {
+                let end = compile_expression(end, builder);
+                builder.instr1(BuildListFromRangeEnd, end)
+            }
+            _ => todo!(),
+        },
         Expression::Broadcast {
             scalars,
             vectors,

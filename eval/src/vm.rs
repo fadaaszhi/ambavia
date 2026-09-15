@@ -176,6 +176,7 @@ pub enum Instruction {
     BuildList(usize),
     BuildPolygonList(usize),
     BuildListFromRange,
+    BuildListFromRangeEnd,
     Append(usize),
     Append2(usize),
     Append3(usize),
@@ -1453,6 +1454,13 @@ impl<'a, 'i> Vm<'a, 'i> {
                     } else {
                         (b..=a).rev().map(|i| i as f64).collect()
                     })));
+                }
+                Instruction::BuildListFromRangeEnd => {
+                    let a = self.pop().number().round() as i64;
+
+                    self.push(Rc::new(RefCell::new(
+                        (1..=a).map(|i| i as f64).collect::<Vec<_>>(),
+                    )));
                 }
                 Instruction::Append(index) => {
                     let a = self.pop().number();

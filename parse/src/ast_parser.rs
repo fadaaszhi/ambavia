@@ -316,13 +316,6 @@ fn parse_list(tokens: &mut Tokens, as_index: bool) -> Result<Expression, String>
         }
 
         let before_ellipsis = list;
-        if before_ellipsis.is_empty() {
-            return Err(format!(
-                "expected expression, found {}",
-                Token::Ellipsis.to_small_string()
-            ));
-        }
-
         let mut after_ellipsis = vec![];
         let mut first = true;
         while !matches!(tokens.peek(), Token::RBracket) {
@@ -337,11 +330,15 @@ fn parse_list(tokens: &mut Tokens, as_index: bool) -> Result<Expression, String>
         }
 
         if !as_index && after_ellipsis.is_empty() {
-            return Err(format!(
-                "expected expression after {}, found {}",
-                Token::Ellipsis.to_small_string(),
-                tokens.peek().to_small_string()
-            ));
+            return Err(if before_ellipsis.is_empty() {
+                "range must have an upper and lower bound".into()
+            } else {
+                format!(
+                    "expected expression after {}, found {}",
+                    Token::Ellipsis.to_small_string(),
+                    tokens.peek().to_small_string()
+                )
+            });
         }
 
         tokens.expect(Token::RBracket)?;
@@ -1548,7 +1545,63 @@ mod tests {
         let mut tokens = Tokens::new(&tokens, T::EndOfInput);
         assert_eq!(
             parse_expression(&mut tokens, 0),
-            Err("expected expression, found '...'".into())
+            Ok(ListRange {
+                before_ellipsis: vec![],
+                after_ellipsis: vec![Num(1.0), binary(Add, Id("a_{2}".into()), Num(3.0))],
+            })
+        );
+
+        let tokens = [T::LBracket, T::Ellipsis, T::Number("7".into()), T::RBracket];
+        let mut tokens = Tokens::new(&tokens, T::EndOfInput);
+        assert_eq!(
+            parse_expression(&mut tokens, 0),
+            Ok(ListRange {
+                before_ellipsis: vec![],
+                after_ellipsis: vec![Num(7.0)]
+            })
+        );
+
+        let tokens = [
+            T::LBracket,
+            T::Ellipsis,
+            T::Number("7".into()),
+            T::Comma,
+            T::Number("8".into()),
+            T::RBracket,
+        ];
+        let mut tokens = Tokens::new(&tokens, T::EndOfInput);
+        assert_eq!(
+            parse_expression(&mut tokens, 0),
+            Ok(ListRange {
+                before_ellipsis: vec![],
+                after_ellipsis: vec![Num(7.0), Num(8.0)]
+            })
+        );
+
+        let tokens = [T::LBracket, T::Ellipsis, T::RBracket];
+        let mut tokens = Tokens::new(&tokens, T::EndOfInput);
+        assert_eq!(
+            parse_expression(&mut tokens, 0),
+            Err("range must have an upper and lower bound".into())
+        );
+
+        let tokens = [
+            T::IdentFrag("L".into()),
+            T::LBracket,
+            T::Ellipsis,
+            T::RBracket,
+        ];
+        let mut tokens = Tokens::new(&tokens, T::EndOfInput);
+        assert_eq!(
+            parse_expression(&mut tokens, 0),
+            Ok(binary(
+                Index,
+                Id("L".into()),
+                ListRange {
+                    before_ellipsis: vec![],
+                    after_ellipsis: vec![]
+                }
+            ))
         );
     }
 

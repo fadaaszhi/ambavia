@@ -200,11 +200,17 @@ impl Context {
         }
     }
 
+    /// Round a logical point to an integer physical point, returning a logical
+    /// point.
+    pub fn roundp(&self, p: DVec2) -> DVec2 {
+        p.map(|x| self.round(x))
+    }
+
     /// Round the corners of a logical bound to integer physical values,
     /// returning a logical bound.
     pub fn roundb(&self, logical: Bounds) -> Bounds {
-        let top_left = logical.pos.map(|x| self.round(x));
-        let bottom_left = (logical.pos + logical.size).map(|x| self.round(x));
+        let top_left = self.roundp(logical.pos);
+        let bottom_left = self.roundp(logical.pos + logical.size);
         Bounds {
             pos: top_left,
             size: bottom_left - top_left,
@@ -290,7 +296,7 @@ pub enum CursorMode {
     Icon(CursorIcon),
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct Response {
     pub consumed_event: bool,
     pub requested_redraw: bool,
@@ -457,6 +463,12 @@ impl Color for (u8, u8, u8) {
 impl Color for [u8; 3] {
     fn to_rgbaf64(self) -> DVec4 {
         (self[0], self[1], self[2]).to_rgbaf64()
+    }
+}
+
+impl Color for ([u8; 3], f64) {
+    fn to_rgbaf64(self) -> DVec4 {
+        (self.0[0], self.0[1], self.0[2], self.1).to_rgbaf64()
     }
 }
 

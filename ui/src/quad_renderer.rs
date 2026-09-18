@@ -39,6 +39,50 @@ pub enum QuadKind {
     PopupRadioSelectedRight,
     PopupButton,
     IncreaseSliderSpeedIcon,
+    ExpressionHiddenIcon,
+    ExpressionShownIcon,
+    SineSolidIcon,
+    SineDashedIcon,
+    SineDottedIcon,
+    SineFilledIcon,
+    PolygonSolidIcon,
+    PolygonDashedIcon,
+    PolygonDottedIcon,
+    PolygonFilledIcon,
+    GutterPointPointIcon,
+    GutterPointOpenIcon,
+    GutterPointCrossIcon,
+    GutterPointSquareIcon,
+    GutterPointPlusIcon,
+    GutterPointTriangleIcon,
+    GutterPointDiamondIcon,
+    GutterPointStarIcon,
+    PointsIcon,
+    LinesIcon,
+    InequalityDashedIcon,
+    InequalityFilledIcon,
+    PopupToggleShadow,
+    OpacityIcon,
+    ThicknessIcon,
+    LineStyleSolidIcon,
+    LineStyleDashedIcon,
+    LineStyleDottedIcon,
+    PointStylePointIcon,
+    PointStyleOpenIcon,
+    PointStyleCrossIcon,
+    PointStyleSquareIcon,
+    PointStylePlusIcon,
+    PointStyleTriangleIcon,
+    PointStyleDiamondIcon,
+    PointStyleStarIcon,
+    PopupRadioTopLeft,
+    PopupRadioTopRight,
+    PopupRadioBottomLeft,
+    PopupRadioBottomRight,
+    PopupRadioSelectedTopLeft,
+    PopupRadioSelectedTopRight,
+    PopupRadioSelectedBottomLeft,
+    PopupRadioSelectedBottomRight,
 }
 
 pub struct Quad {
@@ -94,6 +138,16 @@ impl Quad {
             uv0: mix(self.uv0, self.uv1, (p0 - self.p0) / (self.p1 - self.p0)),
             uv1: mix(self.uv0, self.uv1, (p1 - self.p0) / (self.p1 - self.p0)),
             ..self
+        }
+    }
+
+    pub fn from_bounds(bounds: Bounds, kind: QuadKind, color: impl Color) -> Quad {
+        Quad {
+            kind,
+            p0: bounds.pos,
+            p1: bounds.pos + bounds.size,
+            color: color.to_rgbaf64(),
+            ..Default::default()
         }
     }
 

@@ -37,7 +37,50 @@ const PopupRadioSelectedMiddle = 25u;
 const PopupRadioSelectedRight = 26u;
 const PopupButton = 27u;
 const IncreaseSliderSpeedIcon = 28u;
-
+const ExpressionHiddenIcon = 29u;
+const ExpressionShownIcon = 30u;
+const SineSolidIcon = 31u;
+const SineDashedIcon = 32u;
+const SineDottedIcon = 33u;
+const SineFilledIcon = 34u;
+const PolygonSolidIcon = 35u;
+const PolygonDashedIcon = 36u;
+const PolygonDottedIcon = 37u;
+const PolygonFilledIcon = 38u;
+const GutterPointPointIcon = 39u;
+const GutterPointOpenIcon = 40u;
+const GutterPointCrossIcon = 41u;
+const GutterPointSquareIcon = 42u;
+const GutterPointPlusIcon = 43u;
+const GutterPointTriangleIcon = 44u;
+const GutterPointDiamondIcon = 45u;
+const GutterPointStarIcon = 46u;
+const PointsIcon = 47u;
+const LinesIcon = 48u;
+const InequalityDashedIcon = 49u;
+const InequalityFilledIcon = 50u;
+const PopupToggleShadow = 51u;
+const OpacityIcon = 52u;
+const ThicknessIcon = 53u;
+const LineStyleSolidIcon = 54u;
+const LineStyleDashedIcon = 55u;
+const LineStyleDottedIcon = 56u;
+const PointStylePointIcon = 57u;
+const PointStyleOpenIcon = 58u;
+const PointStyleCrossIcon = 59u;
+const PointStyleSquareIcon = 60u;
+const PointStylePlusIcon = 61u;
+const PointStyleTriangleIcon = 62u;
+const PointStyleDiamondIcon = 63u;
+const PointStyleStarIcon = 64u;
+const PopupRadioTopLeft = 65u;
+const PopupRadioTopRight = 66u;
+const PopupRadioBottomLeft = 67u;
+const PopupRadioBottomRight = 68u;
+const PopupRadioSelectedTopLeft = 69u;
+const PopupRadioSelectedTopRight = 70u;
+const PopupRadioSelectedBottomLeft = 71u;
+const PopupRadioSelectedBottomRight = 72u;
 
 struct Vertex {
     @location(0) position: vec2f,
@@ -63,6 +106,8 @@ fn vs_quad(v: Vertex) -> VertexOutput {
     return VertexOutput(p_clip,  v.color, v.kind, v.uv);
 }
 
+const PI = 3.1415927;
+
 fn median(x: f32, y: f32, z: f32) -> f32 {
     return max(min(x, y), min(max(x, y), z));
 }
@@ -73,6 +118,49 @@ fn sd_rounded_box(p: vec2f, b: vec2f, r: vec4f) -> f32 {
     r1.x  = select(r1.y, r1.x, p.y > 0.0);
     let q = abs(p) - b + r1.x;
     return min(max(q.x, q.y), 0.0) + length(max(q, vec2(0.0))) - r1.x;
+}
+
+// https://youtu.be/62-pRVZuS5c
+fn sd_box(p: vec2f, b: vec2f) -> f32 {
+    let d = abs(p) - b;
+    return length(max(d, vec2(0.0))) + min(max(d.x, d.y), 0.0);
+}
+
+// https://www.shadertoy.com/view/XsXSz4
+fn sd_triangle(p: vec2f, p0: vec2f, p1: vec2f, p2: vec2f) -> f32 {
+    let e0 = p1 - p0;
+    let e1 = p2 - p1;
+    let e2 = p0 - p2;
+    let v0 = p - p0;
+    let v1 = p - p1;
+    let v2 = p - p2;
+    let pq0 = v0 - e0 * saturate(dot(v0, e0) / dot(e0, e0));
+    let pq1 = v1 - e1 * saturate(dot(v1, e1) / dot(e1, e1));
+    let pq2 = v2 - e2 * saturate(dot(v2, e2) / dot(e2, e2));
+    let s = sign(e0.x * e2.y - e0.y * e2.x);
+    let d = min(min(
+        vec2(dot(pq0, pq0), s * (v0.x * e0.y - v0.y * e0.x)),
+        vec2(dot(pq1, pq1), s * (v1.x * e1.y - v1.y * e1.x))),
+        vec2(dot(pq2, pq2), s * (v2.x * e2.y - v2.y * e2.x)),
+    );
+    return -sqrt(d.x) * sign(d.y);
+}
+
+// https://www.shadertoy.com/view/3tdSDj
+fn sd_segment(p: vec2f, a: vec2f, b: vec2f) -> f32 {
+    let ap = p - a;
+    let ab = b - a;
+    return distance(ap, ab * saturate(dot(ap, ab) / dot(ab, ab)));
+}
+
+// https://www.desmos.com/calculator/x7vbtu1o40
+fn sd_segment_dashed(p: vec2f, a: vec2f, b: vec2f, n: f32, k: f32) -> f32 {
+    let ap = p - a;
+    let ab = b - a;
+    var t = saturate(dot(ap, ab) / dot(ab, ab));
+    let i = round(n * t);
+    t = clamp(t, (i - k / 2.0) / n, (i + k / 2.0) / n);
+    return distance(ap, ab * t);
 }
 
 // Calculate the Jacobian matrix for bilinear texture sampling
@@ -105,6 +193,27 @@ fn modf32(x: f32, y: f32) -> f32 {
     return x - floor(x / y) * y;
 }
 
+// Returns the x-coordinate of the closest point on y=amplitude*sin(frequency*x) to p
+fn sin_closest_x(p: vec2f, amplitude: f32, frequency: f32, n_iterations: i32) -> f32 {
+    let f = amplitude * frequency;
+    let q = p / amplitude;
+    var x = round(q.x * (f / PI)) * (PI / f);
+    // Newton's method
+    for (var i = 0; i < n_iterations; i++) {
+        let c = cos(f * x);
+        let s = sin(f * x);
+        let b = q.y - s;
+        x += (b * c * f + q.x - x) / (f * f * (b * s + c * c) + 1.0);
+    }
+    return amplitude * x;
+}
+
+// Mixes straight-alpha colors
+fn mix_straight(x: vec4f, y: vec4f, t: f32) -> vec4f {
+    let z = mix(vec4(x.rgb * x.a, x.a), vec4(y.rgb * y.a, y.a), t);
+    return select(vec4(0.0), vec4(z.rgb / z.a, z.a), z.a > 0.0);
+}
+
 @diagnostic(off, derivative_uniformity)
 fn rounded_box_shadow(uv: vec2f, color: vec4f, shadow_radius_: f32, box_radius_: f32) -> vec4f {
     let size = 1.0 / abs(vec2(dpdx(uv.x), dpdy(uv.y)));
@@ -127,6 +236,73 @@ fn stroked2(sd: f32, fill_color: vec4f, stroke_width: f32, stroke_brightness: f3
 }
 
 @diagnostic(off, derivative_uniformity)
+fn apply_shadow_and_circle_mask(sd: f32, uv: vec2f, color: vec4f) -> vec4f {
+    let size = 1.0 / abs(vec2(dpdx(uv.x), dpdy(uv.y)));
+    let opacity = saturate(0.5 - sd);
+    let shadow_radius = 5.0 * uniforms.scale_factor;
+    let shadow = saturate(1.0 - sd / shadow_radius);
+    let shadow_color = vec4(vec3(0.0), shadow * shadow * 0.1);
+    var result = mix_straight(shadow_color, color, opacity);
+    result.a *= saturate(0.5 - length((uv - 0.5) * size) + min(size.x, size.y) / 2.0);
+    return result;
+}
+
+// p in [-1,1]^2
+fn sd_point(p: vec2f, kind: u32) -> f32 {
+    switch kind {
+        case GutterPointPointIcon, default {
+            return length(p) - 0.57;
+        }
+        case PointStylePointIcon {
+            return length(p) - 0.776;
+        }
+        case GutterPointOpenIcon, PointStyleOpenIcon {
+            return abs(length(p) - 0.612) - 0.164;
+        }
+        case GutterPointCrossIcon, PointStyleCrossIcon {
+            let q = abs(p);
+            return hypot(max(q.x + q.y - 1.21, 0.0), abs(q.x - q.y)) - 0.238;
+        }
+        case GutterPointSquareIcon, PointStyleSquareIcon, GutterPointDiamondIcon, PointStyleDiamondIcon {
+            let is_diamond = kind == GutterPointDiamondIcon || kind == PointStyleDiamondIcon;
+            var q = select(p, (p + vec2(p.y, -p.x)) / sqrt(2.0), is_diamond);
+            return sd_box(q, vec2(0.673));
+        }
+        case GutterPointPlusIcon, PointStylePlusIcon {
+            let q = abs(p);
+            return hypot(max(max(q.x, q.y) - 0.641, 0.0), min(q.x, q.y)) - 0.179;
+        }
+        case GutterPointTriangleIcon, PointStyleTriangleIcon {
+            // https://www.shadertoy.com/view/Xl2yDW
+            let k = sqrt(3.0);
+            let r = k / 2.0;
+            var q = p;
+            q.y = -q.y;
+            if kind == PointStyleTriangleIcon {
+                q.y += 0.13;
+            }
+            q.x = abs(q.x);
+            q -= vec2(0.5, 0.5 * k) * max(q.x + k * q.y, 0.0);
+            q -= vec2(clamp(q.x, -r, r), -r / k);
+            return length(q) * sign(-q.y);
+        }
+        case GutterPointStarIcon, PointStyleStarIcon {
+            // https://www.shadertoy.com/view/3tSGDy
+            let an = PI / 5.0;
+            let en = PI * 0.3;
+            let racs = vec2(cos(an), sin(an));
+            let ecs = vec2(cos(en), sin(en));
+            var q = p;
+            let bn = modf32(atan2(q.x, -q.y), 2.0 * an) - an;
+            q = length(q) * vec2(cos(bn), abs(sin(bn)));
+            q -= racs;
+            q += ecs * clamp(-dot(q, ecs), 0.0, racs.y / ecs.y);
+            return length(q) * sign(q.x);
+        }
+    }
+}
+
+@diagnostic(off, derivative_uniformity)
 @fragment
 fn fs_quad(in: VertexOutput) -> @location(0) vec4f {
     let size = 1.0 / abs(vec2(dpdx(in.uv.x), dpdy(in.uv.y)));
@@ -136,7 +312,7 @@ fn fs_quad(in: VertexOutput) -> @location(0) vec4f {
             return in.color;
         }
         case Pill {
-            let sd = sd_rounded_box(size * (in.uv - 0.5), size / 2.0, vec4(size.y / 2.0));
+            let sd = sd_rounded_box(size * (in.uv - 0.5), size / 2.0, vec4(min(size.x, size.y) / 2.0));
             return in.color * vec4(1.0, 1.0, 1.0, saturate(0.5 - sd));
         }
         case MsdfGlyph {
@@ -301,8 +477,12 @@ fn fs_quad(in: VertexOutput) -> @location(0) vec4f {
             let opacity = saturate(0.5 - sd);
             return in.color * vec4(vec3(stroke), opacity);
         }
+        // TODO add extra data field to vertex to avoid combinatorial explosion
         case PopupRadioLeft, PopupRadioMiddle, PopupRadioRight,
-             PopupRadioSelectedLeft, PopupRadioSelectedMiddle, PopupRadioSelectedRight {
+             PopupRadioSelectedLeft, PopupRadioSelectedMiddle, PopupRadioSelectedRight,
+             PopupRadioTopLeft, PopupRadioTopRight, PopupRadioBottomLeft, PopupRadioBottomRight,
+             PopupRadioSelectedTopLeft, PopupRadioSelectedTopRight,
+             PopupRadioSelectedBottomLeft, PopupRadioSelectedBottomRight {
             const RADIUS = 3.0;
             const STROKE_BRIGHTNESS = 0.7;
             const STROKE_WIDTH = 1.0;
@@ -321,11 +501,25 @@ fn fs_quad(in: VertexOutput) -> @location(0) vec4f {
                 case PopupRadioRight, PopupRadioSelectedRight {
                     roundness = vec4(radius, radius, 0.0, 0.0);
                 }
+                case PopupRadioTopLeft, PopupRadioSelectedTopLeft {
+                    roundness = vec4(0.0, 0.0, 0.0, radius);
+                }
+                case PopupRadioTopRight, PopupRadioSelectedTopRight {
+                    roundness = vec4(0.0, radius, 0.0, 0.0);
+                }
+                case PopupRadioBottomLeft, PopupRadioSelectedBottomLeft {
+                    roundness = vec4(0.0, 0.0, radius, 0.0);
+                }
+                case PopupRadioBottomRight, PopupRadioSelectedBottomRight {
+                    roundness = vec4(radius, 0.0, 0.0, 0.0);
+                }
             }
 
             let sd = sd_rounded_box(size * (in.uv - 0.5), size / 2.0, roundness);
 
-            if in.kind == PopupRadioMiddle || in.kind == PopupRadioLeft || in.kind == PopupRadioRight {
+            if in.kind == PopupRadioMiddle || in.kind == PopupRadioLeft || in.kind == PopupRadioRight ||
+               in.kind == PopupRadioTopLeft || in.kind == PopupRadioTopRight || in.kind == PopupRadioBottomLeft ||
+               in.kind == PopupRadioBottomRight {
                 return stroked2(sd, in.color, 1.0, 0.7);
             } else {
                 return stroked(sd, in.color * vec4(vec3(1.0), 0.25), 1.0, in.color);
@@ -348,6 +542,203 @@ fn fs_quad(in: VertexOutput) -> @location(0) vec4f {
             let radius = RADIUS * uniforms.scale_factor;
             let sd = sd_rounded_box(size * (in.uv - 0.5), size / 2.0, vec4(radius));
             return stroked2(sd, in.color, 1.0, 0.8);
+        }
+        case ExpressionHiddenIcon {
+            const THICKNESS = 5.0;
+            let thickness = THICKNESS * uniforms.scale_factor;
+            let radius = min(size.x, size.y) / 2.0;
+            let p = (in.uv - 0.5) * size;
+            let r = length(p);
+            let sd = abs(r - radius + thickness / 2.0) - thickness / 2.0;
+            let t = saturate((r - radius) / thickness + 1.0);
+            let opacity = saturate(0.5 - sd) * mix(0.55, 1.0, t);
+            return in.color * vec4(vec3(1.0), opacity);
+        }
+        case ExpressionShownIcon {
+            const DARKENING_WIDTH = 4.0;
+            let darkening_width = DARKENING_WIDTH * uniforms.scale_factor;
+            let radius = min(size.x, size.y) / 2.0;
+            let p = (in.uv - 0.5) * size;
+            let r = length(p);
+            let sd = r - radius;
+            let t = saturate((r - radius) / darkening_width + 1.0);
+            let opacity = saturate(0.5 - sd);
+            return in.color * vec4(vec3(mix(1.0, 0.9, t * t)), opacity);
+        }
+        case SineSolidIcon, SineDashedIcon, SineDottedIcon, SineFilledIcon {
+            var p = in.uv - 0.5;
+            let amplitude = 0.265;
+            let frequency = 8.26;
+            let radius = 0.075;
+            var sd: f32;
+
+            if in.kind == SineDottedIcon { 
+                let x1 = 0.0465;
+                let x2 = PI / (2.0 * frequency);
+                let a = vec2(x1, amplitude * sin(frequency * x1));
+                let b = vec2(x2, amplitude * sin(frequency * x2));
+                p.x = 2.0 * clamp(p.x, -b.x, b.x) - p.x;
+                p *= select(-1.0, 1.0, dot(a, p) > 0.0);
+                sd = distance(p, select(a, b, dot(a - b, p) < dot((a + b) / 2.0, a - b)));
+            } else {
+                let n_iterations = select(2, 4, in.kind == SineFilledIcon);
+                var x = sin_closest_x(p, amplitude, frequency, n_iterations);
+
+                if in.kind == SineDashedIcon {
+                    let a = floor(x * (frequency / PI)) * (PI / frequency);
+                    x = clamp(x, 0.05 + a, PI / frequency - 0.05 + a);
+                }
+
+                sd = distance(p, vec2(x, amplitude * sin(frequency * x)));
+            }
+
+            if in.kind != SineFilledIcon {
+                sd -= radius;
+            } else if p.y > amplitude * sin(frequency * p.x) {
+                sd = -sd;
+            }
+
+            sd *= size.x;
+            return apply_shadow_and_circle_mask(sd, in.uv, in.color);
+        }
+        case PolygonSolidIcon, PolygonDashedIcon, PolygonDottedIcon, PolygonFilledIcon {
+            var p = in.uv - 0.5;
+            let p0 = vec2(-0.256, -0.243);
+            let p1 = vec2(-0.1195, 0.2375);
+            let p2 = vec2(0.259, 0.051);
+            var sd: f32;
+
+            if in.kind == PolygonFilledIcon {
+                sd = sd_triangle(p, p0, p1, p2);
+            } else {
+                var k = 1.0;
+                var n = vec3(1.0);
+                if in.kind == PolygonDashedIcon {
+                    k = 0.44;
+                    n = vec3(3.0, 2.0, 3.0);
+                } else if in.kind == PolygonDottedIcon {
+                    k = 0.0;
+                    n = vec3(4.0, 4.0, 5.0);
+                }
+                sd = min(min(
+                    sd_segment_dashed(p, p0, p1, n.x, k),
+                    sd_segment_dashed(p, p1, p2, n.y, k)),
+                    sd_segment_dashed(p, p2, p0, n.z, k),
+                ) - 0.0375;
+            }
+
+            sd *= size.x;
+            return apply_shadow_and_circle_mask(sd, in.uv, in.color);
+        }
+        case GutterPointPointIcon, GutterPointOpenIcon, GutterPointCrossIcon, GutterPointSquareIcon,
+             GutterPointPlusIcon, GutterPointTriangleIcon, GutterPointDiamondIcon, GutterPointStarIcon {
+            let p = (in.uv - 0.5) / 0.223;
+            var sd = sd_point(p, in.kind);
+            sd *= size.x * 0.223;
+            return apply_shadow_and_circle_mask(sd, in.uv, in.color);
+        }
+        case PointsIcon, LinesIcon {
+            let p = in.uv - 0.5;
+            let p0 = vec2(-0.2216, 0.23);
+            let p1 = vec2(-0.155, -0.124);
+            let p2 = vec2(0.09, 0.0915);
+            let p3 = vec2(0.221, -0.2326);
+            var sd: f32;
+
+            if in.kind == PointsIcon {
+                sd = min(min(min(
+                    distance(p, p0),
+                    distance(p, p1)),
+                    distance(p, p2)),
+                    distance(p, p3),
+                ) - 0.086;
+            } else {
+                sd = min(min(
+                    sd_segment(p, p0, p1),
+                    sd_segment(p, p1, p2)),
+                    sd_segment(p, p2, p3),
+                ) - 0.0363;
+            }
+
+            sd *= size.x;
+            return apply_shadow_and_circle_mask(sd, in.uv, in.color);
+        }
+        case InequalityDashedIcon {
+            let p = in.uv - 0.5;
+            let q = vec2(modf32((p.x - p.y) / sqrt(2.0), 0.385) - 0.1925, p.x + p.y);
+            var sd = sd_box(q, vec2(0.108, 0.075));
+            sd *= size.x;
+            return apply_shadow_and_circle_mask(sd, in.uv, in.color);
+        }
+        case InequalityFilledIcon {
+            var sd = 1.0 - in.uv.x - in.uv.y;
+            sd *= size.x;
+            return apply_shadow_and_circle_mask(sd, in.uv, in.color);
+        }
+        case PopupToggleShadow {
+            let size = 1.0 / abs(vec2(dpdx(in.uv.x), dpdy(in.uv.y)));
+            let shadow_radius = 2.0 * uniforms.scale_factor;
+            let s = size - 4.0 * shadow_radius;
+            let sd = sd_rounded_box(size * (in.uv - 0.5), s / 2.0, vec4(min(s.y, s.x) / 2.0));
+            let shadow = saturate(1.0 - sd / (2.0 * shadow_radius));
+            return in.color * vec4(1.0, 1.0, 1.0, smoothstep(0.0, 1.0, shadow));
+        }
+        case OpacityIcon {
+            let p = in.uv - 0.5;
+            let a = sd_rounded_box(p - 0.11, vec2(0.357), vec4(0.123));
+            let b = sd_rounded_box(p + 0.11, vec2(0.357), vec4(0.123));
+            var sd = min(min(abs(a), abs(b)), max(a, b)) - 0.033;
+            sd *= size.x;
+            let opacity = saturate(0.5 - sd);
+            return in.color * vec4(1.0, 1.0, 1.0, opacity);
+        }
+        case ThicknessIcon {
+            let y = in.uv.y;
+            let opacity = f32(
+                (0.13 < y && y < 0.21) ||
+                (0.37 < y && y < 0.5) ||
+                (0.65 < y && y < 0.86)
+            );
+            return in.color * vec4(1.0, 1.0, 1.0, opacity);
+        }
+        case LineStyleSolidIcon, LineStyleDashedIcon, LineStyleDottedIcon {
+            let p = in.uv - 0.5;
+            let r = 0.0737;
+            let a = vec2(-0.5 + r, 0.5 - r);
+            let b = vec2(0.5 - r, -0.5 + r);
+            let ap = p - a;
+            let ab = b - a;
+            var t = dot(ap, ab) / dot(ab, ab);
+            switch in.kind {
+                case LineStyleSolidIcon, default {
+                    t = saturate(t);
+                }
+                case LineStyleDashedIcon {
+                    let b = 0.212;
+                    if t < (2.0 - b) / 6.0 {
+                        t = clamp(t, 0.0, (1.0 - 2.0 * b) / 3.0);
+                    } else if t < (4.0 + b) / 6.0 {
+                        t = clamp(t, (1.0 + b) / 3.0, (2.0 - b) / 3.0);
+                    } else {
+                        t = clamp(t, (2.0 + 2.0 * b) / 3.0, 1.0);
+                    }
+                }
+                case LineStyleDottedIcon {
+                    t = round(t * 5.0) / 5.0;
+                }
+            }
+            var sd = distance(ap, ab * t) - r;
+            sd *= size.x;
+            let opacity = saturate(0.5 - sd);
+            return in.color * vec4(1.0, 1.0, 1.0, opacity);
+        }
+        case PointStylePointIcon, PointStyleOpenIcon, PointStyleCrossIcon, PointStyleSquareIcon,
+             PointStylePlusIcon, PointStyleTriangleIcon, PointStyleDiamondIcon, PointStyleStarIcon {
+            let p = in.uv * 2.0 - 1.0;
+            var sd = sd_point(p, in.kind);
+            sd *= size.x / 2.0;
+            let opacity = saturate(0.5 - sd);
+            return in.color * vec4(1.0, 1.0, 1.0, opacity);
         }
     }
 }

@@ -224,37 +224,36 @@ impl GutterButton {
         response
     }
 
-    fn render(
-        &self,
-        kind: QuadKind,
-        bounds: Bounds,
-        expression_is_focussed: bool,
-        draw_quad: &mut impl FnMut(Quad),
-    ) {
-        draw_quad(Quad {
-            kind,
-            p0: bounds.pos,
-            p1: bounds.pos + bounds.size,
-            color: if expression_is_focussed {
-                let opacity = if self.hovered || self.click_tracker.is_pressed() {
-                    1.0
-                } else {
-                    0.9
-                };
-                (255, 255, 255, opacity)
-            } else {
-                let opacity = if self.click_tracker.is_pressed() {
-                    0.9
-                } else if self.hovered {
-                    0.7
-                } else {
-                    0.5
-                };
-                (0, 0, 0, opacity)
-            }
-            .to_rgbaf64(),
-            ..Default::default()
-        });
+    fn state_pressed(&self) -> usize {
+        if self.click_tracker.is_pressed() {
+            2
+        } else if self.hovered {
+            1
+        } else {
+            0
+        }
+    }
+}
+
+fn draw_popup_container(bounds: Bounds, arrow: Option<Bounds>, draw_quad: &mut impl FnMut(Quad)) {
+    let shadow_radius = 10.0; // hardcoded in quad.wgsl
+    let shadow_offset = dvec2(0.0, 5.0);
+    draw_quad(Quad {
+        kind: QuadKind::PopupShadow,
+        p0: bounds.pos - shadow_radius + shadow_offset,
+        p1: bounds.pos + bounds.size + shadow_radius + shadow_offset,
+        color: dvec4(0.0, 0.0, 0.0, 0.2),
+        ..Default::default()
+    });
+
+    draw_quad(Quad::from_bounds(
+        bounds,
+        QuadKind::PopupBackground,
+        [255; 3],
+    ));
+
+    if let Some(arrow) = arrow {
+        draw_quad(Quad::from_bounds(arrow, QuadKind::PopupArrow, [255; 3]));
     }
 }
 
@@ -1119,7 +1118,22 @@ impl SliderUi {
         let Some(l) = self.layout_gutter(ctx, bounds, slider) else {
             return;
         };
-        self.play_button.render(
+        let mut render = |button: &GutterButton, kind: QuadKind, bounds: Bounds| {
+            draw_quad(Quad {
+                kind,
+                p0: bounds.pos,
+                p1: bounds.pos + bounds.size,
+                color: if expression_is_focussed {
+                    (255, 255, 255, [0.9, 1.0, 1.0][button.state_pressed()])
+                } else {
+                    (0, 0, 0, [0.5, 0.7, 0.9][button.state_pressed()])
+                }
+                .to_rgbaf64(),
+                ..Default::default()
+            })
+        };
+        render(
+            &self.play_button,
             if slider.is_playing
                 && (slider.loop_mode != SliderLoopMode::PlayOnce
                     || self.animated_value
@@ -1130,15 +1144,8 @@ impl SliderUi {
                 QuadKind::SliderPausedButton
             },
             l.play_button,
-            expression_is_focussed,
-            draw_quad,
         );
-        self.mode_button.render(
-            slider.loop_mode.into(),
-            l.mode_button,
-            expression_is_focussed,
-            draw_quad,
-        );
+        render(&self.mode_button, slider.loop_mode.into(), l.mode_button);
     }
 
     fn layout_popup(
@@ -1182,7 +1189,7 @@ impl SliderUi {
         let speed_buttons_y = speed_cursor_y + 9.0;
         let bottom = speed_buttons_y + speed_button_size.y + padding;
 
-        let clearance = 13.0;
+        let clearance = 9.0;
         let bottom1 = bottom.min(expression_list_bounds.bottom() - clearance);
         let top1 = top + bottom1 - bottom;
         let top2 = top1.max(expression_list_bounds.top() + clearance);
@@ -1368,33 +1375,7 @@ impl SliderUi {
             return;
         };
 
-        let shadow_radius = 10.0; // hardcoded in quad.wgsl
-        let shadow_offset = dvec2(0.0, 5.0);
-        draw_quad(Quad {
-            kind: QuadKind::PopupShadow,
-            p0: l.bounds.pos - shadow_radius + shadow_offset,
-            p1: l.bounds.pos + l.bounds.size + shadow_radius + shadow_offset,
-            color: dvec4(0.0, 0.0, 0.0, 0.2),
-            ..Default::default()
-        });
-
-        draw_quad(Quad {
-            kind: QuadKind::PopupBackground,
-            p0: l.bounds.pos,
-            p1: l.bounds.pos + l.bounds.size,
-            color: DVec4::ONE,
-            ..Default::default()
-        });
-
-        if let Some(arrow) = l.arrow {
-            draw_quad(Quad {
-                kind: QuadKind::PopupArrow,
-                p0: arrow.pos,
-                p1: arrow.pos + arrow.size,
-                color: DVec4::ONE,
-                ..Default::default()
-            });
-        }
+        draw_popup_container(l.bounds, l.arrow, draw_quad);
 
         self.animation_mode_label
             .render_from_cursor(l.animation_mode_cursor, [90; 3], draw_quad);
@@ -1831,7 +1812,7 @@ impl OutputUi {
         ui.set_fields(slider, name, value, min, max, step);
     }
 
-    fn set_domain(&mut self, name: &str) {
+    fn set_parametric_domain(&mut self, name: &str) {
         // If there was an already existing parametric domain then we just need to update its name
         if let OutputUi::ParametricDomain(ui) = self {
             ui.set_name(name);
@@ -1988,13 +1969,1010 @@ struct Slider {
 
 type ParametricDomain = Domain<(InlineField, Result<parse::ast::Expression, String>)>;
 
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+enum LineStyle {
+    #[default]
+    Solid,
+    Dashed,
+    Dotted,
+}
+
+impl From<LineStyle> for QuadKind {
+    fn from(value: LineStyle) -> Self {
+        match value {
+            LineStyle::Solid => QuadKind::LineStyleSolidIcon,
+            LineStyle::Dashed => QuadKind::LineStyleDashedIcon,
+            LineStyle::Dotted => QuadKind::LineStyleDottedIcon,
+        }
+    }
+}
+
+const LINE_SIZE_DEFAULT: f64 = 2.5;
+const LINE_OPACITY_DEFAULT: f64 = 1.0;
+
+struct LineAppearance {
+    enabled: Option<bool>,
+    style: LineStyle,
+    width: (InlineField, Result<ast::Expression, String>),
+    opacity: (InlineField, Result<ast::Expression, String>),
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+enum PointStyle {
+    #[default]
+    Point,
+    Open,
+    Cross,
+    Square,
+    Plus,
+    Triangle,
+    Diamond,
+    Star,
+}
+
+impl PointStyle {
+    fn gutter_quad_kind(self) -> QuadKind {
+        match self {
+            PointStyle::Point => QuadKind::GutterPointPointIcon,
+            PointStyle::Open => QuadKind::GutterPointOpenIcon,
+            PointStyle::Cross => QuadKind::GutterPointCrossIcon,
+            PointStyle::Square => QuadKind::GutterPointSquareIcon,
+            PointStyle::Plus => QuadKind::GutterPointPlusIcon,
+            PointStyle::Triangle => QuadKind::GutterPointTriangleIcon,
+            PointStyle::Diamond => QuadKind::GutterPointDiamondIcon,
+            PointStyle::Star => QuadKind::GutterPointStarIcon,
+        }
+    }
+
+    fn popup_quad_kind(self) -> QuadKind {
+        match self {
+            PointStyle::Point => QuadKind::PointStylePointIcon,
+            PointStyle::Open => QuadKind::PointStyleOpenIcon,
+            PointStyle::Cross => QuadKind::PointStyleCrossIcon,
+            PointStyle::Square => QuadKind::PointStyleSquareIcon,
+            PointStyle::Plus => QuadKind::PointStylePlusIcon,
+            PointStyle::Triangle => QuadKind::PointStyleTriangleIcon,
+            PointStyle::Diamond => QuadKind::PointStyleDiamondIcon,
+            PointStyle::Star => QuadKind::PointStyleStarIcon,
+        }
+    }
+}
+
+const POINT_SIZE_DEFAULT: f64 = 2.5;
+const POINT_OPACITY_DEFAULT: f64 = 1.0;
+
+struct PointAppearance {
+    enabled: Option<bool>,
+    style: PointStyle,
+    size: (InlineField, Result<ast::Expression, String>),
+    opacity: (InlineField, Result<ast::Expression, String>),
+}
+
+const FILL_OPACITY_DEFAULT: f64 = 0.4;
+
+struct FillAppearance {
+    enabled: Option<bool>,
+    opacity: (InlineField, Result<ast::Expression, String>),
+}
+
+struct ExpressionStyle {
+    hidden: bool,
+    color: [f32; 4],
+    line: LineAppearance,
+    point: PointAppearance,
+    fill: FillAppearance,
+}
+
+fn create_with_placeholder(placeholder: f64) -> (InlineField, Result<ast::Expression, String>) {
+    (
+        InlineField::new(&placeholder.to_string()),
+        Ok(ast::Expression::Number(placeholder)),
+    )
+}
+
+impl Default for ExpressionStyle {
+    fn default() -> Self {
+        let create_with_placeholder = |placeholder: f64| {
+            let mut y = create_with_placeholder(placeholder);
+            y.0.min_width = 42.0;
+            y.0.max_width = 60.0;
+            y
+        };
+        Self {
+            hidden: false,
+            color: [1.0, 0.0, 0.0, 1.0],
+            line: LineAppearance {
+                enabled: None,
+                style: Default::default(),
+                width: create_with_placeholder(LINE_SIZE_DEFAULT),
+                opacity: create_with_placeholder(LINE_OPACITY_DEFAULT),
+            },
+            point: PointAppearance {
+                enabled: None,
+                style: Default::default(),
+                size: create_with_placeholder(POINT_SIZE_DEFAULT),
+                opacity: create_with_placeholder(POINT_OPACITY_DEFAULT),
+            },
+            fill: FillAppearance {
+                enabled: None,
+                opacity: create_with_placeholder(FILL_OPACITY_DEFAULT),
+            },
+        }
+    }
+}
+
+struct StyleGutter {
+    toggle_button: GutterButton,
+
+    is_popup_open: bool,
+    should_close_popup: bool,
+
+    lines_label: Label<'static>,
+    line_enabled_button: Button,
+    line_style_radio_buttons: [Button; 3],
+
+    points_label: Label<'static>,
+    point_enabled_button: Button,
+    point_style_radio_buttons: [Button; 8],
+
+    fill_label: Label<'static>,
+    fill_enabled_button: Button,
+}
+
+struct StyleGutterLayout {
+    toggle_button_center: DVec2,
+    toggle_button_radius: f64,
+    toggle_button: Bounds,
+}
+
+struct StylePopupTitleLayout {
+    top: f64,
+    cursor: DVec2,
+    toggle_bar: Bounds,
+    toggle_point: Bounds,
+    toggle_hitbox: Bounds,
+}
+
+struct StylePopupIconAndFieldLayout {
+    icon: Bounds,
+    field: Bounds,
+}
+
+struct StylePopupLineLayout {
+    style_buttons: [Bounds; 3],
+    style_button_hitboxes: [Bounds; 3],
+    opacity: StylePopupIconAndFieldLayout,
+    width: StylePopupIconAndFieldLayout,
+}
+
+struct StylePopupPointLayout {
+    style_buttons: [Bounds; 8],
+    style_button_hitboxes: [Bounds; 8],
+    opacity: StylePopupIconAndFieldLayout,
+    size: StylePopupIconAndFieldLayout,
+}
+
+struct StylePopupFillLayout {
+    opacity: StylePopupIconAndFieldLayout,
+}
+
+struct StylePopupLayout {
+    line: Option<(usize, StylePopupTitleLayout, Option<StylePopupLineLayout>)>,
+    point: Option<(usize, StylePopupTitleLayout, Option<StylePopupPointLayout>)>,
+    fill: Option<(usize, StylePopupTitleLayout, Option<StylePopupFillLayout>)>,
+    arrow: Option<Bounds>,
+    bounds: Bounds,
+}
+
+impl StyleGutter {
+    fn layout_gutter(&self, ctx: &Context, bounds: Bounds) -> StyleGutterLayout {
+        let toggle_button_center = bounds.pos + bounds.size.x * dvec2(0.5, 0.752);
+        let toggle_button_radius = 0.392 * bounds.size.x;
+        let toggle_button = ctx.roundb(Bounds {
+            pos: toggle_button_center - toggle_button_radius,
+            size: DVec2::splat(toggle_button_radius * 2.0),
+        });
+
+        StyleGutterLayout {
+            toggle_button_center,
+            toggle_button_radius,
+            toggle_button,
+        }
+    }
+
+    fn update_gutter(
+        &mut self,
+        ctx: &Context,
+        event: &Event,
+        bounds: Bounds,
+        style: &mut ExpressionStyle,
+    ) -> Response {
+        let l = self.layout_gutter(ctx, bounds);
+        let mut response = Response::default();
+        response = response.or(self.toggle_button.update(
+            ctx,
+            event,
+            l.toggle_button_center.distance(ctx.cursor) <= l.toggle_button_radius,
+            |response| {
+                if ctx.modifiers.shift_key() || self.is_popup_open {
+                    self.is_popup_open ^= true;
+                    response.request_redraw();
+                    return;
+                }
+
+                if style.hidden
+                    && style.line.enabled.is_some_and(|e| !e)
+                    && style.point.enabled.is_some_and(|e| !e)
+                    && style.fill.enabled.is_some_and(|e| !e)
+                {
+                    style.line.enabled = None;
+                    style.point.enabled = None;
+                    style.fill.enabled = None;
+                }
+
+                style.hidden ^= true;
+                response.request_redraw();
+            },
+        ));
+
+        if self.should_close_popup {
+            self.should_close_popup = false;
+            self.is_popup_open = false;
+            response.request_redraw();
+        }
+
+        response
+    }
+
+    fn render_gutter(
+        &mut self,
+        ctx: &Context,
+        bounds: Bounds,
+        expression_has_focus: bool,
+        style: &ExpressionStyle,
+        draw_quad: &mut impl FnMut(Quad),
+    ) {
+        let l = self.layout_gutter(ctx, bounds);
+
+        if style.hidden {
+            draw_quad(Quad::from_bounds(
+                l.toggle_button,
+                QuadKind::ExpressionHiddenIcon,
+                if expression_has_focus {
+                    let opacity = [0.6f64, 0.7, 0.8][self.toggle_button.state_pressed()];
+                    ([255u8; 3], opacity)
+                } else {
+                    let opacity = [0.17, 0.23, 0.32][self.toggle_button.state_pressed()];
+                    ([0; 3], opacity)
+                },
+            ));
+        } else {
+            let x = [1.0, 0.95, 0.9][self.toggle_button.state_pressed()];
+            let darken = dvec4(x, x, x, 1.0);
+            draw_quad(Quad::from_bounds(
+                l.toggle_button,
+                QuadKind::ExpressionShownIcon,
+                DVec4::from(style.color.map(|x| x.into())) * darken,
+            ));
+            draw_quad(Quad::from_bounds(
+                l.toggle_button,
+                QuadKind::SineSolidIcon,
+                DVec4::ONE * darken,
+            ));
+        }
+    }
+
+    fn layout_popup(
+        &self,
+        ctx: &Context,
+        expression_list_bounds: Bounds,
+        gutter_bounds: Bounds,
+        style: &ExpressionStyle,
+    ) -> Option<StylePopupLayout> {
+        if !self.is_popup_open {
+            return None;
+        }
+        let g = self.layout_gutter(ctx, gutter_bounds);
+
+        enum SectionKind {
+            Line,
+            Point,
+            Fill,
+        }
+        let order = [SectionKind::Line, SectionKind::Fill, SectionKind::Point];
+
+        let line_enabled = style.line.enabled.unwrap_or(true);
+        let point_enabled = style.point.enabled.unwrap_or(true);
+        let fill_enabled = style.fill.enabled.unwrap_or(true);
+
+        let border_width = 1.0;
+        let popup_width = 220.0 + 2.0 * border_width;
+        let side_padding = 10.0 + border_width;
+        let title_height = 38.0;
+
+        let arrow_tip =
+            (g.toggle_button.pos + g.toggle_button.size * dvec2(0.95, 0.5)).map(|x| ctx.round(x));
+
+        let mut next_y = arrow_tip.y - 19.0;
+        let top = next_y;
+        next_y += border_width;
+
+        let icon_height = 14.0;
+        struct IconAndFieldY {
+            field_size: DVec2,
+            icon_y: f64,
+            field_y: f64,
+        }
+
+        let icon_and_field_y = |next_y: &mut f64, field: &InlineField| {
+            let field_size = field.expression_size(ctx, true);
+            let height = max([icon_height, field_size.y]);
+            let icon_y = *next_y + (height - icon_height) / 2.0;
+            let field_y = *next_y + (height - field_size.y) / 2.0;
+            *next_y += height;
+            IconAndFieldY {
+                field_size,
+                icon_y,
+                field_y,
+            }
+        };
+
+        struct LineSectionY {
+            style_buttons_y: f64,
+            opacity: IconAndFieldY,
+            width: IconAndFieldY,
+        }
+        struct PointSectionY {
+            style_buttons_y: f64,
+            opacity: IconAndFieldY,
+            size: IconAndFieldY,
+        }
+
+        struct FillSectionY {
+            opacity: IconAndFieldY,
+        }
+
+        let mut line_section = None;
+        let mut point_section = None;
+        let mut fill_section = None;
+
+        for (i, kind) in order.into_iter().enumerate() {
+            if i > 0 {
+                next_y += border_width;
+            }
+            let top = next_y;
+            next_y += title_height;
+            match kind {
+                SectionKind::Line => {
+                    let contents = line_enabled.then(|| {
+                        let style_buttons_y = next_y - 2.0;
+                        let opacity = icon_and_field_y(&mut next_y, &style.line.opacity.0);
+                        next_y += 8.0;
+                        let width = icon_and_field_y(&mut next_y, &style.line.width.0);
+                        next_y += 10.0;
+                        LineSectionY {
+                            style_buttons_y,
+                            opacity,
+                            width,
+                        }
+                    });
+                    line_section = Some((i, top, contents));
+                }
+                SectionKind::Point => {
+                    let contents = point_enabled.then(|| {
+                        let style_buttons_y = next_y - 2.0;
+                        let opacity = icon_and_field_y(&mut next_y, &style.point.opacity.0);
+                        next_y += 8.0;
+                        let size = icon_and_field_y(&mut next_y, &style.point.size.0);
+                        next_y += 10.0;
+                        PointSectionY {
+                            style_buttons_y,
+                            opacity,
+                            size,
+                        }
+                    });
+                    point_section = Some((i, top, contents));
+                }
+                SectionKind::Fill => {
+                    let contents = fill_enabled.then(|| {
+                        let opacity = icon_and_field_y(&mut next_y, &style.fill.opacity.0);
+                        next_y += 10.0;
+                        FillSectionY { opacity }
+                    });
+                    fill_section = Some((i, top, contents));
+                }
+            }
+        }
+
+        let bottom = next_y + border_width;
+
+        let clearance = 9.0;
+        let bottom1 = bottom.min(expression_list_bounds.bottom() - clearance);
+        let top1 = top + bottom1 - bottom;
+        let top2 = top1.max(expression_list_bounds.top() + clearance);
+        let bottom2 = bottom1 + top2 - top1;
+
+        let offset_y = top2 - top;
+        let top = top2;
+        let bottom = bottom2;
+
+        let arrow_half_height = 9.0;
+        let arrow_width = arrow_half_height;
+        let corner_radius = 6.0; // hardcoded in quad.wgsl
+        let is_arrow_shown = top + corner_radius < arrow_tip.y - arrow_half_height
+            && arrow_tip.y + arrow_half_height < bottom - corner_radius;
+
+        let arrow = (is_arrow_shown).then_some(Bounds {
+            pos: arrow_tip + dvec2(0.0, -arrow_half_height),
+            size: dvec2(arrow_width + border_width, 2.0 * arrow_half_height),
+        });
+
+        let left = arrow_tip.x + arrow_width;
+
+        let do_title = |top: f64, scale: f64, enabled: bool| {
+            let cursor = dvec2(
+                left + side_padding,
+                top + (title_height + scale / 2.0) / 2.0 + offset_y,
+            );
+            let toggle_center_y = top + title_height / 2.0;
+            let bar_size = dvec2(30.0, 10.0);
+            let toggle_bar = Bounds {
+                pos: dvec2(
+                    left + popup_width - side_padding - bar_size.x,
+                    toggle_center_y + offset_y - bar_size.y / 2.0,
+                ),
+                size: bar_size,
+            };
+            let point_size = DVec2::splat(18.0);
+            let toggle_point = Bounds {
+                pos: dvec2(
+                    if enabled {
+                        toggle_bar.right() - point_size.x
+                    } else {
+                        toggle_bar.left()
+                    },
+                    toggle_center_y + offset_y - point_size.y / 2.0,
+                ),
+                size: point_size,
+            };
+            let hitbox_expansion = dvec2(5.0, 7.0);
+            let toggle_hitbox = Bounds {
+                pos: dvec2(
+                    left + popup_width - side_padding - bar_size.x - hitbox_expansion.x,
+                    toggle_center_y + offset_y - bar_size.y / 2.0 - hitbox_expansion.y,
+                ),
+                size: bar_size + hitbox_expansion * 2.0,
+            };
+            StylePopupTitleLayout {
+                top: top + offset_y,
+                cursor,
+                toggle_bar,
+                toggle_point,
+                toggle_hitbox,
+            }
+        };
+
+        let do_icon_and_field = |s: IconAndFieldY| {
+            let icon = ctx.roundb(Bounds {
+                pos: dvec2(left + side_padding, s.icon_y + offset_y),
+                size: DVec2::splat(icon_height),
+            });
+            let field = ctx.roundb(Bounds {
+                pos: dvec2(icon.right() + 3.0, s.field_y + offset_y),
+                size: s.field_size,
+            });
+            StylePopupIconAndFieldLayout { icon, field }
+        };
+
+        let line = line_section.map(|(i, top, contents)| {
+            let title = do_title(top, self.lines_label.scale, line_enabled);
+            let contents = contents.map(|s| {
+                let style_button_size = dvec2(33.0, 30.0);
+                let style_buttons = std::array::from_fn::<_, 3, _>(|i| Bounds {
+                    pos: dvec2(
+                        left + popup_width - side_padding - border_width
+                            + (i as f64 - 3.0) * (style_button_size.x - border_width),
+                        s.style_buttons_y + offset_y,
+                    ),
+                    size: style_button_size,
+                });
+                let style_button_hitboxes = style_buttons.map(|b| Bounds {
+                    pos: b.pos + dvec2(border_width * 0.5, 0.0),
+                    size: b.size - dvec2(border_width, 0.0),
+                });
+
+                StylePopupLineLayout {
+                    style_buttons,
+                    style_button_hitboxes,
+                    opacity: do_icon_and_field(s.opacity),
+                    width: do_icon_and_field(s.width),
+                }
+            });
+            (i, title, contents)
+        });
+
+        let point = point_section.map(|(i, top, contents)| {
+            let title = do_title(top, self.points_label.scale, point_enabled);
+            let contents = contents.map(|s| {
+                let style_button_size = dvec2(28.0, 28.0);
+                let style_buttons = std::array::from_fn::<_, 8, _>(|i| {
+                    let x = i % 4;
+                    let y = i / 4;
+                    Bounds {
+                        pos: dvec2(
+                            left + popup_width - side_padding - border_width
+                                + (x as f64 - 4.0) * (style_button_size.x - border_width),
+                            s.style_buttons_y
+                                + (y as f64) * (style_button_size.y - border_width)
+                                + offset_y,
+                        ),
+                        size: style_button_size,
+                    }
+                });
+                let style_button_hitboxes = style_buttons.map(|b| Bounds {
+                    pos: b.pos + border_width * 0.5,
+                    size: b.size - border_width,
+                });
+
+                StylePopupPointLayout {
+                    style_buttons,
+                    style_button_hitboxes,
+                    opacity: do_icon_and_field(s.opacity),
+                    size: do_icon_and_field(s.size),
+                }
+            });
+            (i, title, contents)
+        });
+
+        let fill = fill_section.map(|(i, top, contents)| {
+            let title = do_title(top, self.fill_label.scale, fill_enabled);
+            let contents = contents.map(|s| StylePopupFillLayout {
+                opacity: do_icon_and_field(s.opacity),
+            });
+            (i, title, contents)
+        });
+
+        let bounds = Bounds {
+            pos: dvec2(left, top),
+            size: dvec2(popup_width, bottom - top),
+        };
+
+        Some(StylePopupLayout {
+            line,
+            point,
+            fill,
+            arrow,
+            bounds,
+        })
+    }
+
+    fn update_popup(
+        &mut self,
+        ctx: &Context,
+        event: &Event,
+        expression_list_bounds: Bounds,
+        gutter_bounds: Bounds,
+        style: &mut ExpressionStyle,
+    ) -> Response {
+        let mut response = Response::default();
+        let Some(l) = self.layout_popup(ctx, expression_list_bounds, gutter_bounds, style) else {
+            return response;
+        };
+
+        let update_title = |l: &StylePopupTitleLayout,
+                            button: &mut Button,
+                            enabled: &mut Option<bool>,
+                            response: &mut Response| {
+            let (r, clicked) = button.update(ctx, event, l.toggle_hitbox);
+            *response = response.or(r);
+            if clicked {
+                *enabled = Some(!enabled.unwrap_or(true));
+                response.request_redraw();
+            }
+        };
+
+        if let Some((_, title, contents)) = &l.line {
+            update_title(
+                title,
+                &mut self.line_enabled_button,
+                &mut style.line.enabled,
+                &mut response,
+            );
+
+            if let Some(l) = contents {
+                for (i, (button, hitbox)) in
+                    zip(&mut self.line_style_radio_buttons, l.style_button_hitboxes).enumerate()
+                {
+                    let (r, clicked) = button.update(ctx, event, hitbox);
+                    response = response.or(r);
+
+                    if clicked {
+                        style.line.style =
+                            [LineStyle::Solid, LineStyle::Dashed, LineStyle::Dotted][i];
+                        response.request_redraw();
+                    }
+                }
+
+                let (r, m_opacity) = style.line.opacity.0.update(ctx, event, l.opacity.field);
+                response = response.or(r);
+                let (r, m_width) = style.line.width.0.update(ctx, event, l.width.field);
+                response = response.or(r);
+
+                if let Some(Message::Down) = m_opacity {
+                    style.line.opacity.0.unfocus();
+                    style.line.width.0.focus();
+                    response.request_redraw();
+                }
+
+                if let Some(Message::Up) = m_width {
+                    style.line.opacity.0.focus();
+                    style.line.width.0.unfocus();
+                    response.request_redraw();
+                }
+            }
+        }
+
+        if let Some((_, title, contents)) = &l.point {
+            update_title(
+                title,
+                &mut self.point_enabled_button,
+                &mut style.point.enabled,
+                &mut response,
+            );
+
+            if let Some(l) = contents {
+                for (i, (button, hitbox)) in
+                    zip(&mut self.point_style_radio_buttons, l.style_button_hitboxes).enumerate()
+                {
+                    let (r, clicked) = button.update(ctx, event, hitbox);
+                    response = response.or(r);
+
+                    if clicked {
+                        style.point.style = [
+                            PointStyle::Point,
+                            PointStyle::Open,
+                            PointStyle::Cross,
+                            PointStyle::Square,
+                            PointStyle::Plus,
+                            PointStyle::Triangle,
+                            PointStyle::Diamond,
+                            PointStyle::Star,
+                        ][i];
+                        response.request_redraw();
+                    }
+                }
+
+                let (r, m_opacity) = style.point.opacity.0.update(ctx, event, l.opacity.field);
+                response = response.or(r);
+                let (r, m_size) = style.point.size.0.update(ctx, event, l.size.field);
+                response = response.or(r);
+
+                if let Some(Message::Down) = m_opacity {
+                    style.point.opacity.0.unfocus();
+                    style.point.size.0.focus();
+                    response.request_redraw();
+                }
+
+                if let Some(Message::Up) = m_size {
+                    style.point.opacity.0.focus();
+                    style.point.size.0.unfocus();
+                    response.request_redraw();
+                }
+            }
+        }
+
+        if let Some((_, title, contents)) = &l.fill {
+            update_title(
+                title,
+                &mut self.fill_enabled_button,
+                &mut style.fill.enabled,
+                &mut response,
+            );
+
+            if let Some(l) = contents {
+                let (r, _m_opacity) = style.fill.opacity.0.update(ctx, event, l.opacity.field);
+                response = response.or(r);
+            }
+        }
+
+        // TODO figure out more robust way to make popups steal the correct inputs from things beneath them
+        if l.bounds.contains(ctx.cursor) {
+            let mut r = Response::default();
+            if matches!(
+                event,
+                Event::MouseInput(ElementState::Pressed, _)
+                    | Event::PinchGesture(_)
+                    | Event::MouseWheel(_)
+            ) {
+                r.consume_event();
+            }
+            r.cursor_mode = CursorMode::Icon(CursorIcon::Default);
+            response = response.or(r)
+        } else if matches!(event, Event::MouseInput(ElementState::Pressed, _))
+            && let l = self.layout_gutter(ctx, gutter_bounds)
+            && l.toggle_button_center.distance(ctx.cursor) > l.toggle_button_radius
+        {
+            // don't just set self.is_popup_open = true because then we might
+            // accidentally reopen if we had clicked on toggle button
+            self.should_close_popup = true;
+            response.request_redraw();
+        }
+
+        response
+    }
+
+    fn render_popup(
+        &mut self,
+        ctx: &Context,
+        expression_list_bounds: Bounds,
+        gutter_bounds: Bounds,
+        style: &mut ExpressionStyle,
+        draw_quad: &mut impl FnMut(Quad),
+    ) {
+        let Some(l) = self.layout_popup(ctx, expression_list_bounds, gutter_bounds, style) else {
+            return;
+        };
+
+        draw_popup_container(l.bounds, l.arrow, draw_quad);
+
+        let popup_bounds = l.bounds;
+
+        fn render_title<T>(
+            (index, l, contents): &(usize, StylePopupTitleLayout, Option<T>),
+            button: &Button,
+            popup_bounds: Bounds,
+            label: &Label,
+            draw_quad: &mut impl FnMut(Quad),
+        ) {
+            if *index > 0 {
+                draw_quad(Quad::rectangle(
+                    (popup_bounds.left(), l.top - 1.0),
+                    (popup_bounds.right(), l.top),
+                    [0.733; 3],
+                ));
+            }
+
+            label.render_from_cursor(l.cursor, [0; 3], draw_quad);
+
+            draw_quad(Quad::from_bounds(l.toggle_bar, QuadKind::Pill, [221; 3]));
+            let shadow_radius = 2.0; // hardcoded in quad.wgsl
+            let shadow_offset = dvec2(0.0, 2.0);
+            draw_quad(Quad {
+                kind: QuadKind::PopupToggleShadow,
+                p0: l.toggle_point.pos - shadow_radius + shadow_offset,
+                p1: l.toggle_point.pos + l.toggle_point.size + shadow_radius + shadow_offset,
+                color: dvec4(0.0, 0.0, 0.0, 0.2),
+                ..Default::default()
+            });
+            draw_quad(Quad {
+                kind: QuadKind::PopupToggleShadow,
+                p0: l.toggle_point.pos - shadow_radius,
+                p1: l.toggle_point.pos + l.toggle_point.size + shadow_radius,
+                color: dvec4(0.0, 0.0, 0.0, 0.2),
+                ..Default::default()
+            });
+            draw_quad(Quad::from_bounds(l.toggle_point, QuadKind::Pill, {
+                let darken = [1.0, 0.96, 0.91][button.state()];
+                if contents.is_some() {
+                    [102; 3]
+                } else {
+                    [245; 3]
+                }
+                .to_rgbaf64()
+                    * dvec4(darken, darken, darken, 1.0)
+            }));
+        }
+
+        fn render_icon_and_field(
+            ctx: &Context,
+            l: &StylePopupIconAndFieldLayout,
+            icon: QuadKind,
+            field: &mut InlineField,
+            draw_quad: &mut impl FnMut(Quad),
+        ) {
+            draw_quad(Quad::from_bounds(l.icon, icon, [148; 3]));
+            field.render(ctx, l.field, draw_quad);
+        }
+
+        if let Some(l) = &l.line {
+            render_title(
+                l,
+                &self.line_enabled_button,
+                popup_bounds,
+                &self.lines_label,
+                draw_quad,
+            );
+
+            if let Some(l) = &l.2 {
+                let mut order = [
+                    (0, LineStyle::Solid),
+                    (1, LineStyle::Dashed),
+                    (2, LineStyle::Dotted),
+                ];
+                order.sort_by_key(|(i, s)| {
+                    if *s == style.line.style {
+                        4
+                    } else {
+                        self.line_style_radio_buttons[*i].state()
+                    }
+                });
+
+                for (i, s) in order {
+                    let b = &l.style_buttons[i];
+                    draw_quad(Quad {
+                        kind: match (i, s == style.line.style) {
+                            (0, true) => QuadKind::PopupRadioSelectedLeft,
+                            (0, false) => QuadKind::PopupRadioLeft,
+                            (2, true) => QuadKind::PopupRadioSelectedRight,
+                            (2, false) => QuadKind::PopupRadioRight,
+                            (_, true) => QuadKind::PopupRadioSelectedMiddle,
+                            (_, false) => QuadKind::PopupRadioMiddle,
+                        },
+                        p0: b.pos,
+                        p1: b.pos + b.size,
+                        color: if s == style.line.style {
+                            PRIMARY_COLOR
+                        } else {
+                            [[255, 245, 204][self.line_style_radio_buttons[i].state()]; 3]
+                        }
+                        .to_rgbaf64(),
+                        ..Default::default()
+                    });
+                    let center = b.pos + b.size / 2.0;
+                    let size = b.size.min_element() * 0.583;
+                    draw_quad(
+                        Quad {
+                            kind: s.into(),
+                            p0: center - size / 2.0,
+                            p1: center + size / 2.0,
+                            color: if s == style.line.style {
+                                PRIMARY_COLOR
+                            } else {
+                                [[148, 40, 0][self.line_style_radio_buttons[i].state()]; 3]
+                            }
+                            .to_rgbaf64(),
+                            ..Default::default()
+                        }
+                        .pixel_snap(ctx),
+                    );
+                }
+
+                render_icon_and_field(
+                    ctx,
+                    &l.opacity,
+                    QuadKind::OpacityIcon,
+                    &mut style.line.opacity.0,
+                    draw_quad,
+                );
+                render_icon_and_field(
+                    ctx,
+                    &l.width,
+                    QuadKind::ThicknessIcon,
+                    &mut style.line.width.0,
+                    draw_quad,
+                );
+            }
+        }
+
+        if let Some(l) = &l.point {
+            render_title(
+                l,
+                &self.point_enabled_button,
+                popup_bounds,
+                &self.points_label,
+                draw_quad,
+            );
+
+            if let Some(l) = &l.2 {
+                let mut order = [
+                    (0, PointStyle::Point),
+                    (1, PointStyle::Open),
+                    (2, PointStyle::Cross),
+                    (3, PointStyle::Square),
+                    (4, PointStyle::Plus),
+                    (5, PointStyle::Triangle),
+                    (6, PointStyle::Diamond),
+                    (7, PointStyle::Star),
+                ];
+                order.sort_by_key(|(i, s)| {
+                    if *s == style.point.style {
+                        4
+                    } else {
+                        self.point_style_radio_buttons[*i].state()
+                    }
+                });
+
+                for (i, s) in order {
+                    let b = &l.style_buttons[i];
+                    draw_quad(Quad {
+                        kind: match (i, s == style.point.style) {
+                            (0, true) => QuadKind::PopupRadioSelectedTopLeft,
+                            (0, false) => QuadKind::PopupRadioTopLeft,
+                            (3, true) => QuadKind::PopupRadioSelectedTopRight,
+                            (3, false) => QuadKind::PopupRadioTopRight,
+                            (4, true) => QuadKind::PopupRadioSelectedBottomLeft,
+                            (4, false) => QuadKind::PopupRadioBottomLeft,
+                            (7, true) => QuadKind::PopupRadioSelectedBottomRight,
+                            (7, false) => QuadKind::PopupRadioBottomRight,
+                            (_, true) => QuadKind::PopupRadioSelectedMiddle,
+                            (_, false) => QuadKind::PopupRadioMiddle,
+                        },
+                        p0: b.pos,
+                        p1: b.pos + b.size,
+                        color: if s == style.point.style {
+                            PRIMARY_COLOR
+                        } else {
+                            [[255, 245, 204][self.point_style_radio_buttons[i].state()]; 3]
+                        }
+                        .to_rgbaf64(),
+                        ..Default::default()
+                    });
+                    let center = b.pos + b.size / 2.0;
+                    let size = b.size.min_element() * 0.4;
+                    draw_quad(
+                        Quad {
+                            kind: s.popup_quad_kind(),
+                            p0: center - size / 2.0,
+                            p1: center + size / 2.0,
+                            color: if s == style.point.style {
+                                PRIMARY_COLOR
+                            } else {
+                                [[148, 40, 0][self.point_style_radio_buttons[i].state()]; 3]
+                            }
+                            .to_rgbaf64(),
+                            ..Default::default()
+                        }
+                        .pixel_snap(ctx),
+                    );
+                }
+
+                render_icon_and_field(
+                    ctx,
+                    &l.opacity,
+                    QuadKind::OpacityIcon,
+                    &mut style.point.opacity.0,
+                    draw_quad,
+                );
+                render_icon_and_field(
+                    ctx,
+                    &l.size,
+                    QuadKind::ThicknessIcon,
+                    &mut style.point.size.0,
+                    draw_quad,
+                );
+            }
+        }
+
+        if let Some(l) = &l.fill {
+            render_title(
+                l,
+                &self.fill_enabled_button,
+                popup_bounds,
+                &self.fill_label,
+                draw_quad,
+            );
+
+            if let Some(l) = &l.2 {
+                render_icon_and_field(
+                    ctx,
+                    &l.opacity,
+                    QuadKind::OpacityIcon,
+                    &mut style.fill.opacity.0,
+                    draw_quad,
+                );
+            }
+        }
+    }
+}
+
 struct Expression {
     field: MathField,
-    color: [f32; 4],
     slider: Slider,
     parametric_domain: ParametricDomain,
+    style: ExpressionStyle,
     ast: Option<Result<parse::ast::Statement, String>>,
     output: Output,
+    style_gutter: Option<StyleGutter>,
     /// The cached height from the last update or render, or `None` if it's never
     /// been calculated before.
     height: Option<f64>,
@@ -2020,17 +2998,10 @@ impl Expression {
     fn new(color: [f32; 4]) -> Expression {
         Expression {
             field: Default::default(),
-            color,
             slider: Slider {
-                hard_min: (
-                    InlineField::new(&SLIDER_SOFT_MIN_DEFAULT.to_string()),
-                    Ok(ast::Expression::Number(SLIDER_SOFT_MIN_DEFAULT)),
-                ),
+                hard_min: create_with_placeholder(SLIDER_SOFT_MIN_DEFAULT),
                 soft_min: SLIDER_SOFT_MIN_DEFAULT,
-                hard_max: (
-                    InlineField::new(&SLIDER_SOFT_MAX_DEFAULT.to_string()),
-                    Ok(ast::Expression::Number(SLIDER_SOFT_MAX_DEFAULT)),
-                ),
+                hard_max: create_with_placeholder(SLIDER_SOFT_MAX_DEFAULT),
                 soft_max: SLIDER_SOFT_MAX_DEFAULT,
                 step: (InlineField::new(""), Ok(ast::Expression::Number(0.0))),
                 is_playing: false,
@@ -2042,17 +3013,32 @@ impl Expression {
                 fake_field_value: 0.0,
             },
             parametric_domain: Domain {
-                min: (
-                    InlineField::new(&PARAMETRIC_DOMAIN_MIN_DEFAULT.to_string()),
-                    Ok(ast::Expression::Number(PARAMETRIC_DOMAIN_MIN_DEFAULT)),
-                ),
-                max: (
-                    InlineField::new(&PARAMETRIC_DOMAIN_MAX_DEFAULT.to_string()),
-                    Ok(ast::Expression::Number(PARAMETRIC_DOMAIN_MAX_DEFAULT)),
-                ),
+                min: create_with_placeholder(PARAMETRIC_DOMAIN_MIN_DEFAULT),
+                max: create_with_placeholder(PARAMETRIC_DOMAIN_MAX_DEFAULT),
+            },
+            style: ExpressionStyle {
+                color,
+                ..Default::default()
             },
             ast: None,
             output: Default::default(),
+            style_gutter: Some(StyleGutter {
+                toggle_button: Default::default(),
+
+                is_popup_open: false,
+                should_close_popup: false,
+
+                lines_label: Label::new("Lines", 16.0, Font::MainRegular),
+                line_enabled_button: Default::default(),
+                line_style_radio_buttons: Default::default(),
+
+                points_label: Label::new("Points", 16.0, Font::MainRegular),
+                point_enabled_button: Default::default(),
+                point_style_radio_buttons: Default::default(),
+
+                fill_label: Label::new("Fill", 16.0, Font::MainRegular),
+                fill_enabled_button: Default::default(),
+            }),
             height: None,
         }
     }
@@ -2205,10 +3191,13 @@ impl Expression {
     }
 
     fn update_gutter(&mut self, ctx: &Context, event: &Event, bounds: Bounds) -> Response {
-        match &mut self.output.ui {
-            OutputUi::Slider(ui) => ui.update_gutter(ctx, event, &mut self.slider, bounds),
-            _ => Response::default(),
+        if let OutputUi::Slider(ui) = &mut self.output.ui {
+            return ui.update_gutter(ctx, event, &mut self.slider, bounds);
         }
+        if let Some(style_gutter) = &mut self.style_gutter {
+            return style_gutter.update_gutter(ctx, event, bounds, &mut self.style);
+        }
+        Response::default()
     }
 
     fn update_popup(
@@ -2218,16 +3207,25 @@ impl Expression {
         expression_list_bounds: Bounds,
         gutter_bounds: Bounds,
     ) -> Response {
-        match &mut self.output.ui {
-            OutputUi::Slider(ui) => ui.update_popup(
+        if let OutputUi::Slider(ui) = &mut self.output.ui {
+            return ui.update_popup(
                 ctx,
                 event,
                 &mut self.slider,
                 expression_list_bounds,
                 gutter_bounds,
-            ),
-            _ => Response::default(),
+            );
         }
+        if let Some(style_gutter) = &mut self.style_gutter {
+            return style_gutter.update_popup(
+                ctx,
+                event,
+                expression_list_bounds,
+                gutter_bounds,
+                &mut self.style,
+            );
+        }
+        Response::default()
     }
 
     fn set_latex(&mut self, latex: &[latex_tree::Node]) {
@@ -2333,11 +3331,10 @@ impl Expression {
         has_focus: bool,
         draw_quad: &mut impl FnMut(Quad),
     ) {
-        match &mut self.output.ui {
-            OutputUi::Slider(ui) => {
-                ui.render_gutter(ctx, bounds, has_focus, &mut self.slider, draw_quad)
-            }
-            _ => {}
+        if let OutputUi::Slider(ui) = &mut self.output.ui {
+            ui.render_gutter(ctx, bounds, has_focus, &mut self.slider, draw_quad);
+        } else if let Some(style_gutter) = &mut self.style_gutter {
+            style_gutter.render_gutter(ctx, bounds, has_focus, &self.style, draw_quad);
         }
     }
 
@@ -2348,15 +3345,22 @@ impl Expression {
         gutter_bounds: Bounds,
         draw_quad: &mut impl FnMut(Quad),
     ) {
-        match &mut self.output.ui {
-            OutputUi::Slider(ui) => ui.render_popup(
+        if let OutputUi::Slider(ui) = &mut self.output.ui {
+            ui.render_popup(
                 ctx,
                 &self.slider,
                 expression_list_bounds,
                 gutter_bounds,
                 draw_quad,
-            ),
-            _ => {}
+            );
+        } else if let Some(style_gutter) = &mut self.style_gutter {
+            style_gutter.render_popup(
+                ctx,
+                expression_list_bounds,
+                gutter_bounds,
+                &mut self.style,
+                draw_quad,
+            )
         }
     }
 }
@@ -2803,7 +3807,7 @@ impl ExpressionList {
                                     ui: OutputUi::None,
                                     data: OutputData::DraggablePoint(Geometry {
                                         width: 8.0,
-                                        color: e.color,
+                                        color: e.style.color,
                                         kind: GeometryKind::Point {
                                             p: dvec2(x, y),
                                             draggable: Some(i),
@@ -2906,7 +3910,7 @@ impl ExpressionList {
                             | ExpressionResult::Plot { value: id, ty, .. } => {
                                 let mut nodes = vec![C('=')];
 
-                                let color = expression.color;
+                                let color = expression.style.color;
                                 let mut geometry = vec![];
                                 let mut draw_point = |x: f64, y: f64| {
                                     geometry.push(Geometry {
@@ -2931,9 +3935,9 @@ impl ExpressionList {
                                         PlotKind::Normal => PlotKind::Normal,
                                         PlotKind::Inverse => PlotKind::Inverse,
                                         PlotKind::Parametric(d) => {
-                                            output
-                                                .ui
-                                                .set_domain(&analysis.freevars[&parameters[0]]);
+                                            output.ui.set_parametric_domain(
+                                                &analysis.freevars[&parameters[0]],
+                                            );
 
                                             let min = match &expression.parametric_domain.min.1 {
                                                 Ok(_) => match &d.min {

@@ -2248,9 +2248,15 @@ impl MathField {
                             response.request_redraw();
                             response.consume_event();
                         }
-                        _ => restart_cursor_blink = false,
+                        _ => {
+                            hide_cursor = false;
+                            restart_cursor_blink = false;
+                        }
                     },
-                    _ => restart_cursor_blink = false,
+                    _ => {
+                        hide_cursor = false;
+                        restart_cursor_blink = false;
+                    }
                 }
 
                 if hide_cursor {

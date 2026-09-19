@@ -74,7 +74,7 @@ fn vs_graph(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
         let p1 = v1.position;
 
         let is_first_segment = i == 0 || vertices[i - 1].shape != vertex.shape;
-        let a0 = f32(is_first_segment);
+        let a0 = select(0.001, 1.0, is_first_segment);
 
         let v2 = vertices[i + 2];
         var a1 = 1.0;

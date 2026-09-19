@@ -2083,7 +2083,8 @@ struct ExpressionStyle {
     changed: bool,
     kind: ExpressionStyleKind,
     hidden: bool,
-    color: [f32; 4],
+    color: DVec4,
+    color_latex: (InlineField, Result<ast::Expression, String>),
     line: LineAppearance,
     point: PointAppearance,
     fill: FillAppearance,
@@ -2105,11 +2106,26 @@ impl Default for ExpressionStyle {
             y.0.max_width = 60.0;
             y
         };
+        let mut color_latex = (
+            InlineField::new("rgb(1,2,3)"),
+            Ok(ast::Expression::Call {
+                callee: "rgb".into(),
+                args: vec![
+                    ast::Expression::Number(1.0),
+                    ast::Expression::Number(2.0),
+                    ast::Expression::Number(3.0),
+                ],
+            }),
+        );
+        color_latex.0.min_width = 135.0;
+        color_latex.0.max_width = 200.0;
+
         Self {
             changed: true,
             kind: ExpressionStyleKind::None,
             hidden: false,
-            color: [1.0, 0.0, 0.0, 1.0],
+            color: EXPRESSION_COLORS[0],
+            color_latex,
             line: LineAppearance {
                 enabled: None,
                 style: Default::default(),
@@ -2224,6 +2240,8 @@ struct StyleGutter {
     drag_label: Label<'static>,
     drag_enabled_button: Button,
     drag_mode_radio_buttons: [Button; 3],
+
+    color_buttons: [Button; N_EXPRESSION_COLORS],
 }
 
 struct StyleGutterLayout {
@@ -2268,11 +2286,18 @@ struct StylePopupDragLayout {
     mode_button_hitboxes: [Bounds; 3],
 }
 
+struct StylePopupColorLayout {
+    top: f64,
+    color_buttons: [Bounds; N_EXPRESSION_COLORS],
+    field: Bounds,
+}
+
 struct StylePopupLayout {
     line: Option<(usize, StylePopupTitleLayout, Option<StylePopupLineLayout>)>,
     point: Option<(usize, StylePopupTitleLayout, Option<StylePopupPointLayout>)>,
     fill: Option<(usize, StylePopupTitleLayout, Option<StylePopupFillLayout>)>,
     drag: Option<(usize, StylePopupTitleLayout, Option<StylePopupDragLayout>)>,
+    color: Option<StylePopupColorLayout>,
     arrow: Option<Bounds>,
     bounds: Bounds,
 }
@@ -2377,7 +2402,7 @@ impl StyleGutter {
             draw_quad(Quad::from_bounds(
                 l.toggle_button,
                 QuadKind::ExpressionShownIcon,
-                DVec4::from(style.color.map(|x| x.into())) * darken,
+                style.color,
             ));
 
             let white = DVec4::ONE * darken;
@@ -2513,10 +2538,20 @@ impl StyleGutter {
             mode_buttons_y: f64,
         }
 
+        struct ColorSectionY {
+            color_buttons_y: f64,
+            padding: f64,
+            field_size: DVec2,
+            field_y: f64,
+        }
+        let n_color_buttons_per_row = 6;
+        let color_button_size = 30.0;
+
         let mut line_section = None;
         let mut point_section = None;
         let mut fill_section = None;
         let mut drag_section = None;
+        let mut color_section = None;
 
         for (i, kind) in style.popup_order().iter().enumerate() {
             if i > 0 {
@@ -2524,9 +2559,12 @@ impl StyleGutter {
             }
             let top = next_y;
             next_y += title_height;
+            let mut do_color = false;
+            use StylePopupSectionKind as K;
             match kind {
-                StylePopupSectionKind::Line => {
+                K::Line => {
                     let contents = line_enabled.then(|| {
+                        do_color = true;
                         let style_buttons_y = next_y - 2.0;
                         let opacity = icon_and_field_y(&mut next_y, &style.line.opacity.0);
                         next_y += 8.0;
@@ -2540,8 +2578,9 @@ impl StyleGutter {
                     });
                     line_section = Some((i, top, contents));
                 }
-                StylePopupSectionKind::Point => {
+                K::Point => {
                     let contents = point_enabled.then(|| {
+                        do_color = true;
                         let style_buttons_y = next_y - 2.0;
                         let opacity = icon_and_field_y(&mut next_y, &style.point.opacity.0);
                         next_y += 8.0;
@@ -2555,15 +2594,16 @@ impl StyleGutter {
                     });
                     point_section = Some((i, top, contents));
                 }
-                StylePopupSectionKind::Fill => {
+                K::Fill => {
                     let contents = fill_enabled.then(|| {
+                        do_color = true;
                         let opacity = icon_and_field_y(&mut next_y, &style.fill.opacity.0);
                         next_y += 10.0;
                         FillSectionY { opacity }
                     });
                     fill_section = Some((i, top, contents));
                 }
-                StylePopupSectionKind::Drag => {
+                K::Drag => {
                     let contents = drag_enabled.then(|| {
                         let mode_buttons_y = next_y - 2.0;
                         next_y += 38.0;
@@ -2571,6 +2611,32 @@ impl StyleGutter {
                     });
                     drag_section = Some((i, top, contents));
                 }
+            }
+
+            if do_color && color_section.is_none() {
+                next_y += border_width;
+                let top = next_y;
+                let contents = {
+                    next_y += 10.0;
+                    let color_buttons_y = next_y;
+                    let padding = (popup_width - 2.0 * (side_padding) - color_button_size)
+                        / (n_color_buttons_per_row as f64 - 1.0)
+                        - color_button_size;
+                    let n_rows = N_EXPRESSION_COLORS.div_ceil(n_color_buttons_per_row);
+                    next_y += color_button_size * n_rows as f64 + padding * (n_rows - 1) as f64;
+                    next_y += 10.0;
+                    let field_y = next_y;
+                    let field_size = style.color_latex.0.expression_size(ctx, true);
+                    next_y += field_size.y;
+                    next_y += 10.0;
+                    ColorSectionY {
+                        color_buttons_y,
+                        padding,
+                        field_size,
+                        field_y,
+                    }
+                };
+                color_section = Some((top, contents));
             }
         }
 
@@ -2746,6 +2812,28 @@ impl StyleGutter {
             (i, title, contents)
         });
 
+        let color = color_section.map(|(top, c)| {
+            let corner = dvec2(left + side_padding, c.color_buttons_y + offset_y);
+            let color_buttons = std::array::from_fn::<_, N_EXPRESSION_COLORS, _>(|i| {
+                let x = i % n_color_buttons_per_row;
+                let y = i / n_color_buttons_per_row;
+                ctx.roundb(Bounds {
+                    pos: corner + dvec2(x as f64, y as f64) * (color_button_size + c.padding),
+                    size: DVec2::splat(color_button_size),
+                })
+            });
+            let field = Bounds {
+                pos: dvec2(left + side_padding, c.field_y + offset_y),
+                size: c.field_size,
+            };
+
+            StylePopupColorLayout {
+                top,
+                color_buttons,
+                field,
+            }
+        });
+
         let bounds = Bounds {
             pos: dvec2(left, top),
             size: dvec2(popup_width, bottom - top),
@@ -2756,6 +2844,7 @@ impl StyleGutter {
             point,
             fill,
             drag,
+            color,
             arrow,
             bounds,
         })
@@ -2980,6 +3069,29 @@ impl StyleGutter {
                         response.request_redraw();
                     }
                 }
+            }
+        }
+
+        if let Some(l) = &l.color {
+            for (i, (button, hitbox)) in zip(&mut self.color_buttons, l.color_buttons).enumerate() {
+                let (r, clicked) = button.update(ctx, event, hitbox);
+                response = response.or(r);
+
+                if clicked {
+                    style.color = EXPRESSION_COLORS[i];
+                    style.color_latex.0.clear();
+                    style.changed = true;
+                    message = message.or(Some(Message::ContentsChanged { user_driven: true }));
+                    response.request_redraw();
+                }
+            }
+
+            let (r, m_color) = style.color_latex.0.update(ctx, event, l.field);
+            response = response.or(r);
+
+            if matches!(m_color, Some(Message::ContentsChanged { .. })) {
+                parse(&mut style.color_latex);
+                message = message.or(m_color);
             }
         }
 
@@ -3335,6 +3447,51 @@ impl StyleGutter {
                 }
             }
         }
+
+        if let Some(l) = &l.color {
+            draw_quad(Quad::rectangle(
+                (popup_bounds.left(), l.top - 1.0),
+                (popup_bounds.right(), l.top),
+                [0.733; 3],
+            ));
+
+            for (i, (button, &bounds)) in
+                zip(&self.color_buttons, l.color_buttons.iter()).enumerate()
+            {
+                draw_quad(Quad {
+                    p0: bounds.pos - 2.0,
+                    p1: bounds.pos + bounds.size + 2.0,
+                    kind: QuadKind::PopupColorSwatchHighlight,
+                    color: ([0; 3], [0.0, 0.1, 0.2][button.state()]).to_rgbaf64(),
+                    ..Default::default()
+                });
+                let color = EXPRESSION_COLORS[i % EXPRESSION_COLORS.len()];
+                draw_quad(Quad::from_bounds(bounds, QuadKind::PopupColorSwatch, color));
+                if color == style.color
+                    && (style.color_latex.0.is_empty() || style.color_latex.0.underline.error)
+                {
+                    let center = bounds.pos + bounds.size / 2.0;
+                    let size = bounds.size.min_element() * dvec2(1.0, 0.75) * 0.6;
+                    let brightness = if color.dot(dvec4(0.2126, 0.7152, 0.0722, 0.0)) > 0.65 {
+                        69
+                    } else {
+                        255
+                    };
+                    draw_quad(
+                        Quad {
+                            p0: center - size / 2.0,
+                            p1: center + size / 2.0,
+                            kind: QuadKind::TickIcon,
+                            color: ([brightness; 3], 1.0).to_rgbaf64(),
+                            ..Default::default()
+                        }
+                        .pixel_snap(ctx),
+                    );
+                }
+            }
+
+            style.color_latex.0.render(ctx, l.field, draw_quad);
+        }
     }
 }
 
@@ -3368,7 +3525,7 @@ fn create_slider_latex<'a>(name_equal_field: &MathField, value: f64) -> latex_tr
 impl Expression {
     const PADDING: f64 = 16.0;
 
-    fn new(color: [f32; 4]) -> Expression {
+    fn new(color: DVec4) -> Expression {
         Expression {
             field: Default::default(),
             slider: Slider {
@@ -3415,6 +3572,8 @@ impl Expression {
                 drag_label: Label::new("Drag", 16.0, Font::MainRegular),
                 drag_enabled_button: Default::default(),
                 drag_mode_radio_buttons: Default::default(),
+
+                color_buttons: Default::default(),
             },
             height: None,
         }
@@ -3430,7 +3589,7 @@ impl Expression {
             .unwrap_or_else(|| 2.0 * Self::PADDING + self.field.expression_size().y)
     }
 
-    fn from_latex(latex: &[latex_tree::Node], color: [f32; 4]) -> Self {
+    fn from_latex(latex: &[latex_tree::Node], color: DVec4) -> Self {
         let mut e = Expression::new(color);
         e.set_latex(latex);
         e
@@ -3751,13 +3910,20 @@ pub struct ExpressionList {
     vm_vars: vm::Vars,
 }
 
-const EXPRESSION_COLORS: &[[f32; 4]] = &[
-    [0.780, 0.267, 0.251, 1.0],
-    [0.176, 0.439, 0.702, 1.0],
-    [0.204, 0.522, 0.263, 1.0],
-    [0.376, 0.259, 0.651, 1.0],
-    [0.0, 0.0, 0.0, 1.0],
+const N_EXPRESSION_COLORS: usize = 6;
+const EXPRESSION_COLORS: [DVec4; N_EXPRESSION_COLORS] = [
+    dvec4(0.78, 0.267, 0.25, 1.0),
+    dvec4(0.176, 0.44, 0.7, 1.0),
+    dvec4(0.204, 0.52, 0.263, 1.0),
+    dvec4(0.98, 0.494, 0.098, 1.0),
+    dvec4(0.376, 0.26, 0.65, 1.0),
+    dvec4(0.0, 0.0, 0.0, 1.0),
 ];
+
+fn get_default_expression_color(i: usize) -> DVec4 {
+    let p = [0, 1, 2, 4, 5];
+    EXPRESSION_COLORS[p[i % p.len()]]
+}
 
 impl ExpressionList {
     pub fn new() -> Self {
@@ -3768,7 +3934,7 @@ impl ExpressionList {
             .chain(Some(&""))
             .chain(expressions.is_empty().then_some(&""))
             .map(|s| {
-                let color = EXPRESSION_COLORS[next_color % EXPRESSION_COLORS.len()];
+                let color = get_default_expression_color(next_color);
                 next_color += 1;
                 Expression::from_latex(parse_latex(s).unwrap().as_slice(), color)
             })
@@ -4218,7 +4384,7 @@ impl ExpressionList {
                                     data: OutputData::DraggablePoint(Geometry {
                                         original_width: 8.0,
                                         width: 8.0,
-                                        color: e.style.color,
+                                        color: e.style.color.as_vec4().into(),
                                         line_style: Default::default(),
                                         point_style: Default::default(),
                                         kind: GeometryKind::Point {
@@ -4407,7 +4573,7 @@ impl ExpressionList {
                         );
 
                         let color = |opacity: f32| {
-                            let mut c = expression.style.color;
+                            let mut c = expression.style.color.as_vec4().to_array();
                             c[3] *= opacity;
                             c
                         };

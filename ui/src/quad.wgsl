@@ -87,6 +87,9 @@ const GutterDragXYIcon = 75u;
 const PopupDragXIcon = 76u;
 const PopupDragYIcon = 77u;
 const PopupDragXYIcon = 78u;
+const PopupColorSwatch = 79u;
+const PopupColorSwatchHighlight = 80u;
+const TickIcon = 81u;
 
 struct Vertex {
     @location(0) position: vec2f,
@@ -774,6 +777,30 @@ fn fs_quad(in: VertexOutput) -> @location(0) vec4f {
         case PopupDragXIcon, PopupDragYIcon, PopupDragXYIcon {
             let p = in.uv - 0.5;
             var sd = sd_draggable(p, in.kind);
+            sd *= size.x;
+            let opacity = saturate(0.5 - sd);
+            return in.color * vec4(1.0, 1.0, 1.0, opacity);
+        }
+        case PopupColorSwatch {
+            const RADIUS = 3.0;
+            let radius = RADIUS * uniforms.scale_factor;
+            let sd = sd_rounded_box(size * (in.uv - 0.5), size / 2.0, vec4(radius));
+            let opacity = saturate(0.5 - sd);
+            return in.color * vec4(1.0, 1.0, 1.0, opacity);
+        }
+        case PopupColorSwatchHighlight {
+            const RADIUS = 5.0;
+            let radius = RADIUS * uniforms.scale_factor;
+            let sd = sd_rounded_box(size * (in.uv - 0.5), size / 2.0, vec4(radius));
+            let opacity = saturate(0.5 - sd);
+            return in.color * vec4(1.0, 1.0, 1.0, opacity);
+        }
+        case TickIcon {
+            let p = (in.uv - 0.5) * vec2(1.0, 0.75);
+            var sd = max(
+                abs(p.x - 0.105) - p.y - 0.624,
+                abs(p.y + abs(p.x + 0.105) - 0.234) - 0.137
+            ) / sqrt(2.0);
             sd *= size.x;
             let opacity = saturate(0.5 - sd);
             return in.color * vec4(1.0, 1.0, 1.0, opacity);

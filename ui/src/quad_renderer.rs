@@ -91,6 +91,9 @@ pub enum QuadKind {
     PopupDragXIcon,
     PopupDragYIcon,
     PopupDragXYIcon,
+    PopupColorSwatch,
+    PopupColorSwatchHighlight,
+    TickIcon,
 }
 
 pub struct Quad {

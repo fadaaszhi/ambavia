@@ -2414,17 +2414,20 @@ impl MathField {
         };
         match &self.selection {
             Some(selection)
-                if self.interactiveness.allows_writing()
-                    && self.cursor_blink.as_ref().is_none_or(|(t, _)| {
-                        (ctx.time - t) % CURSOR_BLINK_PERIOD < CURSOR_BLINK_PERIOD / 2.0
-                    })
-                    || selection.anchor != selection.focus =>
+                if self.interactiveness.allows_writing() || selection.anchor != selection.focus =>
             {
                 let selection: Selection = selection.into();
                 let nodes = tree.walk_mut(&selection.path);
                 let original_gray = nodes.has_gray_background;
                 nodes.has_gray_background = false;
-                tree.render_selection(ctx, &selection, transform, draw_quad);
+                if self.interactiveness.allows_writing()
+                    && self.cursor_blink.as_ref().is_none_or(|(t, _)| {
+                        (ctx.time - t) % CURSOR_BLINK_PERIOD < CURSOR_BLINK_PERIOD / 2.0
+                    })
+                    || matches!(selection.span, SelectionSpan::Range(_))
+                {
+                    tree.render_selection(ctx, &selection, transform, draw_quad);
+                }
                 tree.render(ctx, transform, draw_quad);
                 tree.walk_mut(&selection.path).has_gray_background = original_gray;
             }

@@ -452,11 +452,17 @@ impl Tree {
             .rev()
             .collect::<String>();
         let mut previous_text = previous_text.as_str();
-        while let Some(name) = OPERATORNAMES
-            .iter()
-            .find(|name| previous_text.starts_with(*name))
-        {
-            previous_text = &previous_text[name.len()..];
+        let mut j = 0;
+        while j < previous_text.len() {
+            if let Some(name) = OPERATORNAMES
+                .iter()
+                .find(|name| previous_text[j..].starts_with(*name))
+            {
+                previous_text = &previous_text[j + name.len()..];
+                j = 0;
+            } else {
+                j += 1;
+            }
         }
         for (find, replace) in replacements {
             // Hacky and still not correct - doesn't handle uniquepsilon

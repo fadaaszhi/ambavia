@@ -19,7 +19,7 @@ use winit::{
 
 use crate::{
     AppGraphics, Bounds, Context, Event, Response,
-    expression_list::ExpressionId,
+    expression_list::{DragMode, ExpressionId},
     graph::{
         sample_explicit::sample_explicit,
         sample_implicit::sample_implicit,
@@ -59,7 +59,7 @@ pub enum GeometryKind {
     Line(Vec<DVec2>),
     Point {
         p: DVec2,
-        draggable: Option<ExpressionId>,
+        draggable: Option<(ExpressionId, DragMode)>,
     },
     Fill(Vec<DVec2>),
     Plot {
@@ -94,7 +94,7 @@ impl Axis {
 
 #[derive(Clone, Copy, PartialEq)]
 enum DragTarget {
-    Point(ExpressionId),
+    Point((ExpressionId, DragMode)),
     Axis {
         axis: Axis,
         inital_viewport: Viewport,
@@ -592,13 +592,13 @@ impl GraphPaper {
             for g in self.geometry.iter().rev() {
                 if let GeometryKind::Point {
                     p,
-                    draggable: Some(i),
+                    draggable: Some(d),
                     ..
                 } = g.kind
                     && from_vp(&self.viewport, p).distance(ctx.cursor)
                         < draggable_point_width(g.width) as f64 / 2.0
                 {
-                    return DragTarget::Point(i);
+                    return DragTarget::Point(d);
                 }
             }
 
@@ -628,17 +628,22 @@ impl GraphPaper {
                         to_vp(&self.viewport, ctx.cursor) - to_vp(&self.viewport, *previous_cursor);
 
                     match target {
-                        DragTarget::Point(i) => {
+                        DragTarget::Point((i, mode)) => {
                             if let Some(p) = self.geometry.iter().find_map(|g| {
                                 if let GeometryKind::Point { p, draggable } = g.kind
-                                    && draggable == Some(*i)
+                                    && draggable == Some((*i, *mode))
                                 {
                                     Some(p)
                                 } else {
                                     None
                                 }
                             }) {
-                                dragged_point = Some((*i, p + diff));
+                                let mask = match mode {
+                                    DragMode::X => dvec2(1.0, 0.0),
+                                    DragMode::Y => dvec2(0.0, 1.0),
+                                    DragMode::XY => dvec2(1.0, 1.0),
+                                };
+                                dragged_point = Some((*i, p + diff * mask));
                             } else {
                                 self.dragging = None;
                             }

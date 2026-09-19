@@ -81,6 +81,12 @@ const PopupRadioSelectedTopLeft = 69u;
 const PopupRadioSelectedTopRight = 70u;
 const PopupRadioSelectedBottomLeft = 71u;
 const PopupRadioSelectedBottomRight = 72u;
+const GutterDragXIcon = 73u;
+const GutterDragYIcon = 74u;
+const GutterDragXYIcon = 75u;
+const PopupDragXIcon = 76u;
+const PopupDragYIcon = 77u;
+const PopupDragXYIcon = 78u;
 
 struct Vertex {
     @location(0) position: vec2f,
@@ -298,6 +304,25 @@ fn sd_point(p: vec2f, kind: u32) -> f32 {
             q -= racs;
             q += ecs * clamp(-dot(q, ecs), 0.0, racs.y / ecs.y);
             return length(q) * sign(q.x);
+        }
+    }
+}
+
+// p in [-0.5,0.5]^2
+fn sd_draggable(p: vec2f, kind: u32) -> f32 {
+    let a = abs(p);
+    let b = a.yx;
+    let sd = min(max(b - 0.04, a - 0.23), max((a + b - 0.33) / sqrt(2.0), 0.188 - a));
+    
+    switch kind {
+        case GutterDragXIcon, PopupDragXIcon {
+            return sd.x;
+        }
+        case GutterDragYIcon, PopupDragYIcon {
+            return sd.y;
+        }
+        case GutterDragXYIcon, PopupDragXYIcon, default {
+            return min(sd.x, sd.y);
         }
     }
 }
@@ -737,6 +762,19 @@ fn fs_quad(in: VertexOutput) -> @location(0) vec4f {
             let p = in.uv * 2.0 - 1.0;
             var sd = sd_point(p, in.kind);
             sd *= size.x / 2.0;
+            let opacity = saturate(0.5 - sd);
+            return in.color * vec4(1.0, 1.0, 1.0, opacity);
+        }
+        case GutterDragXIcon, GutterDragYIcon, GutterDragXYIcon {
+            let p = in.uv - 0.5;
+            var sd = sd_draggable(p, in.kind);
+            sd *= size.x;
+            return apply_shadow_and_circle_mask(sd, in.uv, in.color);
+        }
+        case PopupDragXIcon, PopupDragYIcon, PopupDragXYIcon {
+            let p = in.uv - 0.5;
+            var sd = sd_draggable(p, in.kind);
+            sd *= size.x;
             let opacity = saturate(0.5 - sd);
             return in.color * vec4(1.0, 1.0, 1.0, opacity);
         }

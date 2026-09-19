@@ -85,6 +85,12 @@ pub enum QuadKind {
     PopupRadioSelectedTopRight,
     PopupRadioSelectedBottomLeft,
     PopupRadioSelectedBottomRight,
+    GutterDragXIcon,
+    GutterDragYIcon,
+    GutterDragXYIcon,
+    PopupDragXIcon,
+    PopupDragYIcon,
+    PopupDragXYIcon,
 }
 
 pub struct Quad {

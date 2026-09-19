@@ -2057,6 +2057,18 @@ struct FillAppearance {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DragMode {
+    X,
+    Y,
+    XY,
+}
+
+struct DragAppearance {
+    enabled: Option<bool>,
+    mode: DragMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum ExpressionStyleKind {
     None,
     Equality,
@@ -2075,6 +2087,7 @@ struct ExpressionStyle {
     line: LineAppearance,
     point: PointAppearance,
     fill: FillAppearance,
+    drag: DragAppearance,
 }
 
 fn create_with_placeholder(placeholder: f64) -> (InlineField, Result<ast::Expression, String>) {
@@ -2113,6 +2126,10 @@ impl Default for ExpressionStyle {
                 enabled: None,
                 opacity: create_with_placeholder(FILL_OPACITY_DEFAULT),
             },
+            drag: DragAppearance {
+                enabled: None,
+                mode: DragMode::XY,
+            },
         }
     }
 }
@@ -2121,6 +2138,7 @@ enum StylePopupSectionKind {
     Line,
     Point,
     Fill,
+    Drag,
 }
 
 impl ExpressionStyle {
@@ -2131,7 +2149,7 @@ impl ExpressionStyle {
             ExpressionStyleKind::Equality => &[K::Line],
             ExpressionStyleKind::Point => &[K::Point],
             ExpressionStyleKind::PointList => &[K::Point, K::Line],
-            ExpressionStyleKind::DraggablePoint => &[K::Point],
+            ExpressionStyleKind::DraggablePoint => &[K::Point, K::Drag],
             ExpressionStyleKind::Polygon => &[K::Line, K::Fill],
             ExpressionStyleKind::Parametric => &[K::Line, K::Fill],
         }
@@ -2172,6 +2190,18 @@ impl ExpressionStyle {
             ExpressionStyleKind::Parametric => self.fill.enabled.unwrap_or(false),
         }
     }
+
+    fn drag_enabled(&self) -> bool {
+        match self.kind {
+            ExpressionStyleKind::None => false,
+            ExpressionStyleKind::Equality => false,
+            ExpressionStyleKind::Point => false,
+            ExpressionStyleKind::PointList => false,
+            ExpressionStyleKind::DraggablePoint => self.drag.enabled.unwrap_or(true),
+            ExpressionStyleKind::Polygon => false,
+            ExpressionStyleKind::Parametric => false,
+        }
+    }
 }
 
 struct StyleGutter {
@@ -2190,6 +2220,10 @@ struct StyleGutter {
 
     fill_label: Label<'static>,
     fill_enabled_button: Button,
+
+    drag_label: Label<'static>,
+    drag_enabled_button: Button,
+    drag_mode_radio_buttons: [Button; 3],
 }
 
 struct StyleGutterLayout {
@@ -2229,10 +2263,16 @@ struct StylePopupFillLayout {
     opacity: StylePopupIconAndFieldLayout,
 }
 
+struct StylePopupDragLayout {
+    mode_buttons: [Bounds; 3],
+    mode_button_hitboxes: [Bounds; 3],
+}
+
 struct StylePopupLayout {
     line: Option<(usize, StylePopupTitleLayout, Option<StylePopupLineLayout>)>,
     point: Option<(usize, StylePopupTitleLayout, Option<StylePopupPointLayout>)>,
     fill: Option<(usize, StylePopupTitleLayout, Option<StylePopupFillLayout>)>,
+    drag: Option<(usize, StylePopupTitleLayout, Option<StylePopupDragLayout>)>,
     arrow: Option<Bounds>,
     bounds: Bounds,
 }
@@ -2382,7 +2422,14 @@ impl StyleGutter {
                 ExpressionStyleKind::PointList if style.point_enabled() => {
                     draw(QuadKind::PointsIcon)
                 }
-                ExpressionStyleKind::DraggablePoint => draw(QuadKind::GutterPointPointIcon),
+                ExpressionStyleKind::DraggablePoint => {
+                    draw(match (style.drag_enabled(), style.drag.mode) {
+                        (false, _) => style.point.style.gutter_quad_kind(),
+                        (true, DragMode::X) => QuadKind::GutterDragXIcon,
+                        (true, DragMode::Y) => QuadKind::GutterDragYIcon,
+                        (true, DragMode::XY) => QuadKind::GutterDragXYIcon,
+                    })
+                }
                 ExpressionStyleKind::Polygon if style.line_enabled() => {
                     draw(match style.line.style {
                         LineStyle::Solid => QuadKind::PolygonSolidIcon,
@@ -2413,6 +2460,7 @@ impl StyleGutter {
         let line_enabled = !style.hidden && style.line_enabled();
         let point_enabled = !style.hidden && style.point_enabled();
         let fill_enabled = !style.hidden && style.fill_enabled();
+        let drag_enabled = !style.hidden && style.drag_enabled();
 
         let border_width = 1.0;
         let popup_width = 220.0 + 2.0 * border_width;
@@ -2461,9 +2509,14 @@ impl StyleGutter {
             opacity: IconAndFieldY,
         }
 
+        struct DragSectionY {
+            mode_buttons_y: f64,
+        }
+
         let mut line_section = None;
         let mut point_section = None;
         let mut fill_section = None;
+        let mut drag_section = None;
 
         for (i, kind) in style.popup_order().iter().enumerate() {
             if i > 0 {
@@ -2509,6 +2562,14 @@ impl StyleGutter {
                         FillSectionY { opacity }
                     });
                     fill_section = Some((i, top, contents));
+                }
+                StylePopupSectionKind::Drag => {
+                    let contents = drag_enabled.then(|| {
+                        let mode_buttons_y = next_y - 2.0;
+                        next_y += 38.0;
+                        DragSectionY { mode_buttons_y }
+                    });
+                    drag_section = Some((i, top, contents));
                 }
             }
         }
@@ -2661,6 +2722,30 @@ impl StyleGutter {
             (i, title, contents)
         });
 
+        let drag = drag_section.map(|(i, top, contents)| {
+            let title = do_title(top, self.drag_label.scale, drag_enabled);
+            let contents = contents.map(|s| {
+                let mode_button_size = dvec2(33.0, 30.0);
+                let mode_buttons = std::array::from_fn::<_, 3, _>(|i| Bounds {
+                    pos: dvec2(
+                        left + side_padding + i as f64 * (mode_button_size.x - border_width),
+                        s.mode_buttons_y + offset_y,
+                    ),
+                    size: mode_button_size,
+                });
+                let mode_button_hitboxes = mode_buttons.map(|b| Bounds {
+                    pos: b.pos + dvec2(border_width * 0.5, 0.0),
+                    size: b.size - dvec2(border_width, 0.0),
+                });
+
+                StylePopupDragLayout {
+                    mode_buttons,
+                    mode_button_hitboxes,
+                }
+            });
+            (i, title, contents)
+        });
+
         let bounds = Bounds {
             pos: dvec2(left, top),
             size: dvec2(popup_width, bottom - top),
@@ -2670,6 +2755,7 @@ impl StyleGutter {
             line,
             point,
             fill,
+            drag,
             arrow,
             bounds,
         })
@@ -2865,6 +2951,34 @@ impl StyleGutter {
                 if matches!(m_opacity, Some(Message::ContentsChanged { .. })) {
                     parse(&mut style.fill.opacity);
                     message = message.or(m_opacity);
+                }
+            }
+        }
+
+        if let Some((_, title, contents)) = &l.drag {
+            let enabled = style.drag_enabled();
+            update_title(
+                title,
+                &mut self.drag_enabled_button,
+                &mut style.hidden,
+                &mut style.drag.enabled,
+                enabled,
+                &mut style.changed,
+                &mut response,
+            );
+
+            if let Some(l) = contents {
+                for (i, (button, hitbox)) in
+                    zip(&mut self.drag_mode_radio_buttons, l.mode_button_hitboxes).enumerate()
+                {
+                    let (r, clicked) = button.update(ctx, event, hitbox);
+                    response = response.or(r);
+
+                    if clicked {
+                        style.drag.mode = [DragMode::X, DragMode::Y, DragMode::XY][i];
+                        style.changed = true;
+                        response.request_redraw();
+                    }
                 }
             }
         }
@@ -3156,6 +3270,71 @@ impl StyleGutter {
                 );
             }
         }
+
+        if let Some(l) = &l.drag {
+            render_title(
+                l,
+                &self.drag_enabled_button,
+                popup_bounds,
+                &self.drag_label,
+                draw_quad,
+            );
+
+            if let Some(l) = &l.2 {
+                let mut order = [(0, DragMode::X), (1, DragMode::Y), (2, DragMode::XY)];
+                order.sort_by_key(|(i, s)| {
+                    if *s == style.drag.mode {
+                        4
+                    } else {
+                        self.drag_mode_radio_buttons[*i].state()
+                    }
+                });
+
+                for (i, s) in order {
+                    let b = &l.mode_buttons[i];
+                    draw_quad(Quad {
+                        kind: match (i, s == style.drag.mode) {
+                            (0, true) => QuadKind::PopupRadioSelectedLeft,
+                            (0, false) => QuadKind::PopupRadioLeft,
+                            (2, true) => QuadKind::PopupRadioSelectedRight,
+                            (2, false) => QuadKind::PopupRadioRight,
+                            (_, true) => QuadKind::PopupRadioSelectedMiddle,
+                            (_, false) => QuadKind::PopupRadioMiddle,
+                        },
+                        p0: b.pos,
+                        p1: b.pos + b.size,
+                        color: if s == style.drag.mode {
+                            PRIMARY_COLOR
+                        } else {
+                            [[255, 245, 204][self.drag_mode_radio_buttons[i].state()]; 3]
+                        }
+                        .to_rgbaf64(),
+                        ..Default::default()
+                    });
+                    let center = b.pos + b.size / 2.0;
+                    let size = b.size.min_element() * 0.9;
+                    draw_quad(
+                        Quad {
+                            kind: match s {
+                                DragMode::X => QuadKind::PopupDragXIcon,
+                                DragMode::Y => QuadKind::PopupDragYIcon,
+                                DragMode::XY => QuadKind::PopupDragXYIcon,
+                            },
+                            p0: center - size / 2.0,
+                            p1: center + size / 2.0,
+                            color: if s == style.drag.mode {
+                                PRIMARY_COLOR
+                            } else {
+                                [[148, 40, 0][self.drag_mode_radio_buttons[i].state()]; 3]
+                            }
+                            .to_rgbaf64(),
+                            ..Default::default()
+                        }
+                        .pixel_snap(ctx),
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -3232,6 +3411,10 @@ impl Expression {
 
                 fill_label: Label::new("Fill", 16.0, Font::MainRegular),
                 fill_enabled_button: Default::default(),
+
+                drag_label: Label::new("Drag", 16.0, Font::MainRegular),
+                drag_enabled_button: Default::default(),
+                drag_mode_radio_buttons: Default::default(),
             },
             height: None,
         }
@@ -3727,7 +3910,7 @@ impl ExpressionList {
                         if let OutputData::DraggablePoint(Geometry {
                             kind:
                                 GeometryKind::Point {
-                                    draggable: Some(id),
+                                    draggable: Some((id, _)),
                                     ..
                                 },
                             ..
@@ -4028,7 +4211,6 @@ impl ExpressionList {
                                 && let Some(x) = get_numeric_literal(&arguments[0])
                                 && let Some(y) = get_numeric_literal(&arguments[1])
                             {
-                                e.style.kind = ExpressionStyleKind::DraggablePoint;
                                 let mut latex = vec![C('=')];
                                 point2(&mut latex, x, y);
                                 e.output = Output {
@@ -4038,7 +4220,7 @@ impl ExpressionList {
                                         color: e.style.color,
                                         kind: GeometryKind::Point {
                                             p: dvec2(x, y),
-                                            draggable: Some(i),
+                                            draggable: Some((i, DragMode::XY)),
                                         },
                                     }),
                                 };
@@ -4588,6 +4770,7 @@ impl ExpressionList {
                                     if let OutputData::DraggablePoint(Geometry { kind, .. }) =
                                         &output.data
                                     {
+                                        expression.style.kind = ExpressionStyleKind::DraggablePoint;
                                         output.data =
                                             match (point_size.get(0), point_opacity.get(0)) {
                                                 (Some(size), Some(opacity)) => {
@@ -4747,14 +4930,45 @@ impl ExpressionList {
                 if e.style.hidden {
                     continue;
                 }
+                let focus = |g: &mut Geometry| {
+                    g.width *= match g.kind {
+                        GeometryKind::Line(_) | GeometryKind::Plot { .. } => 1.4,
+                        GeometryKind::Point { .. } => 1.2,
+                        GeometryKind::Fill(_) => 1.0,
+                    };
+                    g.color[3] = match g.kind {
+                        GeometryKind::Line(_) | GeometryKind::Plot { .. } => 1.0,
+                        GeometryKind::Point { .. } | GeometryKind::Fill(_) => {
+                            // Same as blending over itself, as if it was rendered twice
+                            1.0 - (1.0 - g.color[3]).powi(2)
+                        }
+                    };
+                };
                 match &e.output.data {
-                    OutputData::DraggablePoint(p) if e.style.point_enabled() => {
-                        let mut p = p.clone();
-                        if e.has_focus() {
-                            p.width *= 1.15;
-                            draggable_points.push(p);
+                    OutputData::DraggablePoint(g) if e.style.point_enabled() => {
+                        let mut g = g.clone();
+                        let GeometryKind::Point { draggable, .. } = &mut g.kind else {
+                            unreachable!();
+                        };
+                        if e.style.drag_enabled() {
+                            let Some((_, mode)) = draggable else {
+                                unreachable!()
+                            };
+                            *mode = e.style.drag.mode;
+                            if e.has_focus() {
+                                g.width *= 1.15;
+                                draggable_points.push(g);
+                            } else {
+                                draggable_points.push(g);
+                            }
                         } else {
-                            draggable_points.push(p);
+                            *draggable = None;
+                            if e.has_focus() {
+                                focus(&mut g);
+                                focussed_geometry.push(g);
+                            } else {
+                                regular_geometry.push(g);
+                            }
                         }
                     }
                     OutputData::Geometry(geometry) => {
@@ -4770,18 +4984,7 @@ impl ExpressionList {
                             .cloned();
                         if e.has_focus() {
                             for mut g in geometry {
-                                g.width *= match g.kind {
-                                    GeometryKind::Line(_) | GeometryKind::Plot { .. } => 1.4,
-                                    GeometryKind::Point { .. } => 1.2,
-                                    GeometryKind::Fill(_) => 1.0,
-                                };
-                                g.color[3] = match g.kind {
-                                    GeometryKind::Line(_) | GeometryKind::Plot { .. } => 1.0,
-                                    GeometryKind::Point { .. } | GeometryKind::Fill(_) => {
-                                        // Same as blending over itself, as if it was rendered twice
-                                        1.0 - (1.0 - g.color[3]).powi(2)
-                                    }
-                                };
+                                focus(&mut g);
                                 focussed_geometry.push(g);
                             }
                         } else {

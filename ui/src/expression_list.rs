@@ -1971,7 +1971,7 @@ struct Slider {
 type ParametricDomain = Domain<(InlineField, Result<parse::ast::Expression, String>)>;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
-enum LineStyle {
+pub enum LineStyle {
     #[default]
     Solid,
     Dashed,
@@ -1999,7 +1999,7 @@ struct LineAppearance {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
-enum PointStyle {
+pub enum PointStyle {
     #[default]
     Point,
     Open,
@@ -4216,8 +4216,11 @@ impl ExpressionList {
                                 e.output = Output {
                                     ui: OutputUi::None,
                                     data: OutputData::DraggablePoint(Geometry {
+                                        original_width: 8.0,
                                         width: 8.0,
                                         color: e.style.color,
+                                        line_style: Default::default(),
+                                        point_style: Default::default(),
                                         kind: GeometryKind::Point {
                                             p: dvec2(x, y),
                                             draggable: Some((i, DragMode::XY)),
@@ -4424,8 +4427,11 @@ impl ExpressionList {
                                     point_opacity.get(i),
                                 ) {
                                     (Some(size), Some(opacity)) => Some(Geometry {
+                                        original_width: size,
                                         width: size,
                                         color: color(opacity),
+                                        line_style: Default::default(),
+                                        point_style: Default::default(),
                                         kind: GeometryKind::Point {
                                             p: dvec2(x, y),
                                             draggable: None,
@@ -4537,8 +4543,11 @@ impl ExpressionList {
                                     output.data = OutputData::Geometry(
                                         match (line_width.get(0), line_opacity.get(0)) {
                                             (Some(width), Some(opacity)) => Some(Geometry {
+                                                original_width: width,
                                                 width,
                                                 color: color(opacity),
+                                                line_style: Default::default(),
+                                                point_style: Default::default(),
                                                 kind: GeometryKind::Plot {
                                                     kind,
                                                     inputs: parameters
@@ -4617,8 +4626,11 @@ impl ExpressionList {
                                                 && let Some(opacity) = line_opacity.get(0)
                                             {
                                                 geometry.push(Geometry {
+                                                    original_width: width,
                                                     width,
                                                     color: color(opacity),
+                                                    line_style: Default::default(),
+                                                    point_style: Default::default(),
                                                     kind: GeometryKind::Line(
                                                         a.chunks(2)
                                                             .map(|p| dvec2(p[0], p[1]))
@@ -4679,8 +4691,11 @@ impl ExpressionList {
 
                                             if let Some(opacity) = fill_opacity.get(0) {
                                                 geometry.push(Geometry {
+                                                    original_width: 0.0,
                                                     width: 0.0,
                                                     color: color(opacity),
+                                                    line_style: Default::default(),
+                                                    point_style: Default::default(),
                                                     kind: GeometryKind::Fill(
                                                         a.chunks(2)
                                                             .map(|p| dvec2(p[0], p[1]))
@@ -4693,8 +4708,11 @@ impl ExpressionList {
                                                 && let Some(opacity) = line_opacity.get(0)
                                             {
                                                 geometry.push(Geometry {
+                                                    original_width: width,
                                                     width,
                                                     color: color(opacity),
+                                                    line_style: Default::default(),
+                                                    point_style: Default::default(),
                                                     kind: GeometryKind::Line(
                                                         a.chunks(2)
                                                             .chain(a.chunks(2).next())
@@ -4712,8 +4730,11 @@ impl ExpressionList {
                                                     let a = a.borrow();
                                                     let fill = fill_opacity.get(i).map(|opacity| {
                                                         Geometry {
+                                                            original_width: 0.0,
                                                             width: 0.0,
                                                             color: color(opacity),
+                                                            line_style: Default::default(),
+                                                            point_style: Default::default(),
                                                             kind: GeometryKind::Fill(
                                                                 a.chunks(2)
                                                                     .map(|p| dvec2(p[0], p[1]))
@@ -4727,8 +4748,11 @@ impl ExpressionList {
                                                     ) {
                                                         (Some(width), Some(opacity)) => {
                                                             Some(Geometry {
+                                                                original_width: width,
                                                                 width,
                                                                 color: color(opacity),
+                                                                line_style: Default::default(),
+                                                                point_style: Default::default(),
                                                                 kind: GeometryKind::Line(
                                                                     a.chunks(2)
                                                                         .chain(a.chunks(2).take(
@@ -4775,8 +4799,11 @@ impl ExpressionList {
                                             match (point_size.get(0), point_opacity.get(0)) {
                                                 (Some(size), Some(opacity)) => {
                                                     OutputData::DraggablePoint(Geometry {
+                                                        original_width: size,
                                                         width: size,
                                                         color: color(opacity),
+                                                        line_style: Default::default(),
+                                                        point_style: Default::default(),
                                                         kind: kind.clone(),
                                                     })
                                                 }
@@ -4930,6 +4957,11 @@ impl ExpressionList {
                 if e.style.hidden {
                     continue;
                 }
+                let style = |g: &mut Geometry| {
+                    g.original_width = g.width;
+                    g.line_style = e.style.line.style;
+                    g.point_style = e.style.point.style;
+                };
                 let focus = |g: &mut Geometry| {
                     g.width *= match g.kind {
                         GeometryKind::Line(_) | GeometryKind::Plot { .. } => 1.4,
@@ -4947,6 +4979,7 @@ impl ExpressionList {
                 match &e.output.data {
                     OutputData::DraggablePoint(g) if e.style.point_enabled() => {
                         let mut g = g.clone();
+                        style(&mut g);
                         let GeometryKind::Point { draggable, .. } = &mut g.kind else {
                             unreachable!();
                         };
@@ -4981,7 +5014,11 @@ impl ExpressionList {
                                 GeometryKind::Point { .. } => e.style.point_enabled(),
                                 GeometryKind::Fill(_) => e.style.fill_enabled(),
                             })
-                            .cloned();
+                            .cloned()
+                            .map(|mut g| {
+                                style(&mut g);
+                                g
+                            });
                         if e.has_focus() {
                             for mut g in geometry {
                                 focus(&mut g);

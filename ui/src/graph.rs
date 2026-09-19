@@ -19,11 +19,11 @@ use winit::{
 
 use crate::{
     AppGraphics, Bounds, Context, Event, Response,
-    expression_list::{DragMode, ExpressionId},
+    expression_list::{DragMode, ExpressionId, LineStyle, PointStyle},
     graph::{
         sample_explicit::sample_explicit,
         sample_implicit::sample_implicit,
-        tile_fill::{Segment, TILE_SIZE, Tile},
+        tile_fill::{Segment, TILE_SIZE, Tile, clip_segment},
     },
     quad_renderer::{Quad, QuadKind},
     ui::{AnimatedValue, Button, Color, CursorMode},
@@ -72,8 +72,12 @@ pub enum GeometryKind {
 
 #[derive(Debug, Clone)]
 pub struct Geometry {
+    /// before focus adjustments have been applied
+    pub original_width: f32,
     pub width: f32,
     pub color: [f32; 4],
+    pub line_style: LineStyle,
+    pub point_style: PointStyle,
     pub kind: GeometryKind,
 }
 
@@ -894,7 +898,140 @@ impl GraphPaper {
         vertices.push(Vertex::new((physical.left() as f32, origin.y), shape_x));
         vertices.push(Vertex::new((physical.right() as f32, origin.y), shape_x));
 
-        for Geometry { width, color, kind } in &self.geometry {
+        let draw_line = |shapes: &mut Vec<Shape>,
+                         vertices: &mut Vec<Vertex>,
+                         points: &[DVec2],
+                         color: [f32; 4],
+                         original_width: f32,
+                         width: f32,
+                         style: LineStyle| {
+            let mut original_width = ctx.scale_factor as f32 * original_width;
+            let mut width = ctx.scale_factor as f32 * width;
+            let shape = shapes.len() as u32;
+
+            match style {
+                LineStyle::Solid => {
+                    shapes.push(Shape::line(color, width));
+                    for p in points {
+                        let p = to_physical(*p).as_vec2();
+                        vertices.push(Vertex::new(p, shape));
+                    }
+                }
+                LineStyle::Dashed => {
+                    shapes.push(Shape::line(color, width));
+
+                    let buffer = 0.5 * width as f64;
+                    let ph_min = physical.pos - buffer;
+                    let ph_max = physical.pos + physical.size + buffer;
+
+                    // TODO clean this up
+                    let d_period = 7.2 * (original_width as f64).max(0.1);
+                    let d_on = d_period * 0.625;
+                    let mut distance = 0.0;
+                    let mut p0 = to_physical(points[0]);
+                    vertices.push(Vertex::new(p0.as_vec2(), shape));
+
+                    for p1 in &points[1..] {
+                        let p1 = to_physical(*p1);
+
+                        if !p0.is_finite() || !p1.is_finite() {
+                            p0 = p1;
+                            distance = 0.0;
+                            if p1.is_finite() {
+                                vertices.push(Vertex::BREAK);
+                                vertices.push(Vertex::new(p1.as_vec2(), shape));
+                            }
+                            continue;
+                        }
+
+                        if let Some((q0, q1)) = clip_segment(p0, p1, ph_min, ph_max)
+                            && let Some(q01) = (q1 - q0).try_normalize()
+                        {
+                            let mut d =
+                                ((distance + p0.distance(q0)) % d_period).if_finite_else(0.0);
+                            let d0 = d;
+                            let d_end = d + q0.distance(q1);
+
+                            if d < d_on {
+                                if p0 != q0 {
+                                    vertices.push(Vertex::BREAK);
+                                    vertices.push(Vertex::new(q0.as_vec2(), shape));
+                                }
+                                vertices.push(Vertex::new(
+                                    (q0 + q01 * (d_on.min(d_end) - d0)).as_vec2(),
+                                    shape,
+                                ));
+                            }
+
+                            d = d_period;
+
+                            while d < d_end {
+                                vertices.push(Vertex::BREAK);
+                                vertices.push(Vertex::new((q0 + q01 * (d - d0)).as_vec2(), shape));
+                                vertices.push(Vertex::new(
+                                    (q0 + q01 * ((d + d_on).min(d_end) - d0)).as_vec2(),
+                                    shape,
+                                ));
+                                d += d_period;
+                            }
+                        }
+
+                        distance = ((distance + p0.distance(p1)) % d_period).if_finite_else(0.0);
+                        p0 = p1;
+                    }
+                }
+                LineStyle::Dotted => {
+                    width *= 2.0;
+                    original_width *= 2.0;
+                    shapes.push(Shape::point(color, width));
+
+                    let buffer = 0.5 * width as f64;
+                    let ph_min = physical.pos - buffer;
+                    let ph_max = physical.pos + physical.size + buffer;
+
+                    let d_period = 1.625 * (original_width as f64).max(0.1);
+                    let mut distance = 0.0;
+                    let mut p0 = to_physical(points[0]);
+
+                    for p1 in &points[1..] {
+                        let p1 = to_physical(*p1);
+
+                        if !p0.is_finite() || !p1.is_finite() {
+                            p0 = p1;
+                            distance = 0.0;
+                            continue;
+                        }
+
+                        if let Some((q0, q1)) = clip_segment(p0, p1, ph_min, ph_max)
+                            && let Some(q01) = (q1 - q0).try_normalize()
+                        {
+                            let mut d =
+                                ((distance + p0.distance(q0)) % d_period).if_finite_else(0.0);
+                            let d_end = q0.distance(q1);
+                            d = (d / d_period).ceil() * d_period - d;
+
+                            while d < d_end {
+                                vertices.push(Vertex::new((q0 + q01 * d).as_vec2(), shape));
+                                d += d_period;
+                            }
+                        }
+
+                        distance = ((distance + p0.distance(p1)) % d_period).if_finite_else(0.0);
+                        p0 = p1;
+                    }
+                }
+            }
+        };
+
+        for Geometry {
+            original_width,
+            width,
+            color,
+            line_style,
+            point_style,
+            kind,
+        } in &self.geometry
+        {
             match kind {
                 GeometryKind::Plot {
                     kind,
@@ -902,16 +1039,13 @@ impl GraphPaper {
                     output,
                     instructions,
                 } => {
-                    let shape = shapes.len() as u32;
-                    shapes.push(Shape::line(*color, ctx.scale_factor as f32 * width));
-
                     let mut vm = Vm::new(instructions, std::mem::take(&mut self.vm_vars), []);
-                    let pixels_per_math = vp_size / physical.size;
+                    let math_per_pixel = vp_size / physical.size;
 
-                    let buffer = 0.5 * ctx.scale_factor * *width as f64 * pixels_per_math;
+                    let buffer = 0.5 * ctx.scale_factor * *original_width as f64 * math_per_pixel;
                     let vp_min = vp.center - vp_size * 0.5 - buffer;
                     let vp_max = vp.center + vp_size * 0.5 + buffer;
-                    let tolerance = 1.0 * pixels_per_math;
+                    let tolerance = 1.0 * math_per_pixel;
 
                     const TRACK_STATS: bool = false;
                     const CACHE_IMPLICIT_EVALUATIONS: bool = true;
@@ -1040,20 +1174,34 @@ impl GraphPaper {
                         println!("total time   = {:?}", elapsed);
                     }
 
-                    for p in points {
-                        let p = to_physical(p).as_vec2();
-                        vertices.push(Vertex::new(p, shape));
-                    }
+                    draw_line(
+                        &mut shapes,
+                        &mut vertices,
+                        &points,
+                        *color,
+                        *original_width,
+                        *width,
+                        if kind == &PlotKind::Implicit {
+                            // TODO make implicits generate connected geometry instead
+                            // of line segment soup so we can actually apply line styles
+                            LineStyle::Solid
+                        } else {
+                            *line_style
+                        },
+                    );
 
                     self.vm_vars = vm.vars;
                 }
                 GeometryKind::Line(points) => {
-                    let shape = shapes.len() as u32;
-                    shapes.push(Shape::line(*color, ctx.scale_factor as f32 * width));
-                    for p in points {
-                        let p = to_physical(*p).as_vec2();
-                        vertices.push(Vertex::new(p, shape));
-                    }
+                    draw_line(
+                        &mut shapes,
+                        &mut vertices,
+                        points,
+                        *color,
+                        *original_width,
+                        *width,
+                        *line_style,
+                    );
                 }
                 GeometryKind::Point { p, draggable } => {
                     let p = to_physical(*p).as_vec2();

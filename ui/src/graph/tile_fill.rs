@@ -363,8 +363,9 @@ fn split_segment_at_x(a: DVec2, b: DVec2, x: f64) -> SplitSegment {
     }
 }
 
-/// Clip the line segment from `a` to `b` against the AABB from `min` to `max`
-fn clip_segment(a: DVec2, b: DVec2, min: DVec2, max: DVec2) -> Option<(DVec2, DVec2)> {
+/// Clips the line segment from `a` to `b` against the AABB from `min` to `max`.
+pub fn clip_segment(a: DVec2, b: DVec2, min: DVec2, max: DVec2) -> Option<(DVec2, DVec2)> {
+    // TODO make this not as inefficient while still keeping floating-point correctness
     let f = |a, b, min, max| {
         split_segment_at_x(a, b, min)
             .right

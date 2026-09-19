@@ -17,10 +17,12 @@ enum Value {
     Point2(f64, f64),
     Point3(f64, f64, f64),
     Polygon(Vec<(f64, f64)>),
+    Color(f64, f64, f64),
     NumberList(Vec<f64>),
     Point2List(Vec<(f64, f64)>),
     Point3List(Vec<(f64, f64, f64)>),
     PolygonList(Vec<Vec<(f64, f64)>>),
+    ColorList(Vec<(f64, f64, f64)>),
     EmptyList,
 }
 
@@ -146,6 +148,7 @@ fn assert_expression_eq(source: &str, value: Value) {
         .as_slice()
         .as_ref(),
         &[],
+        Default::default(),
         false,
     );
     let Some(ExpressionResult::Value(id, ty)) = analysis.results.first() else {
@@ -194,12 +197,16 @@ fn assert_expression_eq(source: &str, value: Value) {
                     Value::Polygon
                 })(list)
             }
-            Type::Point3 => Value::Point3(
+            Type::Point3 | Type::Color => (if *ty == Type::Point3 {
+                Value::Point3
+            } else {
+                Value::Color
+            })(
                 vm.vars[v].clone().number(),
                 vm.vars[v + 1.into()].clone().number(),
                 vm.vars[v + 2.into()].clone().number()
             ),
-            Type::Point3List => {
+            Type::Point3List | Type::ColorList => {
                 let a = vm.vars[v].clone().list();
                 let list = a
                     .borrow()
@@ -208,7 +215,11 @@ fn assert_expression_eq(source: &str, value: Value) {
                     .iter()
                     .map(|&[x, y, z]| (x, y, z))
                     .collect::<Vec<_>>();
-                Value::Point3List(list)
+                (if *ty == Type::Point3List {
+                    Value::Point3List
+                } else {
+                    Value::ColorList
+                })(list)
             }
             Type::PolygonList => {
                 let a = vm.vars[v].clone().polygon_list();
@@ -224,6 +235,7 @@ fn assert_expression_eq(source: &str, value: Value) {
                     .collect::<Vec<_>>();
                 Value::PolygonList(list)
             }
+
             Type::Bool | Type::BoolList => unreachable!(),
             Type::EmptyList => Value::EmptyList,
         },
@@ -244,6 +256,7 @@ fn assert_type_error(source: &str, error: TypeError) {
         .as_slice()
         .as_ref(),
         &[],
+        Default::default(),
         false,
     );
     assert_eq!(

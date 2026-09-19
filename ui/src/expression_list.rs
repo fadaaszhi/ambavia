@@ -1788,6 +1788,24 @@ fn number_to_latex(nodes: &mut Vec<latex_tree::Node>, mut x: f64) {
     }
 }
 
+fn color_to_latex(nodes: &mut Vec<latex_tree::Node>, r: f64, g: f64, b: f64) {
+    use latex_tree::Node::Char as C;
+    // Not using DelimitedGroup because that increases the height compared to Char('(')
+    nodes.extend([C('r'), C('g'), C('b'), C('(')]);
+    let f = |nodes: &mut _, x: f64| {
+        number_to_latex(
+            nodes,
+            (x.if_finite_else(0.0).clamp(0.0, 1.0) * 255.0).round(),
+        )
+    };
+    f(nodes, r);
+    nodes.push(C(','));
+    f(nodes, g);
+    nodes.push(C(','));
+    f(nodes, b);
+    nodes.push(C(')'));
+}
+
 impl OutputUi {
     fn set_slider(
         &mut self,
@@ -2106,8 +2124,9 @@ impl Default for ExpressionStyle {
             y.0.max_width = 60.0;
             y
         };
+        let color = EXPRESSION_COLORS[0];
         let mut color_latex = (
-            InlineField::new("rgb(1,2,3)"),
+            InlineField::new(""),
             Ok(ast::Expression::Call {
                 callee: "rgb".into(),
                 args: vec![
@@ -2117,6 +2136,9 @@ impl Default for ExpressionStyle {
                 ],
             }),
         );
+        let mut nodes = vec![];
+        color_to_latex(&mut nodes, color.x, color.y, color.z);
+        color_latex.0.set_placeholder(&nodes);
         color_latex.0.min_width = 135.0;
         color_latex.0.max_width = 200.0;
 
@@ -2124,7 +2146,7 @@ impl Default for ExpressionStyle {
             changed: true,
             kind: ExpressionStyleKind::None,
             hidden: false,
-            color: EXPRESSION_COLORS[0],
+            color,
             color_latex,
             line: LineAppearance {
                 enabled: None,
@@ -2158,6 +2180,14 @@ enum StylePopupSectionKind {
 }
 
 impl ExpressionStyle {
+    fn set_color(&mut self, color: DVec4) {
+        self.color = color;
+        self.color_latex.0.clear();
+        let mut nodes = vec![];
+        color_to_latex(&mut nodes, self.color.x, self.color.y, self.color.z);
+        self.color_latex.0.set_placeholder(&nodes);
+    }
+
     fn popup_order(&self) -> &'static [StylePopupSectionKind] {
         use StylePopupSectionKind as K;
         match self.kind {
@@ -2222,6 +2252,7 @@ impl ExpressionStyle {
 
 struct StyleGutter {
     toggle_button: GutterButton,
+    color: Vec<DVec4>,
 
     is_popup_open: bool,
     should_close_popup: bool,
@@ -2399,11 +2430,27 @@ impl StyleGutter {
         } else {
             let x = [1.0, 0.95, 0.9][self.toggle_button.state_pressed()];
             let darken = dvec4(x, x, x, 1.0);
-            draw_quad(Quad::from_bounds(
-                l.toggle_button,
-                QuadKind::ExpressionShownIcon,
-                style.color,
-            ));
+
+            for (i, &color) in self.color.iter().enumerate() {
+                draw_quad(
+                    Quad::from_bounds(
+                        l.toggle_button,
+                        QuadKind::ExpressionShownIcon,
+                        color * darken,
+                    )
+                    .clip(Bounds {
+                        pos: dvec2(
+                            mix(
+                                l.toggle_button.left(),
+                                l.toggle_button.right(),
+                                i as f64 / self.color.len() as f64,
+                            ),
+                            l.toggle_button.pos.y,
+                        ),
+                        size: l.toggle_button.size / dvec2(self.color.len() as f64, 1.0),
+                    }),
+                );
+            }
 
             let white = DVec4::ONE * darken;
 
@@ -2828,7 +2875,7 @@ impl StyleGutter {
             };
 
             StylePopupColorLayout {
-                top,
+                top: top + offset_y,
                 color_buttons,
                 field,
             }
@@ -3078,8 +3125,7 @@ impl StyleGutter {
                 response = response.or(r);
 
                 if clicked {
-                    style.color = EXPRESSION_COLORS[i];
-                    style.color_latex.0.clear();
+                    style.set_color(EXPRESSION_COLORS[i]);
                     style.changed = true;
                     message = message.or(Some(Message::ContentsChanged { user_driven: true }));
                     response.request_redraw();
@@ -3137,6 +3183,14 @@ impl StyleGutter {
 
         let popup_bounds = l.bounds;
 
+        fn render_separator(popup_bounds: Bounds, top: f64, draw_quad: &mut impl FnMut(Quad)) {
+            draw_quad(Quad::rectangle(
+                (popup_bounds.left() + 1.0, top - 1.0),
+                (popup_bounds.right() - 1.0, top),
+                [226; 3],
+            ));
+        }
+
         fn render_title<T>(
             (index, l, contents): &(usize, StylePopupTitleLayout, Option<T>),
             button: &Button,
@@ -3145,11 +3199,7 @@ impl StyleGutter {
             draw_quad: &mut impl FnMut(Quad),
         ) {
             if *index > 0 {
-                draw_quad(Quad::rectangle(
-                    (popup_bounds.left(), l.top - 1.0),
-                    (popup_bounds.right(), l.top),
-                    [0.733; 3],
-                ));
+                render_separator(popup_bounds, l.top, draw_quad);
             }
 
             label.render_from_cursor(l.cursor, [0; 3], draw_quad);
@@ -3449,11 +3499,7 @@ impl StyleGutter {
         }
 
         if let Some(l) = &l.color {
-            draw_quad(Quad::rectangle(
-                (popup_bounds.left(), l.top - 1.0),
-                (popup_bounds.right(), l.top),
-                [0.733; 3],
-            ));
+            render_separator(popup_bounds, l.top, draw_quad);
 
             for (i, (button, &bounds)) in
                 zip(&self.color_buttons, l.color_buttons.iter()).enumerate()
@@ -3526,6 +3572,8 @@ impl Expression {
     const PADDING: f64 = 16.0;
 
     fn new(color: DVec4) -> Expression {
+        let mut style = ExpressionStyle::default();
+        style.set_color(color);
         Expression {
             field: Default::default(),
             slider: Slider {
@@ -3546,14 +3594,12 @@ impl Expression {
                 min: create_with_placeholder(PARAMETRIC_DOMAIN_MIN_DEFAULT),
                 max: create_with_placeholder(PARAMETRIC_DOMAIN_MAX_DEFAULT),
             },
-            style: ExpressionStyle {
-                color,
-                ..Default::default()
-            },
+            style,
             ast: None,
             output: Default::default(),
             style_gutter: StyleGutter {
                 toggle_button: Default::default(),
+                color: Default::default(),
 
                 is_popup_open: false,
                 should_close_popup: false,
@@ -4319,6 +4365,7 @@ impl ExpressionList {
                         point_size: Option<PropertyIndex>,
                         point_opacity: Option<PropertyIndex>,
                         fill_opacity: Option<PropertyIndex>,
+                        color: Option<PropertyIndex>,
                     }
                     let mut oi_to_pi: TiVec<ExpressionId, _> = ti_vec![];
 
@@ -4348,6 +4395,7 @@ impl ExpressionList {
                             point_size: push(&mut properties, &mut e.style.point.size),
                             point_opacity: push(&mut properties, &mut e.style.point.opacity),
                             fill_opacity: push(&mut properties, &mut e.style.fill.opacity),
+                            color: push(&mut properties, &mut e.style.color_latex),
                         });
                         let ast = match &e.ast {
                             Some(Ok(ast)) => ast,
@@ -4483,26 +4531,26 @@ impl ExpressionList {
 
                         let pi = &oi_to_pi[i];
 
-                        enum NumberProperty {
-                            Number(f32),
-                            List(Vec<f32>),
+                        enum Property<T> {
+                            Single(T),
+                            List(Vec<T>),
                         }
-                        impl NumberProperty {
-                            fn get(&self, index: usize) -> Option<f32> {
+                        impl<T: Copy> Property<T> {
+                            fn get(&self, index: usize) -> Option<T> {
                                 match self {
-                                    NumberProperty::Number(x) => Some(*x),
-                                    NumberProperty::List(xs) => xs.get(index).cloned(),
+                                    Property::Single(x) => Some(*x),
+                                    Property::List(xs) => xs.get(index).cloned(),
                                 }
                             }
                         }
-                        let get_property =
+                        let get_number_property =
                             |index: Option<PropertyIndex>,
                              default: f64,
                              min: f64,
                              max: f64,
                              field: &mut (InlineField, _)| {
                                 let Some(pi) = index else {
-                                    return NumberProperty::Number(default as f32);
+                                    return Property::Single(default as f32);
                                 };
                                 let Some(value) =
                                     analysis.properties[pi].as_ref().ok().and_then(|(id, ty)| {
@@ -4511,9 +4559,9 @@ impl ExpressionList {
                                                 .clone()
                                                 .number()
                                                 .into_finite()
-                                                .map(|x| {
-                                                    NumberProperty::Number(x.clamp(min, max) as f32)
-                                                }),
+                                                .map(
+                                                    |x| Property::Single(x.clamp(min, max) as f32),
+                                                ),
                                             Type::NumberList => vm.vars[var_indices[id]]
                                                 .clone()
                                                 .list()
@@ -4524,58 +4572,102 @@ impl ExpressionList {
                                                         .map(|x| x.clamp(min, max) as f32)
                                                 })
                                                 .collect::<Option<_>>()
-                                                .map(NumberProperty::List),
-                                            Type::EmptyList => Some(NumberProperty::List(vec![])),
+                                                .map(Property::List),
+                                            Type::EmptyList => Some(Property::List(vec![])),
                                             _ => None,
                                         }
                                     })
                                 else {
                                     field.0.underline.error = true;
-                                    return NumberProperty::Number(default as f32);
+                                    return Property::Single(default as f32);
                                 };
                                 value
                             };
 
-                        let line_width = get_property(
+                        let line_width = get_number_property(
                             pi.line_width,
                             LINE_WIDTH_DEFAULT,
                             0.0,
                             f64::INFINITY,
                             &mut expression.style.line.width,
                         );
-                        let line_opacity = get_property(
+                        let line_opacity = get_number_property(
                             pi.line_opacity,
                             LINE_OPACITY_DEFAULT,
                             0.0,
                             1.0,
                             &mut expression.style.line.opacity,
                         );
-                        let point_size = get_property(
+                        let point_size = get_number_property(
                             pi.point_size,
                             POINT_SIZE_DEFAULT,
                             0.0,
                             f64::INFINITY,
                             &mut expression.style.point.size,
                         );
-                        let point_opacity = get_property(
+                        let point_opacity = get_number_property(
                             pi.point_opacity,
                             POINT_OPACITY_DEFAULT,
                             0.0,
                             1.0,
                             &mut expression.style.point.opacity,
                         );
-                        let fill_opacity = get_property(
+                        let fill_opacity = get_number_property(
                             pi.fill_opacity,
                             FILL_OPACITY_DEFAULT,
                             0.0,
                             1.0,
                             &mut expression.style.fill.opacity,
                         );
-
-                        let color = |opacity: f32| {
-                            let mut c = expression.style.color.as_vec4().to_array();
-                            c[3] *= opacity;
-                            c
+                        let color = 'color: {
+                            let index = pi.color;
+                            let default = expression.style.color.as_vec4().to_array();
+                            let Some(pi) = index else {
+                                break 'color Property::Single(default);
+                            };
+                            let Some(value) = analysis.properties[pi].as_ref().ok().and_then(
+                                |(id, ty)| match *ty {
+                                    Type::Color => {
+                                        let v = var_indices[id];
+                                        let r = vm.vars[v + 0.into()].clone().number();
+                                        let g = vm.vars[v + 1.into()].clone().number();
+                                        let b = vm.vars[v + 2.into()].clone().number();
+                                        Some(Property::Single([r as f32, g as f32, b as f32, 1.0]))
+                                    }
+                                    Type::ColorList => Some(Property::List(
+                                        vm.vars[var_indices[id]]
+                                            .clone()
+                                            .list()
+                                            .borrow()
+                                            .chunks(3)
+                                            .map(|c| [c[0] as f32, c[1] as f32, c[2] as f32, 1.0])
+                                            .collect(),
+                                    )),
+                                    Type::EmptyList => Some(Property::List(vec![])),
+                                    _ => None,
+                                },
+                            ) else {
+                                expression.style.color_latex.0.underline.error = true;
+                                break 'color Property::Single(default);
+                            };
+                            value
+                        };
+                        let apply_opacity = |mut color: [f32; 4], opacity: f32| {
+                            color[3] *= opacity;
+                            color
+                        };
+                        expression.style_gutter.color = match &color {
+                            Property::Single(c) => vec![c.map(|x| x as f64).into()],
+                            Property::List(cs) => {
+                                let n = cs.len().min(10);
+                                (0..n)
+                                    .map(|i| {
+                                        cs[(i as f64 / n as f64 * cs.len() as f64) as usize]
+                                            .map(|x| x as f64)
+                                            .into()
+                                    })
+                                    .collect()
+                            }
                         };
 
                         match r {
@@ -4591,11 +4683,12 @@ impl ExpressionList {
                                 let make_point = |x: f64, y: f64, i: usize| match (
                                     point_size.get(i),
                                     point_opacity.get(i),
+                                    color.get(i),
                                 ) {
-                                    (Some(size), Some(opacity)) => Some(Geometry {
+                                    (Some(size), Some(opacity), Some(color)) => Some(Geometry {
                                         original_width: size,
                                         width: size,
-                                        color: color(opacity),
+                                        color: apply_opacity(color, opacity),
                                         line_style: Default::default(),
                                         point_style: Default::default(),
                                         kind: GeometryKind::Point {
@@ -4706,29 +4799,38 @@ impl ExpressionList {
                                             PlotKind::Implicit
                                         }
                                     };
-                                    output.data = OutputData::Geometry(
-                                        match (line_width.get(0), line_opacity.get(0)) {
-                                            (Some(width), Some(opacity)) => Some(Geometry {
-                                                original_width: width,
-                                                width,
-                                                color: color(opacity),
-                                                line_style: Default::default(),
-                                                point_style: Default::default(),
-                                                kind: GeometryKind::Plot {
-                                                    kind,
-                                                    inputs: parameters
-                                                        .iter()
-                                                        .map(|p| var_indices[p])
-                                                        .collect(),
-                                                    output: var_indices[&value],
-                                                    instructions: functions.remove(&ei).unwrap(),
-                                                },
-                                            }),
-                                            (_, _) => None,
-                                        }
-                                        .into_iter()
-                                        .collect(),
-                                    );
+                                    output.data =
+                                        OutputData::Geometry(
+                                            match (
+                                                line_width.get(0),
+                                                line_opacity.get(0),
+                                                color.get(0),
+                                            ) {
+                                                (Some(width), Some(opacity), Some(color)) => {
+                                                    Some(Geometry {
+                                                        original_width: width,
+                                                        width,
+                                                        color: apply_opacity(color, opacity),
+                                                        line_style: Default::default(),
+                                                        point_style: Default::default(),
+                                                        kind: GeometryKind::Plot {
+                                                            kind,
+                                                            inputs: parameters
+                                                                .iter()
+                                                                .map(|p| var_indices[p])
+                                                                .collect(),
+                                                            output: var_indices[&value],
+                                                            instructions: functions
+                                                                .remove(&ei)
+                                                                .unwrap(),
+                                                        },
+                                                    })
+                                                }
+                                                _ => None,
+                                            }
+                                            .into_iter()
+                                            .collect(),
+                                        );
                                 }
 
                                 if match r {
@@ -4790,11 +4892,12 @@ impl ExpressionList {
 
                                             if let Some(width) = line_width.get(0)
                                                 && let Some(opacity) = line_opacity.get(0)
+                                                && let Some(color) = color.get(0)
                                             {
                                                 geometry.push(Geometry {
                                                     original_width: width,
                                                     width,
-                                                    color: color(opacity),
+                                                    color: apply_opacity(color, opacity),
                                                     line_style: Default::default(),
                                                     point_style: Default::default(),
                                                     kind: GeometryKind::Line(
@@ -4855,11 +4958,13 @@ impl ExpressionList {
                                             let a = vm.vars[v].clone().list();
                                             let a = a.borrow();
 
-                                            if let Some(opacity) = fill_opacity.get(0) {
+                                            if let Some(opacity) = fill_opacity.get(0)
+                                                && let Some(color) = color.get(0)
+                                            {
                                                 geometry.push(Geometry {
                                                     original_width: 0.0,
                                                     width: 0.0,
-                                                    color: color(opacity),
+                                                    color: apply_opacity(color, opacity),
                                                     line_style: Default::default(),
                                                     point_style: Default::default(),
                                                     kind: GeometryKind::Fill(
@@ -4872,11 +4977,12 @@ impl ExpressionList {
 
                                             if let Some(width) = line_width.get(0)
                                                 && let Some(opacity) = line_opacity.get(0)
+                                                && let Some(color) = color.get(0)
                                             {
                                                 geometry.push(Geometry {
                                                     original_width: width,
                                                     width,
-                                                    color: color(opacity),
+                                                    color: apply_opacity(color, opacity),
                                                     line_style: Default::default(),
                                                     point_style: Default::default(),
                                                     kind: GeometryKind::Line(
@@ -4894,50 +5000,88 @@ impl ExpressionList {
                                             geometry.extend(
                                                 a.borrow().iter().enumerate().flat_map(|(i, a)| {
                                                     let a = a.borrow();
-                                                    let fill = fill_opacity.get(i).map(|opacity| {
-                                                        Geometry {
-                                                            original_width: 0.0,
-                                                            width: 0.0,
-                                                            color: color(opacity),
-                                                            line_style: Default::default(),
-                                                            point_style: Default::default(),
-                                                            kind: GeometryKind::Fill(
-                                                                a.chunks(2)
-                                                                    .map(|p| dvec2(p[0], p[1]))
-                                                                    .collect(),
-                                                            ),
-                                                        }
-                                                    });
+                                                    let fill =
+                                                        match (fill_opacity.get(i), color.get(i)) {
+                                                            (Some(opacity), Some(color)) => {
+                                                                Some(Geometry {
+                                                                    original_width: 0.0,
+                                                                    width: 0.0,
+                                                                    color: apply_opacity(
+                                                                        color, opacity,
+                                                                    ),
+                                                                    line_style: Default::default(),
+                                                                    point_style: Default::default(),
+                                                                    kind: GeometryKind::Fill(
+                                                                        a.chunks(2)
+                                                                            .map(|p| {
+                                                                                dvec2(p[0], p[1])
+                                                                            })
+                                                                            .collect(),
+                                                                    ),
+                                                                })
+                                                            }
+                                                            _ => None,
+                                                        };
                                                     let line = match (
                                                         line_width.get(i),
                                                         line_opacity.get(i),
+                                                        color.get(i),
                                                     ) {
-                                                        (Some(width), Some(opacity)) => {
-                                                            Some(Geometry {
-                                                                original_width: width,
-                                                                width,
-                                                                color: color(opacity),
-                                                                line_style: Default::default(),
-                                                                point_style: Default::default(),
-                                                                kind: GeometryKind::Line(
-                                                                    a.chunks(2)
-                                                                        .chain(a.chunks(2).take(
-                                                                            if a.len() > 2 {
-                                                                                1
-                                                                            } else {
-                                                                                0
-                                                                            },
-                                                                        ))
-                                                                        .map(|p| dvec2(p[0], p[1]))
-                                                                        .collect(),
-                                                                ),
-                                                            })
-                                                        }
+                                                        (
+                                                            Some(width),
+                                                            Some(opacity),
+                                                            Some(color),
+                                                        ) => Some(Geometry {
+                                                            original_width: width,
+                                                            width,
+                                                            color: apply_opacity(color, opacity),
+                                                            line_style: Default::default(),
+                                                            point_style: Default::default(),
+                                                            kind: GeometryKind::Line(
+                                                                a.chunks(2)
+                                                                    .chain(a.chunks(2).take(
+                                                                        if a.len() > 2 {
+                                                                            1
+                                                                        } else {
+                                                                            0
+                                                                        },
+                                                                    ))
+                                                                    .map(|p| dvec2(p[0], p[1]))
+                                                                    .collect(),
+                                                            ),
+                                                        }),
                                                         _ => None,
                                                     };
                                                     [fill, line].into_iter().flatten()
                                                 }),
                                             );
+                                        }
+                                        Type::Color => {
+                                            let r = vm.vars[v].clone().number();
+                                            let g = vm.vars[v + 1.into()].clone().number();
+                                            let b = vm.vars[v + 2.into()].clone().number();
+                                            color_to_latex(&mut nodes, r, g, b);
+                                        }
+                                        Type::ColorList => {
+                                            let a = vm.vars[v].clone().list();
+                                            let mut inner = vec![];
+                                            for (i, &[r, g, b]) in
+                                                a.borrow().as_chunks().0.iter().enumerate()
+                                            {
+                                                if i < list_limit {
+                                                    if i > 0 {
+                                                        inner.push(C(','));
+                                                    }
+                                                    color_to_latex(&mut inner, r, g, b);
+                                                } else if i == list_limit {
+                                                    inner.extend([C(','), C('.'), C('.'), C('.')]);
+                                                }
+                                            }
+                                            nodes.push(Node::DelimitedGroup {
+                                                left: Bracket::Square,
+                                                right: Bracket::Square,
+                                                inner,
+                                            });
                                         }
                                         Type::Bool | Type::BoolList => unreachable!(),
                                         Type::EmptyList => nodes.push(Node::DelimitedGroup {
@@ -4961,20 +5105,23 @@ impl ExpressionList {
                                         &output.data
                                     {
                                         expression.style.kind = ExpressionStyleKind::DraggablePoint;
-                                        output.data =
-                                            match (point_size.get(0), point_opacity.get(0)) {
-                                                (Some(size), Some(opacity)) => {
-                                                    OutputData::DraggablePoint(Geometry {
-                                                        original_width: size,
-                                                        width: size,
-                                                        color: color(opacity),
-                                                        line_style: Default::default(),
-                                                        point_style: Default::default(),
-                                                        kind: kind.clone(),
-                                                    })
-                                                }
-                                                _ => OutputData::None,
-                                            };
+                                        output.data = match (
+                                            point_size.get(0),
+                                            point_opacity.get(0),
+                                            color.get(0),
+                                        ) {
+                                            (Some(size), Some(opacity), Some(color)) => {
+                                                OutputData::DraggablePoint(Geometry {
+                                                    original_width: size,
+                                                    width: size,
+                                                    color: apply_opacity(color, opacity),
+                                                    line_style: Default::default(),
+                                                    point_style: Default::default(),
+                                                    kind: kind.clone(),
+                                                })
+                                            }
+                                            _ => OutputData::None,
+                                        };
                                     }
                                 }
                             }

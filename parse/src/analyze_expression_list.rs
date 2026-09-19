@@ -252,7 +252,12 @@ pub fn analyze_expression_list<'a>(
                             return ExpressionResult::None;
                         }
                     }
-                    Type::Point3 | Type::Point3List | Type::Polygon | Type::PolygonList => {
+                    Type::Point3
+                    | Type::Point3List
+                    | Type::Polygon
+                    | Type::PolygonList
+                    | Type::Color
+                    | Type::ColorList => {
                         return if allowed_kinds.contains(PlotKinds::PARAMETRIC) {
                             if parameters.is_empty() {
                                 // x = polygon([0,1,1],[0,0,1])

@@ -19,6 +19,7 @@ pub enum BaseType {
     Point2,
     Point3,
     Polygon,
+    Color,
     Bool,
     Empty,
 }
@@ -33,6 +34,8 @@ pub enum Type {
     Point3List,
     Polygon,
     PolygonList,
+    Color,
+    ColorList,
     Bool,
     BoolList,
     EmptyList,
@@ -45,6 +48,7 @@ impl Type {
             Type::Point2 | Type::Point2List => BaseType::Point2,
             Type::Point3 | Type::Point3List => BaseType::Point3,
             Type::Polygon | Type::PolygonList => BaseType::Polygon,
+            Type::Color | Type::ColorList => BaseType::Color,
             Type::Bool | Type::BoolList => BaseType::Bool,
             Type::EmptyList => BaseType::Empty,
         }
@@ -72,6 +76,7 @@ impl Type {
             BaseType::Point2 => Type::Point2List,
             BaseType::Point3 => Type::Point3List,
             BaseType::Polygon => Type::PolygonList,
+            BaseType::Color => Type::ColorList,
             BaseType::Bool => Type::BoolList,
             BaseType::Empty => Type::EmptyList,
         }
@@ -83,6 +88,7 @@ impl Type {
             BaseType::Point2 => Type::Point2,
             BaseType::Point3 => Type::Point3,
             BaseType::Polygon => Type::Polygon,
+            BaseType::Color => Type::Color,
             BaseType::Bool => Type::Bool,
             BaseType::Empty => Type::Number,
         }
@@ -95,6 +101,7 @@ impl Type {
                 | Type::Point2List
                 | Type::Point3List
                 | Type::PolygonList
+                | Type::ColorList
                 | Type::BoolList
                 | Type::EmptyList
         )
@@ -112,6 +119,8 @@ impl std::fmt::Display for Type {
             Type::Point3List => "a list of 3D points",
             Type::Polygon => "a polygon",
             Type::PolygonList => "a list of polygons",
+            Type::Color => "a color",
+            Type::ColorList => "a list of colors",
             Type::Bool => "a true/false value",
             Type::BoolList => "a list of true/false values",
             Type::EmptyList => "an empty list",
@@ -502,6 +511,17 @@ impl TypeChecker {
                             Expression::Op {
                                 operation: Op::Polygon,
                                 args: vec![te(Type::Point2List, Expression::List(vec![]))],
+                            },
+                        ),
+                        B::Color => te(
+                            Type::Color,
+                            Expression::Op {
+                                operation: Op::Rgb,
+                                args: vec![
+                                    te(Type::Number, Expression::Number(0.0)),
+                                    te(Type::Number, Expression::Number(0.0)),
+                                    te(Type::Number, Expression::Number(0.0)),
+                                ],
                             },
                         ),
                         B::Bool => te(

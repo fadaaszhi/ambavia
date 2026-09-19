@@ -20,9 +20,15 @@ fn tc_list_to_ib_base(ty: TcType) -> IbBaseType {
         TcType::Point2List => IbBaseType::Point2,
         TcType::Point3List => IbBaseType::Point3,
         TcType::PolygonList => IbBaseType::Polygon,
+        TcType::ColorList => IbBaseType::Color,
         TcType::BoolList => IbBaseType::Bool,
         TcType::EmptyList => IbBaseType::Number,
-        TcType::Number | TcType::Bool | TcType::Point2 | TcType::Point3 | TcType::Polygon => {
+        TcType::Number
+        | TcType::Bool
+        | TcType::Point2
+        | TcType::Point3
+        | TcType::Polygon
+        | TcType::Color => {
             unreachable!()
         }
     }
@@ -223,12 +229,17 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
         Expression::Op { operation, args } => {
             use parse::op::Op;
             match operation {
-                Op::JoinNumber | Op::JoinPoint2 | Op::JoinPoint3 | Op::JoinPolygon => {
+                Op::JoinNumber
+                | Op::JoinPoint2
+                | Op::JoinPoint3
+                | Op::JoinPolygon
+                | Op::JoinColor => {
                     let (base, push, concat) = match operation {
                         Op::JoinNumber => (IbBaseType::Number, Push, Concat),
                         Op::JoinPoint2 => (IbBaseType::Point2, Push2, Concat2),
                         Op::JoinPoint3 => (IbBaseType::Point3, Push3, Concat3),
                         Op::JoinPolygon => (IbBaseType::Polygon, PushPolygon, ConcatPolygon),
+                        Op::JoinColor => (IbBaseType::Color, PushColor, ConcatColor),
                         _ => unreachable!(),
                     };
                     let first = compile_expression(&args[0], builder);
@@ -306,30 +317,38 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
                         Op::CountPoint2 => builder.instr1(Count2, arg()),
                         Op::CountPoint3 => builder.instr1(Count3, arg()),
                         Op::CountPolygon => builder.instr1(CountPolygonList, arg()),
+                        Op::CountColor => builder.instr1(CountColorList, arg()),
                         Op::RepeatNumber => builder.instr2(Repeat, arg(), arg()),
                         Op::RepeatPoint2 => builder.instr2(Repeat2, arg(), arg()),
                         Op::RepeatPoint3 => builder.instr2(Repeat3, arg(), arg()),
                         Op::RepeatPolygon => builder.instr2(RepeatPolygon, arg(), arg()),
+                        Op::RepeatColor => builder.instr2(RepeatColor, arg(), arg()),
                         Op::RepeatNumberList => builder.instr2(RepeatList, arg(), arg()),
                         Op::RepeatPoint2List => builder.instr2(Repeat2List, arg(), arg()),
                         Op::RepeatPoint3List => builder.instr2(Repeat3List, arg(), arg()),
                         Op::RepeatPolygonList => builder.instr2(RepeatPolygonList, arg(), arg()),
+                        Op::RepeatColorList => builder.instr2(RepeatColorList, arg(), arg()),
                         Op::UniqueNumber => builder.instr1(Unique, arg()),
                         Op::UniquePoint2 => builder.instr1(Unique2, arg()),
                         Op::UniquePoint3 => builder.instr1(Unique3, arg()),
                         Op::UniquePolygon => builder.instr1(UniquePolygon, arg()),
+                        Op::UniqueColor => builder.instr1(UniqueColor, arg()),
                         Op::UniquePermNumber => builder.instr1(UniquePerm, arg()),
                         Op::UniquePermPoint2 => builder.instr1(UniquePerm2, arg()),
                         Op::UniquePermPoint3 => builder.instr1(UniquePerm3, arg()),
                         Op::UniquePermPolygon => builder.instr1(UniquePermPolygon, arg()),
+                        Op::UniquePermColor => builder.instr1(UniquePermColor, arg()),
                         Op::Sort => builder.instr1(Sort, arg()),
                         Op::SortKeyNumber => builder.instr2(SortKey, arg(), arg()),
                         Op::SortKeyPoint2 => builder.instr2(SortKey2, arg(), arg()),
                         Op::SortKeyPoint3 => builder.instr2(SortKey3, arg(), arg()),
                         Op::SortKeyPolygon => builder.instr2(SortKeyPolygon, arg(), arg()),
+                        Op::SortKeyColor => builder.instr2(SortKeyColor, arg(), arg()),
                         Op::SortPerm => builder.instr1(SortPerm, arg()),
                         Op::Polygon => builder.instr1(Polygon, arg()),
                         Op::Vertices => builder.instr1(Vertices, arg()),
+                        Op::Rgb => builder.instr3(Rgb, arg(), arg(), arg()),
+                        Op::Hsv => builder.instr3(Hsv, arg(), arg(), arg()),
                         Op::AddNumber => builder.instr2(Add, arg(), arg()),
                         Op::AddPoint2 => builder.instr2(Add2, arg(), arg()),
                         Op::AddPoint3 => builder.instr2(Add3, arg(), arg()),
@@ -352,6 +371,7 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
                         Op::IndexPoint2List => builder.instr2(Index2, arg(), arg()),
                         Op::IndexPoint3List => builder.instr2(Index3, arg(), arg()),
                         Op::IndexPolygonList => builder.instr2(IndexPolygonList, arg(), arg()),
+                        Op::IndexColorList => builder.instr2(IndexColorList, arg(), arg()),
                         Op::NegNumber => builder.instr1(Neg, arg()),
                         Op::NegPoint2 => builder.instr1(Neg2, arg()),
                         Op::NegPoint3 => builder.instr1(Neg3, arg()),
@@ -367,19 +387,22 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
                         Op::FilterNumberList
                         | Op::FilterPoint2List
                         | Op::FilterPoint3List
-                        | Op::FilterPolygonList => {
+                        | Op::FilterPolygonList
+                        | Op::FilterColorList => {
                             let mut result = builder.build_list(
                                 match ty {
                                     TcType::NumberList => IbBaseType::Number,
                                     TcType::Point2List => IbBaseType::Point2,
                                     TcType::Point3List => IbBaseType::Point3,
                                     TcType::PolygonList => IbBaseType::Polygon,
+                                    TcType::ColorList => IbBaseType::Color,
                                     TcType::BoolList => IbBaseType::Bool,
                                     TcType::EmptyList => IbBaseType::Number,
                                     TcType::Number
                                     | TcType::Point2
                                     | TcType::Point3
                                     | TcType::Polygon
+                                    | TcType::Color
                                     | TcType::Bool => {
                                         unreachable!()
                                     }
@@ -420,7 +443,11 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
 
                             result
                         }
-                        Op::JoinNumber | Op::JoinPoint2 | Op::JoinPoint3 | Op::JoinPolygon => {
+                        Op::JoinNumber
+                        | Op::JoinPoint2
+                        | Op::JoinPoint3
+                        | Op::JoinPolygon
+                        | Op::JoinColor => {
                             unreachable!()
                         }
                     }
@@ -457,6 +484,8 @@ pub fn compile_assignments<
                 TcType::Point3List => IbType::Point3List,
                 TcType::Polygon => IbType::Polygon,
                 TcType::PolygonList => IbType::PolygonList,
+                TcType::Color => IbType::Color,
+                TcType::ColorList => IbType::ColorList,
                 TcType::Bool => IbType::Bool,
                 TcType::BoolList => IbType::BoolList,
                 TcType::EmptyList => panic!(),
@@ -554,6 +583,13 @@ mod tests {
                 builder.instr1(Polygon, p)
             }
             TcType::PolygonList => builder.build_list(IbBaseType::Polygon, vec![]),
+            TcType::Color => {
+                let r = builder.load_const(0.0);
+                let g = builder.load_const(0.0);
+                let b = builder.load_const(0.0);
+                builder.instr3(Rgb, r, g, b)
+            }
+            TcType::ColorList => builder.build_list(IbBaseType::Color, vec![]),
             TcType::EmptyList => panic!("why"),
             TcType::Bool | TcType::BoolList => panic!("bruh"),
         };

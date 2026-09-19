@@ -109,6 +109,8 @@ impl OpName {
             "sortPerm" => SortPerm,
             "polygon" => Polygon,
             "vertices" => Vertices,
+            "rgb" => Rgb,
+            "hsv" => Hsv,
             "join" => Join,
             _ => return None,
         })

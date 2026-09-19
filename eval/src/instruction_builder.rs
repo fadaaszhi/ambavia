@@ -13,6 +13,7 @@ pub enum BaseType {
     Point2,
     Point3,
     Polygon,
+    Color,
     Bool,
 }
 
@@ -26,6 +27,8 @@ pub enum Type {
     Point3List,
     Polygon,
     PolygonList,
+    Color,
+    ColorList,
     Bool,
     BoolList,
 }
@@ -39,10 +42,12 @@ impl Type {
             | Type::Point3List
             | Type::Polygon
             | Type::PolygonList
+            | Type::ColorList
             | Type::Bool
             | Type::BoolList => 1,
             Type::Point2 => 2,
             Type::Point3 => 3,
+            Type::Color => 3,
         }
     }
 
@@ -52,6 +57,7 @@ impl Type {
             Type::Point2 | Type::Point2List => BaseType::Point2,
             Type::Point3 | Type::Point3List => BaseType::Point3,
             Type::Polygon | Type::PolygonList => BaseType::Polygon,
+            Type::Color | Type::ColorList => BaseType::Color,
             Type::Bool | Type::BoolList => BaseType::Bool,
         }
     }
@@ -62,6 +68,7 @@ impl Type {
             BaseType::Point2 => Type::Point2List,
             BaseType::Point3 => Type::Point3List,
             BaseType::Polygon => Type::PolygonList,
+            BaseType::Color => Type::ColorList,
             BaseType::Bool => Type::BoolList,
         }
     }
@@ -72,6 +79,7 @@ impl Type {
             BaseType::Point2 => Type::Point2,
             BaseType::Point3 => Type::Point3,
             BaseType::Polygon => Type::Polygon,
+            BaseType::Color => Type::Color,
             BaseType::Bool => Type::Bool,
         }
     }
@@ -83,6 +91,7 @@ impl Type {
                 | Type::Point2List
                 | Type::Point3List
                 | Type::PolygonList
+                | Type::ColorList
                 | Type::BoolList
         )
     }
@@ -99,6 +108,8 @@ impl std::fmt::Display for Type {
             Type::Point3List => "a list of 3D points",
             Type::Polygon => "a polygon",
             Type::PolygonList => "a list of polygons",
+            Type::Color => "a color",
+            Type::ColorList => "a list of colors",
             Type::Bool => "a true/false value",
             Type::BoolList => "a list of true/false values",
         })
@@ -194,13 +205,16 @@ impl InstructionBuilder {
             Count2 => (Type::Point2List, Type::Number),
             Count3 => (Type::Point3List, Type::Number),
             CountPolygonList => (Type::PolygonList, Type::Number),
+            CountColorList => (Type::ColorList, Type::Number),
             Unique | UniquePerm | Sort | SortPerm => (Type::NumberList, Type::NumberList),
             Unique2 => (Type::Point2List, Type::Point2List),
             Unique3 => (Type::Point3List, Type::Point3List),
             UniquePolygon => (Type::PolygonList, Type::PolygonList),
+            UniqueColor => (Type::ColorList, Type::ColorList),
             UniquePerm2 => (Type::Point2List, Type::NumberList),
             UniquePerm3 => (Type::Point3List, Type::NumberList),
             UniquePermPolygon => (Type::PolygonList, Type::NumberList),
+            UniquePermColor => (Type::ColorList, Type::NumberList),
             Polygon => (Type::Point2List, Type::Polygon),
             Vertices => (Type::Polygon, Type::Point2List),
             BuildListFromRangeEnd => (Type::Number, Type::NumberList),
@@ -237,27 +251,33 @@ impl InstructionBuilder {
             SortKey2 => (Type::Point2List, Type::NumberList, Type::Point2List),
             SortKey3 => (Type::Point3List, Type::NumberList, Type::Point3List),
             SortKeyPolygon => (Type::PolygonList, Type::NumberList, Type::PolygonList),
+            SortKeyColor => (Type::ColorList, Type::NumberList, Type::ColorList),
             Push => (Type::NumberList, Type::Number, Type::NumberList),
             Push2 => (Type::Point2List, Type::Point2, Type::Point2List),
             Push3 => (Type::Point3List, Type::Point3, Type::Point3List),
             PushPolygon => (Type::PolygonList, Type::Polygon, Type::PolygonList),
+            PushColor => (Type::ColorList, Type::Color, Type::ColorList),
             Concat => (Type::NumberList, Type::NumberList, Type::NumberList),
             Concat2 => (Type::Point2List, Type::Point2List, Type::Point2List),
             Concat3 => (Type::Point3List, Type::Point3List, Type::Point3List),
             ConcatPolygon => (Type::PolygonList, Type::PolygonList, Type::PolygonList),
+            ConcatColor => (Type::ColorList, Type::ColorList, Type::ColorList),
             MinInternal => (Type::Number, Type::Number, Type::Number),
             Index => (Type::NumberList, Type::Number, Type::Number),
             Index2 => (Type::Point2List, Type::Number, Type::Point2),
             Index3 => (Type::Point3List, Type::Number, Type::Point3),
             IndexPolygonList => (Type::PolygonList, Type::Number, Type::Polygon),
+            IndexColorList => (Type::ColorList, Type::Number, Type::Color),
             Repeat | BuildListFromRange => (Type::Number, Type::Number, Type::NumberList),
             Repeat2 => (Type::Point2, Type::Number, Type::Point2List),
             Repeat3 => (Type::Point3, Type::Number, Type::Point3List),
             RepeatPolygon => (Type::Polygon, Type::Number, Type::PolygonList),
+            RepeatColor => (Type::Color, Type::Number, Type::ColorList),
             RepeatList => (Type::NumberList, Type::NumberList, Type::NumberList),
             Repeat2List => (Type::Point2List, Type::NumberList, Type::Point2List),
             Repeat3List => (Type::Point3List, Type::NumberList, Type::Point3List),
             RepeatPolygonList => (Type::PolygonList, Type::NumberList, Type::PolygonList),
+            RepeatColorList => (Type::ColorList, Type::NumberList, Type::ColorList),
             _ => panic!("instruction '{instr:?}' not binary"),
         };
         self.assert_pop(b, b_type);
@@ -273,6 +293,7 @@ impl InstructionBuilder {
     pub fn instr3(&mut self, instr: Instruction, a: Value, b: Value, c: Value) -> Value {
         let (a_type, b_type, c_type, return_type) = match instr {
             Point3 => (Type::Number, Type::Number, Type::Number, Type::Point3),
+            Rgb | Hsv => (Type::Number, Type::Number, Type::Number, Type::Color),
             _ => panic!("instruction '{instr:?}' not ternary"),
         };
         self.assert_pop(c, c_type);
@@ -321,6 +342,7 @@ impl InstructionBuilder {
             BaseType::Point2 => UncheckedIndex2,
             BaseType::Point3 => UncheckedIndex3,
             BaseType::Polygon => UncheckedIndexPolygonList,
+            BaseType::Color => UncheckedIndex3,
         }(self.position_from_top(list)));
         self.create_and_push_value(Type::single(base))
     }
@@ -335,6 +357,7 @@ impl InstructionBuilder {
             BaseType::Point2 => BuildList(2 * n),
             BaseType::Point3 => BuildList(3 * n),
             BaseType::Polygon => BuildPolygonList(n),
+            BaseType::Color => BuildList(3 * n),
         });
         self.create_and_push_value(Type::list_of(base))
     }
@@ -349,6 +372,7 @@ impl InstructionBuilder {
             BaseType::Point2 => Append2,
             BaseType::Point3 => Append3,
             BaseType::Polygon => AppendPolygonList,
+            BaseType::Color => Append3,
         }(self.position_from_top(list)));
     }
 
@@ -516,6 +540,7 @@ impl InstructionBuilder {
             BaseType::Point2 => CountSpecific2,
             BaseType::Point3 => CountSpecific3,
             BaseType::Polygon => CountSpecificPolygonList,
+            BaseType::Color => CountSpecific3,
         }(self.position_from_top(list)));
         self.create_and_push_value(Type::Number)
     }

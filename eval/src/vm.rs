@@ -130,38 +130,48 @@ pub enum Instruction {
     Count2,
     Count3,
     CountPolygonList,
+    CountColorList,
     Repeat,
     Repeat2,
     Repeat3,
     RepeatPolygon,
+    RepeatColor,
     RepeatList,
     Repeat2List,
     Repeat3List,
     RepeatPolygonList,
+    RepeatColorList,
     Unique,
     Unique2,
     Unique3,
     UniquePolygon,
+    UniqueColor,
     UniquePerm,
     UniquePerm2,
     UniquePerm3,
     UniquePermPolygon,
+    UniquePermColor,
     Sort,
     SortKey,
     SortKey2,
     SortKey3,
     SortKeyPolygon,
+    SortKeyColor,
     SortPerm,
     Polygon,
     Vertices,
+    Rgb,
+    Hsv,
     Push,
     Push2,
     Push3,
     PushPolygon,
+    PushColor,
     Concat,
     Concat2,
     Concat3,
     ConcatPolygon,
+    ConcatColor,
 
     And,
     MinInternal,
@@ -169,6 +179,7 @@ pub enum Instruction {
     Index2,
     Index3,
     IndexPolygonList,
+    IndexColorList,
     UncheckedIndex(usize),
     UncheckedIndex2(usize),
     UncheckedIndex3(usize),
@@ -1019,7 +1030,7 @@ impl<'a, 'i> Vm<'a, 'i> {
                     let a = self.pop().list();
                     self.push(a.borrow().len() as f64 / 2.0);
                 }
-                Instruction::Count3 => {
+                Instruction::Count3 | Instruction::CountColorList => {
                     let a = self.pop().list();
                     self.push(a.borrow().len() as f64 / 3.0);
                 }
@@ -1038,7 +1049,7 @@ impl<'a, 'i> Vm<'a, 'i> {
                     let x = self.pop().number();
                     self.push(Rc::new(RefCell::new([x, y].repeat(count))));
                 }
-                Instruction::Repeat3 => {
+                Instruction::Repeat3 | Instruction::RepeatColor => {
                     let count = self.pop().number().round().max(0.0) as usize;
                     let z = self.pop().number();
                     let y = self.pop().number();
@@ -1083,7 +1094,7 @@ impl<'a, 'i> Vm<'a, 'i> {
 
                     self.push(Rc::new(RefCell::new(list)));
                 }
-                Instruction::Repeat3List => {
+                Instruction::Repeat3List | Instruction::RepeatColorList => {
                     let counts = self.pop().list();
                     let counts = counts.borrow();
                     let values = self.pop().list();
@@ -1141,7 +1152,7 @@ impl<'a, 'i> Vm<'a, 'i> {
                             .collect::<Vec<_>>(),
                     )));
                 }
-                Instruction::Unique3 => {
+                Instruction::Unique3 | Instruction::UniqueColor => {
                     let a = self.pop().list();
                     let mut seen = HashSet::new();
                     self.push(Rc::new(RefCell::new(
@@ -1199,7 +1210,7 @@ impl<'a, 'i> Vm<'a, 'i> {
                             .collect::<Vec<_>>(),
                     )));
                 }
-                Instruction::UniquePerm3 => {
+                Instruction::UniquePerm3 | Instruction::UniquePermColor => {
                     let a = self.pop().list();
                     let mut seen = HashSet::new();
                     self.push(Rc::new(RefCell::new(
@@ -1261,7 +1272,7 @@ impl<'a, 'i> Vm<'a, 'i> {
                             .collect::<Vec<_>>(),
                     )));
                 }
-                Instruction::SortKey3 => {
+                Instruction::SortKey3 | Instruction::SortKeyColor => {
                     let key = self.pop().list();
                     let key = key.borrow();
                     let list = self.pop().list();
@@ -1301,6 +1312,41 @@ impl<'a, 'i> Vm<'a, 'i> {
                 Instruction::Vertices => {
                     // noop
                 }
+                Instruction::Rgb => {
+                    let b = self.pop().number();
+                    let g = self.pop().number();
+                    let r = self.pop().number();
+                    let f = |x: f64| {
+                        if x.is_nan() {
+                            0.0
+                        } else {
+                            (x / 255.0).clamp(0.0, 1.0)
+                        }
+                    };
+                    self.push(f(r));
+                    self.push(f(g));
+                    self.push(f(b));
+                }
+                Instruction::Hsv => {
+                    let v = self.pop().number().clamp(0.0, 1.0);
+                    let s = self.pop().number().clamp(0.0, 1.0);
+                    let h = self.pop().number();
+                    if s.is_nan() || v.is_nan() {
+                        self.push(0.0);
+                        self.push(0.0);
+                        self.push(0.0);
+                    } else {
+                        let h = if h.is_nan() { 0.0 } else { h };
+                        // https://en.wikipedia.org/wiki/HSL_and_HSV#HSV_to_RGB_alternative
+                        let f = |n: f64| {
+                            let k = (n + h / 60.0).rem_euclid(6.0);
+                            v - v * s * k.min(4.0 - k).clamp(0.0, 1.0)
+                        };
+                        self.push(f(5.0));
+                        self.push(f(3.0));
+                        self.push(f(1.0));
+                    }
+                }
                 Instruction::Push => {
                     let b = self.pop().number();
                     let a = Rc::unwrap_or_clone(self.pop().list());
@@ -1314,7 +1360,7 @@ impl<'a, 'i> Vm<'a, 'i> {
                     a.borrow_mut().extend([x, y]);
                     self.push(Rc::new(a));
                 }
-                Instruction::Push3 => {
+                Instruction::Push3 | Instruction::PushColor => {
                     let z = self.pop().number();
                     let y = self.pop().number();
                     let x = self.pop().number();
@@ -1328,7 +1374,10 @@ impl<'a, 'i> Vm<'a, 'i> {
                     a.borrow_mut().push(b);
                     self.push(Rc::new(a));
                 }
-                Instruction::Concat | Instruction::Concat2 | Instruction::Concat3 => {
+                Instruction::Concat
+                | Instruction::Concat2
+                | Instruction::Concat3
+                | Instruction::ConcatColor => {
                     let b = self.pop().list();
                     let a = Rc::unwrap_or_clone(self.pop().list());
                     a.borrow_mut().extend_from_slice(&b.borrow());
@@ -1375,7 +1424,7 @@ impl<'a, 'i> Vm<'a, 'i> {
                         self.push(f64::NAN);
                     }
                 }
-                Instruction::Index3 => {
+                Instruction::Index3 | Instruction::IndexColorList => {
                     let b = (self.pop().number().floor() - 1.0) * 3.0;
                     let a = self.pop().list();
                     let a = a.borrow();

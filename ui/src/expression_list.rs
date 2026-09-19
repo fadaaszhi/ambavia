@@ -3549,6 +3549,7 @@ struct Expression {
     ast: Option<Result<parse::ast::Statement, String>>,
     output: Output,
     style_gutter: StyleGutter,
+    delete_button: Button,
     /// The cached height from the last update or render, or `None` if it's never
     /// been calculated before.
     height: Option<f64>,
@@ -3621,6 +3622,7 @@ impl Expression {
 
                 color_buttons: Default::default(),
             },
+            delete_button: Default::default(),
             height: None,
         }
     }
@@ -3641,12 +3643,16 @@ impl Expression {
         e
     }
 
+    const DELETE_BUTTON_PADDING: f64 = 7.0;
+    const DELETE_BUTTON_SIZE: f64 = 18.0;
+
     fn update(
         &mut self,
         ctx: &Context,
         event: &Event,
         top_left: DVec2,
         width: f64,
+        is_last: bool,
     ) -> (Response, Option<Message>) {
         let mut response = Response::default();
         let mut message = None;
@@ -3662,13 +3668,16 @@ impl Expression {
         height += padding;
         let field_bounds = Bounds {
             pos: top_left + dvec2(padding, height),
-            size: dvec2(width - padding * 1.5, ctx.ceil(field.expression_size().y)),
+            size: dvec2(
+                width - padding - 2.0 * Self::DELETE_BUTTON_PADDING - Self::DELETE_BUTTON_SIZE,
+                ctx.ceil(field.expression_size().y),
+            ),
         };
         height += field_bounds.size.y;
         // Bounds used for testing if field got clicked on (field_bounds + padding included)
         let field_hit_test_bounds = Bounds {
             pos: top_left,
-            size: field_bounds.size + padding * 1.5,
+            size: dvec2(width, field_bounds.size.y + padding * 1.5),
         };
         height += 0.5 * padding;
         let (output_response, new_value, output_message, output_bounds) = self.output.ui.update(
@@ -3694,12 +3703,35 @@ impl Expression {
         height += output_bounds.size.y;
         height += 0.5 * padding;
 
+        let mut delete_response = Response::default();
+
+        if !is_last {
+            let delete_button_hitbox_size = 45.0;
+            let delete_button_hitbox = Bounds {
+                pos: dvec2(top_left.x + width - delete_button_hitbox_size, top_left.y),
+                size: DVec2::splat(delete_button_hitbox_size),
+            };
+
+            let delete_clicked;
+            (delete_response, delete_clicked) =
+                self.delete_button.update(ctx, event, delete_button_hitbox);
+            response = response.or(delete_response);
+
+            if delete_clicked {
+                message = Some(Message::Remove);
+                response.request_redraw();
+            }
+        }
+
         let field = match use_fake_field {
             true => &mut self.slider.fake_field,
             false => &mut self.field,
         };
-        let (field_response, field_message) =
-            field.update(ctx, event, field_bounds, Some(field_hit_test_bounds));
+        let (field_response, field_message) = if delete_response.consumed_event {
+            (Response::default(), None)
+        } else {
+            field.update(ctx, event, field_bounds, Some(field_hit_test_bounds))
+        };
 
         if field.has_focus() {
             self.slider.is_playing = false;
@@ -3864,6 +3896,7 @@ impl Expression {
         ctx: &Context,
         top_left: DVec2,
         width: f64,
+        is_last: bool,
         draw_quad: &mut impl FnMut(Quad),
     ) {
         let mut height = 0.0;
@@ -3877,7 +3910,10 @@ impl Expression {
         height += padding;
         let field_bounds = Bounds {
             pos: top_left + dvec2(padding, height),
-            size: dvec2(width - padding * 1.5, ctx.ceil(field.expression_size().y)),
+            size: dvec2(
+                width - padding - 2.0 * Self::DELETE_BUTTON_PADDING - Self::DELETE_BUTTON_SIZE,
+                ctx.ceil(field.expression_size().y),
+            ),
         };
         height += field_bounds.size.y;
         height += 0.5 * padding;
@@ -3898,6 +3934,21 @@ impl Expression {
             false => &mut self.field,
         };
         field.render(ctx, field_bounds, draw_quad);
+
+        if !is_last {
+            let delete_button_bounds = Bounds {
+                pos: dvec2(
+                    top_left.x + width - Self::DELETE_BUTTON_PADDING - Self::DELETE_BUTTON_SIZE,
+                    top_left.y + Self::DELETE_BUTTON_PADDING,
+                ),
+                size: DVec2::splat(Self::DELETE_BUTTON_SIZE),
+            };
+            draw_quad(Quad::from_bounds(
+                ctx.roundb(delete_button_bounds),
+                QuadKind::CrossIcon,
+                [[204, 102, 51][self.delete_button.state()]; 3],
+            ));
+        }
 
         self.height = Some(height);
     }
@@ -4186,11 +4237,13 @@ impl ExpressionList {
                         original_focus = Some(i);
                     }
 
+                    let is_last = i.0 == expressions_len - 1;
                     let (r, m) = expression.update(
                         ctx,
                         event,
                         dvec2(expression_left, expression_top),
                         expression_width,
+                        is_last,
                     );
                     response = response.or(r);
                     message = message.or(m.map(|m| (i, m)));
@@ -4223,7 +4276,7 @@ impl ExpressionList {
                         size: dvec2(gutter_width, expression.height()) + separator_width,
                     };
 
-                    if i.0 != expressions_len - 1 && drag_bounds.contains(ctx.cursor) {
+                    if !is_last && drag_bounds.contains(ctx.cursor) {
                         let mut drag_response = Response::default();
 
                         if event == &Event::MouseInput(ElementState::Pressed, MouseButton::Left) {
@@ -4300,13 +4353,16 @@ impl ExpressionList {
                             response.request_redraw();
                         }
                         Message::Remove => {
+                            let had_focus = self.expressions[i].has_focus();
                             self.expressions.remove(i);
                             self.expressions_changed = true;
-                            if self.expressions.is_empty() {
+                            if self.expressions.len() < 2 {
                                 let expression = self.new_expression();
                                 self.expressions.push(expression);
                             }
-                            self.expressions[ExpressionId(i.0.saturating_sub(1))].focus();
+                            if had_focus {
+                                self.expressions[ExpressionId(i.0.saturating_sub(1))].focus();
+                            }
                             response.request_redraw();
                         }
                     }
@@ -5406,6 +5462,7 @@ impl ExpressionList {
                 Some((ClickDragTracker::Dragging, j, _)) => j.0 == i,
                 _ => false,
             };
+            let is_last = i == expressions_len - 1;
             let expression_bottom;
 
             if is_being_dragged {
@@ -5425,6 +5482,7 @@ impl ExpressionList {
                     ctx,
                     dvec2(expression_left, expression_top),
                     expression_width,
+                    is_last,
                     draw_quad,
                 );
                 expression_bottom = expression_top + expression.height();
@@ -5469,7 +5527,7 @@ impl ExpressionList {
                     draw_quad,
                 );
 
-                if i < expressions_len - 1 {
+                if !is_last {
                     if has_focus {
                         // replace separators with thicker focus color when focussed
                         // top separator
@@ -5502,7 +5560,7 @@ impl ExpressionList {
                 }
             }
 
-            if i == expressions_len - 1 && !is_being_dragged {
+            if is_last && !is_being_dragged {
                 // fade away gradient for last expression
                 draw_quad(Quad {
                     kind: QuadKind::AlphaGradientV2,
@@ -5538,6 +5596,7 @@ impl ExpressionList {
                 ctx,
                 dvec2(expression_left, expression_top),
                 expression_width,
+                false,
                 draw_quad,
             );
             let expression_bottom = expression_top + expression.height();

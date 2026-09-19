@@ -90,6 +90,7 @@ const PopupDragXYIcon = 78u;
 const PopupColorSwatch = 79u;
 const PopupColorSwatchHighlight = 80u;
 const TickIcon = 81u;
+const CrossIcon = 82u;
 
 struct Vertex {
     @location(0) position: vec2f,
@@ -801,6 +802,15 @@ fn fs_quad(in: VertexOutput) -> @location(0) vec4f {
                 abs(p.x - 0.105) - p.y - 0.624,
                 abs(p.y + abs(p.x + 0.105) - 0.234) - 0.137
             ) / sqrt(2.0);
+            sd *= size.x;
+            let opacity = saturate(0.5 - sd);
+            return in.color * vec4(1.0, 1.0, 1.0, opacity);
+        }
+        case CrossIcon {
+            let p = in.uv - 0.5;
+            let a = abs(p.x + p.y);
+            let b = abs(p.x - p.y);
+            var sd = max(min(a, b) - 0.13,max(a, b) - 0.87) / sqrt(2.0);
             sd *= size.x;
             let opacity = saturate(0.5 - sd);
             return in.color * vec4(1.0, 1.0, 1.0, opacity);

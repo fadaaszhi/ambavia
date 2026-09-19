@@ -3967,6 +3967,7 @@ const EXPRESSION_COLORS: [DVec4; N_EXPRESSION_COLORS] = [
 ];
 
 fn get_default_expression_color(i: usize) -> DVec4 {
+    // skip orange
     let p = [0, 1, 2, 4, 5];
     EXPRESSION_COLORS[p[i % p.len()]]
 }
@@ -4060,7 +4061,7 @@ impl ExpressionList {
     }
 
     fn new_expression(&mut self) -> Expression {
-        let color = EXPRESSION_COLORS[self.next_color % EXPRESSION_COLORS.len()];
+        let color = get_default_expression_color(self.next_color);
         self.next_color += 1;
         Expression::new(color)
     }

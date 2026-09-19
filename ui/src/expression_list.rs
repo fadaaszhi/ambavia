@@ -158,6 +158,7 @@ impl InlineField {
     }
 
     fn render(&mut self, ctx: &Context, bounds: Bounds, draw_quad: &mut impl FnMut(Quad)) {
+        self.field.render(ctx, bounds, draw_quad);
         if self.do_underline {
             self.underline.state = if self.field.has_focus() {
                 UnderlineState::Focussed
@@ -168,7 +169,6 @@ impl InlineField {
             };
             self.underline.render(bounds, draw_quad);
         }
-        self.field.render(ctx, bounds, draw_quad);
     }
 }
 

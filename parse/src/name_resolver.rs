@@ -278,6 +278,9 @@ struct Resolver<'a> {
 #[derive(Debug, Copy, Clone, From, Into, PartialEq, Eq, Hash)]
 pub struct ExpressionIndex(usize);
 
+#[derive(Debug, Copy, Clone, From, Into, PartialEq, Eq, Hash)]
+pub struct PropertyIndex(usize);
+
 impl<'a> Resolver<'a> {
     fn new(
         list: impl Iterator<Item = (&'a Statement, Option<Slider<&'a ast::Expression>>)>,
@@ -1037,6 +1040,7 @@ pub struct Output {
     pub results: TiVec<ExpressionIndex, ExpressionResult>,
     pub freevars: HashMap<String, Id>,
     pub builtin_constants: HashMap<String, Id>,
+    pub properties: TiVec<PropertyIndex, Result<Id, NameError>>,
 }
 
 fn resolve_relation(
@@ -1089,6 +1093,7 @@ fn resolve_relation(
 pub fn resolve_names<'a>(
     list: &TiSlice<ExpressionIndex, impl Borrow<ExpressionListEntry<'a>>>,
     builtin_constants: &[&str],
+    properties: &TiSlice<PropertyIndex, &'a ast::Expression>,
     use_v1_9_scoping_rules: bool,
 ) -> Output {
     let mut undefinable_names = HashSet::new();
@@ -1418,6 +1423,28 @@ pub fn resolve_names<'a>(
         })
         .collect();
 
+    let properties = properties
+        .iter()
+        .map(|p| {
+            let (value, deps) = resolver.resolve_expression_with_dependencies(p, None);
+            value.and_then(|value| {
+                let freevars = deps
+                    .keys()
+                    .filter(|&name| resolver.freevars.contains_key(name))
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>();
+                if freevars.is_empty() {
+                    let level = deps.level();
+                    assert_eq!(level, Level(0));
+                    let id = resolver.push_assignment("<property>", level, value);
+                    Ok(id)
+                } else {
+                    Err(NameError::undefined(freevars))
+                }
+            })
+        })
+        .collect::<TiVec<PropertyIndex, _>>();
+
     let assignments = resolver.assignments.pop().unwrap();
     assert!(resolver.assignments.is_empty());
     let freevars = resolver
@@ -1430,6 +1457,7 @@ pub fn resolve_names<'a>(
         results,
         freevars,
         builtin_constants,
+        properties,
     }
 }
 
@@ -1654,7 +1682,7 @@ mod tests {
                 slider: None,
             })
             .collect::<TiVec<_, _>>();
-        let o = resolve_names(list.as_ref(), &[], false);
+        let o = resolve_names(list.as_ref(), &[], Default::default(), false);
         (o.assignments, o.results.into(), o.freevars)
     }
 
@@ -1673,7 +1701,7 @@ mod tests {
                 slider: None,
             })
             .collect::<TiVec<_, _>>();
-        let o = resolve_names(list.as_ref(), builtin_constants, false);
+        let o = resolve_names(list.as_ref(), builtin_constants, Default::default(), false);
         (
             o.assignments,
             o.results.into(),
@@ -1694,7 +1722,7 @@ mod tests {
                 slider: None,
             })
             .collect::<TiVec<_, _>>();
-        let o = resolve_names(list.as_ref(), &[], true);
+        let o = resolve_names(list.as_ref(), &[], Default::default(), true);
         (o.assignments, o.results.into(), o.freevars)
     }
 
@@ -4667,6 +4695,7 @@ mod tests {
             .as_slice()
             .as_ref(),
             &[],
+            Default::default(),
             false,
         );
         assert_eq(
@@ -4821,6 +4850,7 @@ mod tests {
             .as_slice()
             .as_ref(),
             &[],
+            Default::default(),
             false,
         );
         assert_eq(

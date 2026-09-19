@@ -9,9 +9,10 @@ use derive_more::{From, Into};
 use typed_index_collections::{TiSlice, TiVec};
 
 use crate::{
+    ast,
     name_resolver::{
         Domain, ExpressionIndex, ExpressionListEntry, ExpressionResult as NrEr, Id, NameError,
-        Output, PlotKinds, Slider, resolve_names,
+        Output, PlotKinds, PropertyIndex, Slider, resolve_names,
     },
     type_checker::{Assignment, Type, TypeError, type_check, walk_assignment_ids},
 };
@@ -79,11 +80,13 @@ pub struct AnalysisResult {
     pub constants: Vec<AssignmentIndex>,
     pub freevars: HashMap<Id, String>,
     pub builtin_constants: HashMap<String, Id>,
+    pub properties: TiVec<PropertyIndex, Result<(Id, Type), AnalysisError>>,
 }
 
 pub fn analyze_expression_list<'a>(
     list: &TiSlice<ExpressionIndex, impl Borrow<ExpressionListEntry<'a>>>,
     builtin_constants: &[&str],
+    properties: &TiSlice<PropertyIndex, &'a ast::Expression>,
     use_v1_9_scoping_rules: bool,
 ) -> AnalysisResult {
     let Output {
@@ -91,7 +94,8 @@ pub fn analyze_expression_list<'a>(
         results,
         freevars,
         builtin_constants,
-    } = resolve_names(list, builtin_constants, use_v1_9_scoping_rules);
+        properties,
+    } = resolve_names(list, builtin_constants, properties, use_v1_9_scoping_rules);
     let (assignments, types) = type_check(
         &assignments,
         &freevars,
@@ -313,11 +317,23 @@ pub fn analyze_expression_list<'a>(
 
     let freevars = freevars.into_iter().map(|(k, v)| (v, k)).collect();
 
+    let properties = properties
+        .into_iter()
+        .map(|p| match p {
+            Ok(id) => match types[&id].clone() {
+                Ok(ty) => Ok((id, ty)),
+                Err(e) => Err(AnalysisError::TypeError(e)),
+            },
+            Err(e) => Err(AnalysisError::NameError(e)),
+        })
+        .collect();
+
     AnalysisResult {
         results,
         assignments,
         constants,
         freevars,
         builtin_constants,
+        properties,
     }
 }

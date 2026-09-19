@@ -59,7 +59,9 @@ pub enum QuadKind {
     GutterPointStarIcon,
     PointsIcon,
     LinesIcon,
+    #[allow(unused)]
     InequalityDashedIcon,
+    #[allow(unused)]
     InequalityFilledIcon,
     PopupToggleShadow,
     OpacityIcon,

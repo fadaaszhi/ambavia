@@ -27,7 +27,7 @@ use crate::{
     },
     quad_renderer::{Quad, QuadKind},
     ui::{AnimatedValue, Button, Color, CursorMode},
-    utility::{ClampToBounds, IfFiniteElse, flip_y, mix, set, snap},
+    utility::{ClampToBounds, FiniteExt, flip_y, mix, set, snap},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]

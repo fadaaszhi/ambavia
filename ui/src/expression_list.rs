@@ -5,6 +5,7 @@ use std::{collections::HashMap, ops::Deref};
 
 use derive_more::{Add, From, Into, Sub};
 use glam::{DVec2, DVec4, dvec2, dvec4};
+use parse::name_resolver::PropertyIndex;
 use typed_index_collections::{TiVec, ti_vec};
 use winit::{
     event::{ElementState, MouseButton},
@@ -15,7 +16,7 @@ use crate::katex_font::Font;
 use crate::label::{Label, render_label};
 use crate::quad_renderer::{Quad, QuadKind};
 use crate::ui::{AnimatedValue, Button, ClickDragTracker, Color, PRIMARY_COLOR};
-use crate::utility::IfFiniteElse;
+use crate::utility::FiniteExt;
 use crate::{
     graph::{Geometry, GeometryKind},
     math_field::{Cursor, Interactiveness, MathField, Message, UserSelection},
@@ -1987,7 +1988,7 @@ impl From<LineStyle> for QuadKind {
     }
 }
 
-const LINE_SIZE_DEFAULT: f64 = 2.5;
+const LINE_WIDTH_DEFAULT: f64 = 2.5;
 const LINE_OPACITY_DEFAULT: f64 = 1.0;
 
 struct LineAppearance {
@@ -2038,7 +2039,7 @@ impl PointStyle {
     }
 }
 
-const POINT_SIZE_DEFAULT: f64 = 2.5;
+const POINT_SIZE_DEFAULT: f64 = 8.0;
 const POINT_OPACITY_DEFAULT: f64 = 1.0;
 
 struct PointAppearance {
@@ -2055,7 +2056,20 @@ struct FillAppearance {
     opacity: (InlineField, Result<ast::Expression, String>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ExpressionStyleKind {
+    None,
+    Equality,
+    Point,
+    PointList,
+    DraggablePoint,
+    Polygon,
+    Parametric,
+}
+
 struct ExpressionStyle {
+    changed: bool,
+    kind: ExpressionStyleKind,
     hidden: bool,
     color: [f32; 4],
     line: LineAppearance,
@@ -2079,12 +2093,14 @@ impl Default for ExpressionStyle {
             y
         };
         Self {
+            changed: true,
+            kind: ExpressionStyleKind::None,
             hidden: false,
             color: [1.0, 0.0, 0.0, 1.0],
             line: LineAppearance {
                 enabled: None,
                 style: Default::default(),
-                width: create_with_placeholder(LINE_SIZE_DEFAULT),
+                width: create_with_placeholder(LINE_WIDTH_DEFAULT),
                 opacity: create_with_placeholder(LINE_OPACITY_DEFAULT),
             },
             point: PointAppearance {
@@ -2097,6 +2113,63 @@ impl Default for ExpressionStyle {
                 enabled: None,
                 opacity: create_with_placeholder(FILL_OPACITY_DEFAULT),
             },
+        }
+    }
+}
+
+enum StylePopupSectionKind {
+    Line,
+    Point,
+    Fill,
+}
+
+impl ExpressionStyle {
+    fn popup_order(&self) -> &'static [StylePopupSectionKind] {
+        use StylePopupSectionKind as K;
+        match self.kind {
+            ExpressionStyleKind::None => &[],
+            ExpressionStyleKind::Equality => &[K::Line],
+            ExpressionStyleKind::Point => &[K::Point],
+            ExpressionStyleKind::PointList => &[K::Point, K::Line],
+            ExpressionStyleKind::DraggablePoint => &[K::Point],
+            ExpressionStyleKind::Polygon => &[K::Line, K::Fill],
+            ExpressionStyleKind::Parametric => &[K::Line, K::Fill],
+        }
+    }
+
+    fn line_enabled(&self) -> bool {
+        match self.kind {
+            ExpressionStyleKind::None => false,
+            ExpressionStyleKind::Equality => self.line.enabled.unwrap_or(true),
+            ExpressionStyleKind::Point => false,
+            ExpressionStyleKind::PointList => self.line.enabled.unwrap_or(false),
+            ExpressionStyleKind::DraggablePoint => false,
+            ExpressionStyleKind::Polygon => self.line.enabled.unwrap_or(true),
+            ExpressionStyleKind::Parametric => self.line.enabled.unwrap_or(true),
+        }
+    }
+
+    fn point_enabled(&self) -> bool {
+        match self.kind {
+            ExpressionStyleKind::None => false,
+            ExpressionStyleKind::Equality => false,
+            ExpressionStyleKind::Point => self.point.enabled.unwrap_or(true),
+            ExpressionStyleKind::PointList => self.point.enabled.unwrap_or(true),
+            ExpressionStyleKind::DraggablePoint => self.point.enabled.unwrap_or(true),
+            ExpressionStyleKind::Polygon => false,
+            ExpressionStyleKind::Parametric => false,
+        }
+    }
+
+    fn fill_enabled(&self) -> bool {
+        match self.kind {
+            ExpressionStyleKind::None => false,
+            ExpressionStyleKind::Equality => false,
+            ExpressionStyleKind::Point => false,
+            ExpressionStyleKind::PointList => false,
+            ExpressionStyleKind::DraggablePoint => false,
+            ExpressionStyleKind::Polygon => self.fill.enabled.unwrap_or(true),
+            ExpressionStyleKind::Parametric => self.fill.enabled.unwrap_or(false),
         }
     }
 }
@@ -2165,7 +2238,16 @@ struct StylePopupLayout {
 }
 
 impl StyleGutter {
-    fn layout_gutter(&self, ctx: &Context, bounds: Bounds) -> StyleGutterLayout {
+    fn layout_gutter(
+        &self,
+        ctx: &Context,
+        bounds: Bounds,
+        style: &ExpressionStyle,
+    ) -> Option<StyleGutterLayout> {
+        if style.popup_order().is_empty() {
+            return None;
+        }
+
         let toggle_button_center = bounds.pos + bounds.size.x * dvec2(0.5, 0.752);
         let toggle_button_radius = 0.392 * bounds.size.x;
         let toggle_button = ctx.roundb(Bounds {
@@ -2173,11 +2255,11 @@ impl StyleGutter {
             size: DVec2::splat(toggle_button_radius * 2.0),
         });
 
-        StyleGutterLayout {
+        Some(StyleGutterLayout {
             toggle_button_center,
             toggle_button_radius,
             toggle_button,
-        }
+        })
     }
 
     fn update_gutter(
@@ -2187,8 +2269,10 @@ impl StyleGutter {
         bounds: Bounds,
         style: &mut ExpressionStyle,
     ) -> Response {
-        let l = self.layout_gutter(ctx, bounds);
         let mut response = Response::default();
+        let Some(l) = self.layout_gutter(ctx, bounds, style) else {
+            return response;
+        };
         response = response.or(self.toggle_button.update(
             ctx,
             event,
@@ -2200,17 +2284,15 @@ impl StyleGutter {
                     return;
                 }
 
-                if style.hidden
-                    && style.line.enabled.is_some_and(|e| !e)
-                    && style.point.enabled.is_some_and(|e| !e)
-                    && style.fill.enabled.is_some_and(|e| !e)
-                {
+                if !style.line_enabled() && !style.point_enabled() && !style.fill_enabled() {
                     style.line.enabled = None;
                     style.point.enabled = None;
                     style.fill.enabled = None;
+                } else {
+                    style.hidden ^= true;
                 }
 
-                style.hidden ^= true;
+                style.changed = true;
                 response.request_redraw();
             },
         ));
@@ -2232,9 +2314,12 @@ impl StyleGutter {
         style: &ExpressionStyle,
         draw_quad: &mut impl FnMut(Quad),
     ) {
-        let l = self.layout_gutter(ctx, bounds);
+        let Some(l) = self.layout_gutter(ctx, bounds, style) else {
+            return;
+        };
 
-        if style.hidden {
+        if style.hidden || !style.line_enabled() && !style.point_enabled() && !style.fill_enabled()
+        {
             draw_quad(Quad::from_bounds(
                 l.toggle_button,
                 QuadKind::ExpressionHiddenIcon,
@@ -2254,16 +2339,64 @@ impl StyleGutter {
                 QuadKind::ExpressionShownIcon,
                 DVec4::from(style.color.map(|x| x.into())) * darken,
             ));
-            draw_quad(Quad::from_bounds(
-                l.toggle_button,
-                QuadKind::SineSolidIcon,
-                DVec4::ONE * darken,
-            ));
+
+            let white = DVec4::ONE * darken;
+
+            if style.kind == ExpressionStyleKind::PointList && style.line_enabled() {
+                draw_quad(Quad::from_bounds(
+                    l.toggle_button,
+                    QuadKind::LinesIcon,
+                    white,
+                ));
+            }
+
+            if style.kind == ExpressionStyleKind::Polygon && style.fill_enabled() {
+                draw_quad(Quad::from_bounds(
+                    l.toggle_button,
+                    QuadKind::PolygonFilledIcon,
+                    white.with_opacity(0.5),
+                ));
+            }
+
+            if style.kind == ExpressionStyleKind::Parametric && style.fill_enabled() {
+                draw_quad(Quad::from_bounds(
+                    l.toggle_button,
+                    QuadKind::SineFilledIcon,
+                    white.with_opacity(0.5),
+                ));
+            }
+
+            let mut draw = |kind| draw_quad(Quad::from_bounds(l.toggle_button, kind, white));
+
+            match style.kind {
+                ExpressionStyleKind::Equality | ExpressionStyleKind::Parametric
+                    if style.line_enabled() =>
+                {
+                    draw(match style.line.style {
+                        LineStyle::Solid => QuadKind::SineSolidIcon,
+                        LineStyle::Dashed => QuadKind::SineDashedIcon,
+                        LineStyle::Dotted => QuadKind::SineDottedIcon,
+                    })
+                }
+                ExpressionStyleKind::Point => draw(style.point.style.gutter_quad_kind()),
+                ExpressionStyleKind::PointList if style.point_enabled() => {
+                    draw(QuadKind::PointsIcon)
+                }
+                ExpressionStyleKind::DraggablePoint => draw(QuadKind::GutterPointPointIcon),
+                ExpressionStyleKind::Polygon if style.line_enabled() => {
+                    draw(match style.line.style {
+                        LineStyle::Solid => QuadKind::PolygonSolidIcon,
+                        LineStyle::Dashed => QuadKind::PolygonDashedIcon,
+                        LineStyle::Dotted => QuadKind::PolygonDottedIcon,
+                    })
+                }
+                _ => {}
+            };
         }
     }
 
     fn layout_popup(
-        &self,
+        &mut self,
         ctx: &Context,
         expression_list_bounds: Bounds,
         gutter_bounds: Bounds,
@@ -2272,18 +2405,14 @@ impl StyleGutter {
         if !self.is_popup_open {
             return None;
         }
-        let g = self.layout_gutter(ctx, gutter_bounds);
+        let Some(g) = self.layout_gutter(ctx, gutter_bounds, style) else {
+            self.is_popup_open = false;
+            return None;
+        };
 
-        enum SectionKind {
-            Line,
-            Point,
-            Fill,
-        }
-        let order = [SectionKind::Line, SectionKind::Fill, SectionKind::Point];
-
-        let line_enabled = style.line.enabled.unwrap_or(true);
-        let point_enabled = style.point.enabled.unwrap_or(true);
-        let fill_enabled = style.fill.enabled.unwrap_or(true);
+        let line_enabled = !style.hidden && style.line_enabled();
+        let point_enabled = !style.hidden && style.point_enabled();
+        let fill_enabled = !style.hidden && style.fill_enabled();
 
         let border_width = 1.0;
         let popup_width = 220.0 + 2.0 * border_width;
@@ -2336,14 +2465,14 @@ impl StyleGutter {
         let mut point_section = None;
         let mut fill_section = None;
 
-        for (i, kind) in order.into_iter().enumerate() {
+        for (i, kind) in style.popup_order().iter().enumerate() {
             if i > 0 {
                 next_y += border_width;
             }
             let top = next_y;
             next_y += title_height;
             match kind {
-                SectionKind::Line => {
+                StylePopupSectionKind::Line => {
                     let contents = line_enabled.then(|| {
                         let style_buttons_y = next_y - 2.0;
                         let opacity = icon_and_field_y(&mut next_y, &style.line.opacity.0);
@@ -2358,7 +2487,7 @@ impl StyleGutter {
                     });
                     line_section = Some((i, top, contents));
                 }
-                SectionKind::Point => {
+                StylePopupSectionKind::Point => {
                     let contents = point_enabled.then(|| {
                         let style_buttons_y = next_y - 2.0;
                         let opacity = icon_and_field_y(&mut next_y, &style.point.opacity.0);
@@ -2373,7 +2502,7 @@ impl StyleGutter {
                     });
                     point_section = Some((i, top, contents));
                 }
-                SectionKind::Fill => {
+                StylePopupSectionKind::Fill => {
                     let contents = fill_enabled.then(|| {
                         let opacity = icon_and_field_y(&mut next_y, &style.fill.opacity.0);
                         next_y += 10.0;
@@ -2553,29 +2682,51 @@ impl StyleGutter {
         expression_list_bounds: Bounds,
         gutter_bounds: Bounds,
         style: &mut ExpressionStyle,
-    ) -> Response {
+    ) -> (Response, Option<Message>) {
         let mut response = Response::default();
+        let mut message = None;
         let Some(l) = self.layout_popup(ctx, expression_list_bounds, gutter_bounds, style) else {
-            return response;
+            return (response, message);
         };
 
         let update_title = |l: &StylePopupTitleLayout,
                             button: &mut Button,
+                            hidden: &mut bool,
                             enabled: &mut Option<bool>,
+                            currently_enabled: bool,
+                            changed: &mut bool,
                             response: &mut Response| {
             let (r, clicked) = button.update(ctx, event, l.toggle_hitbox);
             *response = response.or(r);
             if clicked {
-                *enabled = Some(!enabled.unwrap_or(true));
+                if *hidden {
+                    *hidden = false;
+                    if !currently_enabled {
+                        *enabled = Some(true);
+                    }
+                } else {
+                    *enabled = Some(!currently_enabled);
+                }
+                *changed = true;
                 response.request_redraw();
             }
         };
 
+        let parse = |field: &mut (InlineField, _)| {
+            if !field.0.is_empty() {
+                field.1 = parse_standalone_expression(&field.0.to_latex());
+            }
+        };
+
         if let Some((_, title, contents)) = &l.line {
+            let enabled = style.line_enabled();
             update_title(
                 title,
                 &mut self.line_enabled_button,
+                &mut style.hidden,
                 &mut style.line.enabled,
+                enabled,
+                &mut style.changed,
                 &mut response,
             );
 
@@ -2589,6 +2740,7 @@ impl StyleGutter {
                     if clicked {
                         style.line.style =
                             [LineStyle::Solid, LineStyle::Dashed, LineStyle::Dotted][i];
+                        style.changed = true;
                         response.request_redraw();
                     }
                 }
@@ -2598,25 +2750,43 @@ impl StyleGutter {
                 let (r, m_width) = style.line.width.0.update(ctx, event, l.width.field);
                 response = response.or(r);
 
-                if let Some(Message::Down) = m_opacity {
-                    style.line.opacity.0.unfocus();
-                    style.line.width.0.focus();
-                    response.request_redraw();
+                match m_opacity {
+                    Some(Message::Down) => {
+                        style.line.opacity.0.unfocus();
+                        style.line.width.0.focus();
+                        response.request_redraw();
+                    }
+                    Some(Message::ContentsChanged { .. }) => {
+                        parse(&mut style.line.opacity);
+                        message = message.or(m_opacity);
+                    }
+                    _ => {}
                 }
 
-                if let Some(Message::Up) = m_width {
-                    style.line.opacity.0.focus();
-                    style.line.width.0.unfocus();
-                    response.request_redraw();
+                match m_width {
+                    Some(Message::Up) => {
+                        style.line.opacity.0.focus();
+                        style.line.width.0.unfocus();
+                        response.request_redraw();
+                    }
+                    Some(Message::ContentsChanged { .. }) => {
+                        parse(&mut style.line.width);
+                        message = message.or(m_width);
+                    }
+                    _ => {}
                 }
             }
         }
 
         if let Some((_, title, contents)) = &l.point {
+            let enabled = style.point_enabled();
             update_title(
                 title,
                 &mut self.point_enabled_button,
+                &mut style.hidden,
                 &mut style.point.enabled,
+                enabled,
+                &mut style.changed,
                 &mut response,
             );
 
@@ -2638,6 +2808,7 @@ impl StyleGutter {
                             PointStyle::Diamond,
                             PointStyle::Star,
                         ][i];
+                        style.changed = true;
                         response.request_redraw();
                     }
                 }
@@ -2647,31 +2818,54 @@ impl StyleGutter {
                 let (r, m_size) = style.point.size.0.update(ctx, event, l.size.field);
                 response = response.or(r);
 
-                if let Some(Message::Down) = m_opacity {
-                    style.point.opacity.0.unfocus();
-                    style.point.size.0.focus();
-                    response.request_redraw();
+                match m_opacity {
+                    Some(Message::Down) => {
+                        style.point.opacity.0.unfocus();
+                        style.point.size.0.focus();
+                        response.request_redraw();
+                    }
+                    Some(Message::ContentsChanged { .. }) => {
+                        parse(&mut style.point.opacity);
+                        message = message.or(m_opacity);
+                    }
+                    _ => {}
                 }
 
-                if let Some(Message::Up) = m_size {
-                    style.point.opacity.0.focus();
-                    style.point.size.0.unfocus();
-                    response.request_redraw();
+                match m_size {
+                    Some(Message::Up) => {
+                        style.point.opacity.0.focus();
+                        style.point.size.0.unfocus();
+                        response.request_redraw();
+                    }
+                    Some(Message::ContentsChanged { .. }) => {
+                        parse(&mut style.point.size);
+                        message = message.or(m_size);
+                    }
+                    _ => {}
                 }
             }
         }
 
         if let Some((_, title, contents)) = &l.fill {
+            let enabled = style.fill_enabled();
             update_title(
                 title,
                 &mut self.fill_enabled_button,
+                &mut style.hidden,
                 &mut style.fill.enabled,
+                enabled,
+                &mut style.changed,
                 &mut response,
             );
 
             if let Some(l) = contents {
-                let (r, _m_opacity) = style.fill.opacity.0.update(ctx, event, l.opacity.field);
+                let (r, m_opacity) = style.fill.opacity.0.update(ctx, event, l.opacity.field);
                 response = response.or(r);
+
+                if matches!(m_opacity, Some(Message::ContentsChanged { .. })) {
+                    parse(&mut style.fill.opacity);
+                    message = message.or(m_opacity);
+                }
             }
         }
 
@@ -2689,7 +2883,7 @@ impl StyleGutter {
             r.cursor_mode = CursorMode::Icon(CursorIcon::Default);
             response = response.or(r)
         } else if matches!(event, Event::MouseInput(ElementState::Pressed, _))
-            && let l = self.layout_gutter(ctx, gutter_bounds)
+            && let Some(l) = self.layout_gutter(ctx, gutter_bounds, style)
             && l.toggle_button_center.distance(ctx.cursor) > l.toggle_button_radius
         {
             // don't just set self.is_popup_open = true because then we might
@@ -2698,7 +2892,7 @@ impl StyleGutter {
             response.request_redraw();
         }
 
-        response
+        (response, message)
     }
 
     fn render_popup(
@@ -2972,7 +3166,7 @@ struct Expression {
     style: ExpressionStyle,
     ast: Option<Result<parse::ast::Statement, String>>,
     output: Output,
-    style_gutter: Option<StyleGutter>,
+    style_gutter: StyleGutter,
     /// The cached height from the last update or render, or `None` if it's never
     /// been calculated before.
     height: Option<f64>,
@@ -3022,7 +3216,7 @@ impl Expression {
             },
             ast: None,
             output: Default::default(),
-            style_gutter: Some(StyleGutter {
+            style_gutter: StyleGutter {
                 toggle_button: Default::default(),
 
                 is_popup_open: false,
@@ -3038,7 +3232,7 @@ impl Expression {
 
                 fill_label: Label::new("Fill", 16.0, Font::MainRegular),
                 fill_enabled_button: Default::default(),
-            }),
+            },
             height: None,
         }
     }
@@ -3194,10 +3388,8 @@ impl Expression {
         if let OutputUi::Slider(ui) = &mut self.output.ui {
             return ui.update_gutter(ctx, event, &mut self.slider, bounds);
         }
-        if let Some(style_gutter) = &mut self.style_gutter {
-            return style_gutter.update_gutter(ctx, event, bounds, &mut self.style);
-        }
-        Response::default()
+        self.style_gutter
+            .update_gutter(ctx, event, bounds, &mut self.style)
     }
 
     fn update_popup(
@@ -3206,26 +3398,24 @@ impl Expression {
         event: &Event,
         expression_list_bounds: Bounds,
         gutter_bounds: Bounds,
-    ) -> Response {
+    ) -> (Response, Option<Message>) {
         if let OutputUi::Slider(ui) = &mut self.output.ui {
-            return ui.update_popup(
+            let response = ui.update_popup(
                 ctx,
                 event,
                 &mut self.slider,
                 expression_list_bounds,
                 gutter_bounds,
             );
+            return (response, None);
         }
-        if let Some(style_gutter) = &mut self.style_gutter {
-            return style_gutter.update_popup(
-                ctx,
-                event,
-                expression_list_bounds,
-                gutter_bounds,
-                &mut self.style,
-            );
-        }
-        Response::default()
+        self.style_gutter.update_popup(
+            ctx,
+            event,
+            expression_list_bounds,
+            gutter_bounds,
+            &mut self.style,
+        )
     }
 
     fn set_latex(&mut self, latex: &[latex_tree::Node]) {
@@ -3333,9 +3523,9 @@ impl Expression {
     ) {
         if let OutputUi::Slider(ui) = &mut self.output.ui {
             ui.render_gutter(ctx, bounds, has_focus, &mut self.slider, draw_quad);
-        } else if let Some(style_gutter) = &mut self.style_gutter {
-            style_gutter.render_gutter(ctx, bounds, has_focus, &self.style, draw_quad);
         }
+        self.style_gutter
+            .render_gutter(ctx, bounds, has_focus, &self.style, draw_quad);
     }
 
     fn render_popup(
@@ -3353,15 +3543,14 @@ impl Expression {
                 gutter_bounds,
                 draw_quad,
             );
-        } else if let Some(style_gutter) = &mut self.style_gutter {
-            style_gutter.render_popup(
-                ctx,
-                expression_list_bounds,
-                gutter_bounds,
-                &mut self.style,
-                draw_quad,
-            )
         }
+        self.style_gutter.render_popup(
+            ctx,
+            expression_list_bounds,
+            gutter_bounds,
+            &mut self.style,
+            draw_quad,
+        );
     }
 }
 
@@ -3371,6 +3560,7 @@ pub struct ExpressionId(usize);
 pub struct ExpressionList {
     expressions: TiVec<ExpressionId, Expression>,
     expressions_changed: bool,
+    redraw_geometry: bool,
     dragged_expression: Option<(ClickDragTracker, ExpressionId, f64)>,
     next_color: usize,
     scroll: f64,
@@ -3403,6 +3593,7 @@ impl ExpressionList {
         Self {
             expressions,
             expressions_changed: true,
+            redraw_geometry: true,
             dragged_expression: None,
             next_color,
             scroll: 0.0,
@@ -3490,7 +3681,6 @@ impl ExpressionList {
     ) -> (Response, Option<(Vec<Geometry>, vm::Vars)>) {
         self.height = bounds.size.y;
         let mut response = Response::default();
-        let mut redraw_geometry = false;
 
         if let Some((drag_tracker, i, offset)) = &mut self.dragged_expression {
             if drag_tracker.drag(ctx.cursor) {
@@ -3564,7 +3754,7 @@ impl ExpressionList {
                         new_i.0 as isize - i.0 as isize,
                     );
 
-                    redraw_geometry |= set(i, new_i);
+                    self.redraw_geometry |= set(i, new_i);
                     // TODO keep it scrolling even when cursor isn't moving and make it FPS-independent
                     self.scroll_y_into_view(ctx, ctx.cursor.y - (bounds.pos.y - self.scroll));
 
@@ -3627,6 +3817,10 @@ impl ExpressionList {
                     }
 
                     response = response.or(gutter_response);
+
+                    if set(&mut expression.style.changed, false) {
+                        self.redraw_geometry = true;
+                    }
 
                     let drag_bounds = Bounds {
                         pos: dvec2(bounds.left(), expression_top),
@@ -3732,7 +3926,7 @@ impl ExpressionList {
                     .expressions
                     .iter_enumerated()
                     .find_map(|(i, e)| e.has_focus().then_some(i));
-                redraw_geometry |= self.expressions_changed || original_focus != new_focus;
+                self.redraw_geometry |= self.expressions_changed || original_focus != new_focus;
 
                 if let Some(i) = new_focus
                     && original_focus != new_focus
@@ -3740,10 +3934,8 @@ impl ExpressionList {
                     self.scroll_into_view(ctx, i);
                 }
 
-                if self.expressions_changed {
+                if set(&mut self.expressions_changed, false) {
                     use latex_tree::Node::{self, Char as C};
-                    let line_width = 2.5;
-                    let fill_opacity = 0.4;
                     let point2 = |nodes: &mut Vec<Node>, x: f64, y: f64| {
                         let mut inner = vec![];
                         number_to_latex(&mut inner, x);
@@ -3771,8 +3963,43 @@ impl ExpressionList {
 
                     let mut ei_to_oi: TiVec<ExpressionIndex, ExpressionId> = ti_vec![];
                     let mut list: TiVec<ExpressionIndex, _> = ti_vec![];
+                    let mut properties: TiVec<PropertyIndex, _> = ti_vec![];
+                    struct ExpressionProperties {
+                        line_width: Option<PropertyIndex>,
+                        line_opacity: Option<PropertyIndex>,
+                        point_size: Option<PropertyIndex>,
+                        point_opacity: Option<PropertyIndex>,
+                        fill_opacity: Option<PropertyIndex>,
+                    }
+                    let mut oi_to_pi: TiVec<ExpressionId, _> = ti_vec![];
 
                     for (i, e) in self.expressions.iter_mut_enumerated() {
+                        e.style.kind = ExpressionStyleKind::None;
+
+                        fn push<'a>(
+                            properties: &mut TiVec<PropertyIndex, &'a ast::Expression>,
+                            property: &'a mut (InlineField, Result<ast::Expression, String>),
+                        ) -> Option<PropertyIndex> {
+                            property.0.underline.error = false;
+                            if property.0.is_empty() {
+                                None
+                            } else {
+                                match property.1.as_ref() {
+                                    Ok(p) => Some(properties.push_and_get_key(p)),
+                                    Err(_) => {
+                                        property.0.underline.error = true;
+                                        None
+                                    }
+                                }
+                            }
+                        }
+                        oi_to_pi.push(ExpressionProperties {
+                            line_width: push(&mut properties, &mut e.style.line.width),
+                            line_opacity: push(&mut properties, &mut e.style.line.opacity),
+                            point_size: push(&mut properties, &mut e.style.point.size),
+                            point_opacity: push(&mut properties, &mut e.style.point.opacity),
+                            fill_opacity: push(&mut properties, &mut e.style.fill.opacity),
+                        });
                         let ast = match &e.ast {
                             Some(Ok(ast)) => ast,
                             Some(Err(err)) => {
@@ -3801,6 +4028,7 @@ impl ExpressionList {
                                 && let Some(x) = get_numeric_literal(&arguments[0])
                                 && let Some(y) = get_numeric_literal(&arguments[1])
                             {
+                                e.style.kind = ExpressionStyleKind::DraggablePoint;
                                 let mut latex = vec![C('=')];
                                 point2(&mut latex, x, y);
                                 e.output = Output {
@@ -3846,6 +4074,7 @@ impl ExpressionList {
                     let analysis = analyze_expression_list(
                         &list,
                         &builtin_constants.map(|(name, _)| name),
+                        &properties,
                         false,
                     );
 
@@ -3901,6 +4130,103 @@ impl ExpressionList {
                             continue 'results_loop;
                         }
 
+                        let pi = &oi_to_pi[i];
+
+                        enum NumberProperty {
+                            Number(f32),
+                            List(Vec<f32>),
+                        }
+                        impl NumberProperty {
+                            fn get(&self, index: usize) -> Option<f32> {
+                                match self {
+                                    NumberProperty::Number(x) => Some(*x),
+                                    NumberProperty::List(xs) => xs.get(index).cloned(),
+                                }
+                            }
+                        }
+                        let get_property =
+                            |index: Option<PropertyIndex>,
+                             default: f64,
+                             min: f64,
+                             max: f64,
+                             field: &mut (InlineField, _)| {
+                                let Some(pi) = index else {
+                                    return NumberProperty::Number(default as f32);
+                                };
+                                let Some(value) =
+                                    analysis.properties[pi].as_ref().ok().and_then(|(id, ty)| {
+                                        match *ty {
+                                            Type::Number => vm.vars[var_indices[id]]
+                                                .clone()
+                                                .number()
+                                                .into_finite()
+                                                .map(|x| {
+                                                    NumberProperty::Number(x.clamp(min, max) as f32)
+                                                }),
+                                            Type::NumberList => vm.vars[var_indices[id]]
+                                                .clone()
+                                                .list()
+                                                .borrow()
+                                                .iter()
+                                                .map(|x| {
+                                                    x.into_finite()
+                                                        .map(|x| x.clamp(min, max) as f32)
+                                                })
+                                                .collect::<Option<_>>()
+                                                .map(NumberProperty::List),
+                                            Type::EmptyList => Some(NumberProperty::List(vec![])),
+                                            _ => None,
+                                        }
+                                    })
+                                else {
+                                    field.0.underline.error = true;
+                                    return NumberProperty::Number(default as f32);
+                                };
+                                value
+                            };
+
+                        let line_width = get_property(
+                            pi.line_width,
+                            LINE_WIDTH_DEFAULT,
+                            0.0,
+                            f64::INFINITY,
+                            &mut expression.style.line.width,
+                        );
+                        let line_opacity = get_property(
+                            pi.line_opacity,
+                            LINE_OPACITY_DEFAULT,
+                            0.0,
+                            1.0,
+                            &mut expression.style.line.opacity,
+                        );
+                        let point_size = get_property(
+                            pi.point_size,
+                            POINT_SIZE_DEFAULT,
+                            0.0,
+                            f64::INFINITY,
+                            &mut expression.style.point.size,
+                        );
+                        let point_opacity = get_property(
+                            pi.point_opacity,
+                            POINT_OPACITY_DEFAULT,
+                            0.0,
+                            1.0,
+                            &mut expression.style.point.opacity,
+                        );
+                        let fill_opacity = get_property(
+                            pi.fill_opacity,
+                            FILL_OPACITY_DEFAULT,
+                            0.0,
+                            1.0,
+                            &mut expression.style.fill.opacity,
+                        );
+
+                        let color = |opacity: f32| {
+                            let mut c = expression.style.color;
+                            c[3] *= opacity;
+                            c
+                        };
+
                         match r {
                             ExpressionResult::None => *output = Output::NONE,
                             ExpressionResult::Err(e) => {
@@ -3910,17 +4236,20 @@ impl ExpressionList {
                             | ExpressionResult::Plot { value: id, ty, .. } => {
                                 let mut nodes = vec![C('=')];
 
-                                let color = expression.style.color;
                                 let mut geometry = vec![];
-                                let mut draw_point = |x: f64, y: f64| {
-                                    geometry.push(Geometry {
-                                        width: 8.0,
-                                        color,
+                                let make_point = |x: f64, y: f64, i: usize| match (
+                                    point_size.get(i),
+                                    point_opacity.get(i),
+                                ) {
+                                    (Some(size), Some(opacity)) => Some(Geometry {
+                                        width: size,
+                                        color: color(opacity),
                                         kind: GeometryKind::Point {
                                             p: dvec2(x, y),
                                             draggable: None,
                                         },
-                                    });
+                                    }),
+                                    _ => None,
                                 };
                                 let list_limit = 10;
 
@@ -3932,8 +4261,14 @@ impl ExpressionList {
                                 } = r
                                 {
                                     let kind = match kind {
-                                        PlotKind::Normal => PlotKind::Normal,
-                                        PlotKind::Inverse => PlotKind::Inverse,
+                                        PlotKind::Normal => {
+                                            expression.style.kind = ExpressionStyleKind::Equality;
+                                            PlotKind::Normal
+                                        }
+                                        PlotKind::Inverse => {
+                                            expression.style.kind = ExpressionStyleKind::Equality;
+                                            PlotKind::Inverse
+                                        }
                                         PlotKind::Parametric(d) => {
                                             output.ui.set_parametric_domain(
                                                 &analysis.freevars[&parameters[0]],
@@ -4009,23 +4344,34 @@ impl ExpressionList {
                                                 continue 'results_loop;
                                             }
 
+                                            expression.style.kind = ExpressionStyleKind::Parametric;
                                             PlotKind::Parametric(Domain { min, max })
                                         }
-                                        PlotKind::Implicit => PlotKind::Implicit,
+                                        PlotKind::Implicit => {
+                                            expression.style.kind = ExpressionStyleKind::Equality;
+                                            PlotKind::Implicit
+                                        }
                                     };
-                                    output.data = OutputData::Geometry(vec![Geometry {
-                                        width: line_width,
-                                        color,
-                                        kind: GeometryKind::Plot {
-                                            kind,
-                                            inputs: parameters
-                                                .iter()
-                                                .map(|p| var_indices[p])
-                                                .collect(),
-                                            output: var_indices[&value],
-                                            instructions: functions.remove(&ei).unwrap(),
-                                        },
-                                    }]);
+                                    output.data = OutputData::Geometry(
+                                        match (line_width.get(0), line_opacity.get(0)) {
+                                            (Some(width), Some(opacity)) => Some(Geometry {
+                                                width,
+                                                color: color(opacity),
+                                                kind: GeometryKind::Plot {
+                                                    kind,
+                                                    inputs: parameters
+                                                        .iter()
+                                                        .map(|p| var_indices[p])
+                                                        .collect(),
+                                                    output: var_indices[&value],
+                                                    instructions: functions.remove(&ei).unwrap(),
+                                                },
+                                            }),
+                                            (_, _) => None,
+                                        }
+                                        .into_iter()
+                                        .collect(),
+                                    );
                                 }
 
                                 if match r {
@@ -4074,17 +4420,33 @@ impl ExpressionList {
                                             });
                                         }
                                         Type::Point2 => {
+                                            expression.style.kind = ExpressionStyleKind::Point;
                                             let x = vm.vars[v].clone().number();
                                             let y = vm.vars[v + 1.into()].clone().number();
-                                            draw_point(x, y);
+                                            geometry.extend(make_point(x, y, 0));
                                             point2(&mut nodes, x, y);
                                         }
                                         Type::Point2List => {
+                                            expression.style.kind = ExpressionStyleKind::PointList;
                                             let a = vm.vars[v].clone().list();
-                                            let mut inner = vec![];
-                                            for (i, &[x, y]) in
-                                                a.borrow().as_chunks().0.iter().enumerate()
+                                            let a = a.borrow();
+
+                                            if let Some(width) = line_width.get(0)
+                                                && let Some(opacity) = line_opacity.get(0)
                                             {
+                                                geometry.push(Geometry {
+                                                    width,
+                                                    color: color(opacity),
+                                                    kind: GeometryKind::Line(
+                                                        a.chunks(2)
+                                                            .map(|p| dvec2(p[0], p[1]))
+                                                            .collect(),
+                                                    ),
+                                                });
+                                            }
+
+                                            let mut inner = vec![];
+                                            for (i, &[x, y]) in a.as_chunks().0.iter().enumerate() {
                                                 if i < list_limit {
                                                     if i > 0 {
                                                         inner.push(C(','));
@@ -4093,7 +4455,7 @@ impl ExpressionList {
                                                 } else if i == list_limit {
                                                     inner.extend([C(','), C('.'), C('.'), C('.')]);
                                                 }
-                                                draw_point(x, y);
+                                                geometry.extend(make_point(x, y, i));
                                             }
                                             nodes.push(Node::DelimitedGroup {
                                                 left: Bracket::Square,
@@ -4129,61 +4491,81 @@ impl ExpressionList {
                                             });
                                         }
                                         Type::Polygon => {
+                                            expression.style.kind = ExpressionStyleKind::Polygon;
                                             let a = vm.vars[v].clone().list();
                                             let a = a.borrow();
-                                            let fill = Geometry {
-                                                width: line_width,
-                                                color: [color[0], color[1], color[2], fill_opacity],
-                                                kind: GeometryKind::Fill(
-                                                    a.chunks(2)
-                                                        .map(|p| dvec2(p[0], p[1]))
-                                                        .collect(),
-                                                ),
-                                            };
-                                            let line = Geometry {
-                                                width: line_width,
-                                                color,
-                                                kind: GeometryKind::Line(
-                                                    a.chunks(2)
-                                                        .chain(a.chunks(2).next())
-                                                        .map(|p| dvec2(p[0], p[1]))
-                                                        .collect(),
-                                                ),
-                                            };
-                                            geometry.extend([fill, line]);
-                                        }
-                                        Type::PolygonList => {
-                                            let a = vm.vars[v].clone().polygon_list();
-                                            geometry.extend(a.borrow().iter().flat_map(|a| {
-                                                let a = a.borrow();
-                                                let fill = Geometry {
-                                                    width: line_width,
-                                                    color: [
-                                                        color[0],
-                                                        color[1],
-                                                        color[2],
-                                                        fill_opacity,
-                                                    ],
+
+                                            if let Some(opacity) = fill_opacity.get(0) {
+                                                geometry.push(Geometry {
+                                                    width: 0.0,
+                                                    color: color(opacity),
                                                     kind: GeometryKind::Fill(
                                                         a.chunks(2)
                                                             .map(|p| dvec2(p[0], p[1]))
                                                             .collect(),
                                                     ),
-                                                };
-                                                let line = Geometry {
-                                                    width: line_width,
-                                                    color,
+                                                });
+                                            }
+
+                                            if let Some(width) = line_width.get(0)
+                                                && let Some(opacity) = line_opacity.get(0)
+                                            {
+                                                geometry.push(Geometry {
+                                                    width,
+                                                    color: color(opacity),
                                                     kind: GeometryKind::Line(
                                                         a.chunks(2)
-                                                            .chain(a.chunks(2).take(
-                                                                if a.len() > 2 { 1 } else { 0 },
-                                                            ))
+                                                            .chain(a.chunks(2).next())
                                                             .map(|p| dvec2(p[0], p[1]))
                                                             .collect(),
                                                     ),
-                                                };
-                                                [fill, line]
-                                            }));
+                                                });
+                                            }
+                                        }
+                                        Type::PolygonList => {
+                                            expression.style.kind = ExpressionStyleKind::Polygon;
+                                            let a = vm.vars[v].clone().polygon_list();
+                                            geometry.extend(
+                                                a.borrow().iter().enumerate().flat_map(|(i, a)| {
+                                                    let a = a.borrow();
+                                                    let fill = fill_opacity.get(i).map(|opacity| {
+                                                        Geometry {
+                                                            width: 0.0,
+                                                            color: color(opacity),
+                                                            kind: GeometryKind::Fill(
+                                                                a.chunks(2)
+                                                                    .map(|p| dvec2(p[0], p[1]))
+                                                                    .collect(),
+                                                            ),
+                                                        }
+                                                    });
+                                                    let line = match (
+                                                        line_width.get(i),
+                                                        line_opacity.get(i),
+                                                    ) {
+                                                        (Some(width), Some(opacity)) => {
+                                                            Some(Geometry {
+                                                                width,
+                                                                color: color(opacity),
+                                                                kind: GeometryKind::Line(
+                                                                    a.chunks(2)
+                                                                        .chain(a.chunks(2).take(
+                                                                            if a.len() > 2 {
+                                                                                1
+                                                                            } else {
+                                                                                0
+                                                                            },
+                                                                        ))
+                                                                        .map(|p| dvec2(p[0], p[1]))
+                                                                        .collect(),
+                                                                ),
+                                                            })
+                                                        }
+                                                        _ => None,
+                                                    };
+                                                    [fill, line].into_iter().flatten()
+                                                }),
+                                            );
                                         }
                                         Type::Bool | Type::BoolList => unreachable!(),
                                         Type::EmptyList => nodes.push(Node::DelimitedGroup {
@@ -4201,6 +4583,22 @@ impl ExpressionList {
                                     }
                                     if let OutputData::None = output.data {
                                         output.data = OutputData::Geometry(geometry);
+                                    }
+
+                                    if let OutputData::DraggablePoint(Geometry { kind, .. }) =
+                                        &output.data
+                                    {
+                                        output.data =
+                                            match (point_size.get(0), point_opacity.get(0)) {
+                                                (Some(size), Some(opacity)) => {
+                                                    OutputData::DraggablePoint(Geometry {
+                                                        width: size,
+                                                        color: color(opacity),
+                                                        kind: kind.clone(),
+                                                    })
+                                                }
+                                                _ => OutputData::None,
+                                            };
                                     }
                                 }
                             }
@@ -4340,14 +4738,17 @@ impl ExpressionList {
 
         let mut geometry = None;
 
-        if redraw_geometry {
+        if set(&mut self.redraw_geometry, false) {
             let mut regular_geometry = vec![];
             let mut draggable_points = vec![];
             let mut focussed_geometry = vec![];
 
             for e in &self.expressions {
+                if e.style.hidden {
+                    continue;
+                }
                 match &e.output.data {
-                    OutputData::DraggablePoint(p) => {
+                    OutputData::DraggablePoint(p) if e.style.point_enabled() => {
                         let mut p = p.clone();
                         if e.has_focus() {
                             p.width *= 1.15;
@@ -4357,8 +4758,18 @@ impl ExpressionList {
                         }
                     }
                     OutputData::Geometry(geometry) => {
+                        let geometry = geometry
+                            .iter()
+                            .filter(|g| match g.kind {
+                                GeometryKind::Line(_) | GeometryKind::Plot { .. } => {
+                                    e.style.line_enabled()
+                                }
+                                GeometryKind::Point { .. } => e.style.point_enabled(),
+                                GeometryKind::Fill(_) => e.style.fill_enabled(),
+                            })
+                            .cloned();
                         if e.has_focus() {
-                            for mut g in geometry.iter().cloned() {
+                            for mut g in geometry {
                                 g.width *= match g.kind {
                                     GeometryKind::Line(_) | GeometryKind::Plot { .. } => 1.4,
                                     GeometryKind::Point { .. } => 1.2,
@@ -4374,7 +4785,7 @@ impl ExpressionList {
                                 focussed_geometry.push(g);
                             }
                         } else {
-                            regular_geometry.extend_from_slice(geometry);
+                            regular_geometry.extend(geometry);
                         }
                     }
                     _ => {}
@@ -4386,8 +4797,6 @@ impl ExpressionList {
 
             geometry = Some((regular_geometry, self.vm_vars.clone()));
         }
-
-        self.expressions_changed = false;
 
         if response.requested_redraw {
             // If something wanted a redraw then some heights probably got
@@ -4652,7 +5061,7 @@ impl ExpressionList {
         let mut expression_top = bounds.pos.y - self.scroll;
 
         for expression in &mut self.expressions {
-            let r = expression.update_popup(
+            let (r, m) = expression.update_popup(
                 ctx,
                 event,
                 bounds,
@@ -4662,6 +5071,12 @@ impl ExpressionList {
                 },
             );
             response = response.or(r);
+            if matches!(m, Some(Message::ContentsChanged { .. })) {
+                self.expressions_changed = true;
+            }
+            if set(&mut expression.style.changed, false) {
+                self.redraw_geometry = true;
+            }
             expression_top += expression.height() + separator_width;
         }
 

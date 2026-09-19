@@ -52,14 +52,24 @@ impl Mix<DVec2> for DVec2 {
     }
 }
 
-pub trait IfFiniteElse {
+pub trait FiniteExt {
+    /// Returns `Some(self)` if `self.is_finite()`, otherwise returns `None`.
+    fn into_finite(self) -> Option<Self>
+    where
+        Self: Sized;
+
     /// Returns `self` if `self.is_finite()`, otherwise returns `fallback`.
-    fn if_finite_else(self, fallback: Self) -> Self;
+    fn if_finite_else(self, fallback: Self) -> Self
+    where
+        Self: Sized,
+    {
+        self.into_finite().unwrap_or(fallback)
+    }
 }
 
-impl IfFiniteElse for f64 {
-    fn if_finite_else(self, fallback: Self) -> Self {
-        if self.is_finite() { self } else { fallback }
+impl FiniteExt for f64 {
+    fn into_finite(self) -> Option<Self> {
+        self.is_finite().then_some(self)
     }
 }
 

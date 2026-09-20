@@ -905,6 +905,9 @@ impl GraphPaper {
                          original_width: f32,
                          width: f32,
                          style: LineStyle| {
+            if points.is_empty() {
+                return;
+            }
             let mut original_width = ctx.scale_factor as f32 * original_width;
             let mut width = ctx.scale_factor as f32 * width;
             let shape = shapes.len() as u32;

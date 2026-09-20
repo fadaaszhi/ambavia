@@ -91,6 +91,7 @@ const PopupColorSwatch = 79u;
 const PopupColorSwatchHighlight = 80u;
 const TickIcon = 81u;
 const CrossIcon = 82u;
+const ColorIcon = 83u;
 
 struct Vertex {
     @location(0) position: vec2f,
@@ -811,6 +812,24 @@ fn fs_quad(in: VertexOutput) -> @location(0) vec4f {
             let a = abs(p.x + p.y);
             let b = abs(p.x - p.y);
             var sd = max(min(a, b) - 0.13,max(a, b) - 0.87) / sqrt(2.0);
+            sd *= size.x;
+            let opacity = saturate(0.5 - sd);
+            return in.color * vec4(1.0, 1.0, 1.0, opacity);
+        }
+        case ColorIcon {
+            // Reference: https://fonts.google.com/icons?selected=Material+Symbols+Outlined:colors
+            let p = in.uv - 0.5;
+            let q = vec2(p.x + 0.08, 0.0544 - p.y);
+            let a = (vec2(q.x + q.y, q.x - q.y)) / sqrt(2.0);
+            let b = sd_rounded_box(a, vec2(0.274), vec2(0.0, 0.123).xxyy);
+            let c = abs(p.x - 0.39);
+            let d = 0.39 - p.y;
+            var sd = min(min(min(
+                sd_rounded_box(a + vec2(-0.274, 0.274), vec2(0.0505, 0.185), vec4(0.05)),
+                abs(b) - 0.0505),
+                max(b, q.y)),
+                select(hypot(c, d), (sqrt(2.0) * c + d) / sqrt(3.0), c < sqrt(2.0) * d) - 0.11,
+            );
             sd *= size.x;
             let opacity = saturate(0.5 - sd);
             return in.color * vec4(1.0, 1.0, 1.0, opacity);

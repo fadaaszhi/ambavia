@@ -95,6 +95,7 @@ pub enum QuadKind {
     PopupColorSwatchHighlight,
     TickIcon,
     CrossIcon,
+    ColorIcon,
 }
 
 pub struct Quad {

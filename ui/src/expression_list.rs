@@ -2140,7 +2140,7 @@ impl Default for ExpressionStyle {
         color_to_latex(&mut nodes, color.x, color.y, color.z);
         color_latex.0.set_placeholder(&nodes);
         color_latex.0.min_width = 135.0;
-        color_latex.0.max_width = 200.0;
+        color_latex.0.max_width = 183.0;
 
         Self {
             changed: true,
@@ -2320,7 +2320,7 @@ struct StylePopupDragLayout {
 struct StylePopupColorLayout {
     top: f64,
     color_buttons: [Bounds; N_EXPRESSION_COLORS],
-    field: Bounds,
+    color_latex: StylePopupIconAndFieldLayout,
 }
 
 struct StylePopupLayout {
@@ -2588,8 +2588,7 @@ impl StyleGutter {
         struct ColorSectionY {
             color_buttons_y: f64,
             padding: f64,
-            field_size: DVec2,
-            field_y: f64,
+            color_latex: IconAndFieldY,
         }
         let n_color_buttons_per_row = 6;
         let color_button_size = 30.0;
@@ -2672,15 +2671,12 @@ impl StyleGutter {
                     let n_rows = N_EXPRESSION_COLORS.div_ceil(n_color_buttons_per_row);
                     next_y += color_button_size * n_rows as f64 + padding * (n_rows - 1) as f64;
                     next_y += 10.0;
-                    let field_y = next_y;
-                    let field_size = style.color_latex.0.expression_size(ctx, true);
-                    next_y += field_size.y;
+                    let color_latex = icon_and_field_y(&mut next_y, &style.color_latex.0);
                     next_y += 10.0;
                     ColorSectionY {
                         color_buttons_y,
                         padding,
-                        field_size,
-                        field_y,
+                        color_latex,
                     }
                 };
                 color_section = Some((top, contents));
@@ -2869,15 +2865,12 @@ impl StyleGutter {
                     size: DVec2::splat(color_button_size),
                 })
             });
-            let field = Bounds {
-                pos: dvec2(left + side_padding, c.field_y + offset_y),
-                size: c.field_size,
-            };
+            let color_latex = do_icon_and_field(c.color_latex);
 
             StylePopupColorLayout {
                 top: top + offset_y,
                 color_buttons,
-                field,
+                color_latex,
             }
         });
 
@@ -3132,7 +3125,7 @@ impl StyleGutter {
                 }
             }
 
-            let (r, m_color) = style.color_latex.0.update(ctx, event, l.field);
+            let (r, m_color) = style.color_latex.0.update(ctx, event, l.color_latex.field);
             response = response.or(r);
 
             if matches!(m_color, Some(Message::ContentsChanged { .. })) {
@@ -3536,7 +3529,13 @@ impl StyleGutter {
                 }
             }
 
-            style.color_latex.0.render(ctx, l.field, draw_quad);
+            render_icon_and_field(
+                ctx,
+                &l.color_latex,
+                QuadKind::ColorIcon,
+                &mut style.color_latex.0,
+                draw_quad,
+            );
         }
     }
 }

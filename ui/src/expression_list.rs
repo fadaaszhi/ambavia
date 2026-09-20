@@ -4719,7 +4719,7 @@ impl ExpressionList {
                         };
                         expression.style_gutter.color = match &color {
                             Property::Single(c) => vec![c.map(|x| x as f64).into()],
-                            Property::List(cs) => {
+                            Property::List(cs) if !cs.is_empty() => {
                                 let n = cs.len().min(10);
                                 (0..n)
                                     .map(|i| {
@@ -4729,6 +4729,7 @@ impl ExpressionList {
                                     })
                                     .collect()
                             }
+                            _ => vec![[0; 3].to_rgbaf64()],
                         };
 
                         match r {

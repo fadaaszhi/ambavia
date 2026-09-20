@@ -3233,7 +3233,12 @@ impl StyleGutter {
             field: &mut InlineField,
             draw_quad: &mut impl FnMut(Quad),
         ) {
-            draw_quad(Quad::from_bounds(l.icon, icon, [148; 3]));
+            let icon_bounds = if icon == QuadKind::PaintBucketIcon {
+                l.icon.grow(l.icon.size.x * 0.07)
+            } else {
+                l.icon
+            };
+            draw_quad(Quad::from_bounds(icon_bounds, icon, [148; 3]));
             field.render(ctx, l.field, draw_quad);
         }
 
@@ -3532,7 +3537,7 @@ impl StyleGutter {
             render_icon_and_field(
                 ctx,
                 &l.color_latex,
-                QuadKind::ColorIcon,
+                QuadKind::PaintBucketIcon,
                 &mut style.color_latex.0,
                 draw_quad,
             );

@@ -286,6 +286,13 @@ impl Bounds {
             size: (self.pos + self.size).max(other.pos + other.size) - pos,
         }
     }
+
+    pub fn grow(self, radius: f64) -> Bounds {
+        Bounds {
+            pos: self.pos - radius,
+            size: self.size + 2.0 * radius,
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]

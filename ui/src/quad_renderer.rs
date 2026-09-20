@@ -8,7 +8,7 @@ use crate::{
 };
 
 // Needs to manually keep synced with quad.wgsl
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum QuadKind {
     Rectangle,
     Pill,
@@ -95,7 +95,7 @@ pub enum QuadKind {
     PopupColorSwatchHighlight,
     TickIcon,
     CrossIcon,
-    ColorIcon,
+    PaintBucketIcon,
 }
 
 pub struct Quad {

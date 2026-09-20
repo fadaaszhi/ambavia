@@ -5049,7 +5049,9 @@ impl ExpressionList {
                                                     point_style: Default::default(),
                                                     kind: GeometryKind::Line(
                                                         a.chunks(2)
-                                                            .chain(a.chunks(2).next())
+                                                            .chain(a.chunks(2).take(
+                                                                if a.len() > 4 { 1 } else { 0 },
+                                                            ))
                                                             .map(|p| dvec2(p[0], p[1]))
                                                             .collect(),
                                                     ),
@@ -5102,7 +5104,7 @@ impl ExpressionList {
                                                             kind: GeometryKind::Line(
                                                                 a.chunks(2)
                                                                     .chain(a.chunks(2).take(
-                                                                        if a.len() > 2 {
+                                                                        if a.len() > 4 {
                                                                             1
                                                                         } else {
                                                                             0

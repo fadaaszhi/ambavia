@@ -447,18 +447,18 @@ impl MainThing {
                     _ => {}
                 }
             }
-
-            if hovering || self.dragging.is_some() {
-                response.cursor_mode = CursorMode::Icon(CursorIcon::ColResize);
-
-                // Really should be using TouchPhase here to not interrupt people
-                // who started using these before we got hovered
-                if matches!(event, Event::MouseWheel(_) | Event::PinchGesture(_)) {
-                    response.consume_event();
-                }
-            }
             response
         });
+
+        if hovering && !ctx.left_mouse_button_already_pressed || self.dragging.is_some() {
+            response.cursor_mode = CursorMode::Icon(CursorIcon::ColResize);
+
+            // Really should be using TouchPhase here to not interrupt people
+            // who started using these before we got hovered
+            if matches!(event, Event::MouseWheel(_) | Event::PinchGesture(_)) {
+                response.consume_event();
+            }
+        }
 
         response.or_else(|| {
             let (r_graph, dragged_point) = self.graph_paper.update(ctx, event, right);

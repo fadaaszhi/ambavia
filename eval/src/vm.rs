@@ -1005,8 +1005,9 @@ impl<'a, 'i> Vm<'a, 'i> {
                         .0
                         .iter()
                         .fold((0.0, 0.0), |(x, y), [u, v]| (x + u, y + v));
-                    self.push(x / a.len() as f64);
-                    self.push(y / a.len() as f64);
+                    let n = a.len() as f64 / 2.0;
+                    self.push(x / n);
+                    self.push(y / n);
                 }
                 Instruction::Mean3 => {
                     let a = self.pop().list();
@@ -1018,9 +1019,10 @@ impl<'a, 'i> Vm<'a, 'i> {
                         .fold((0.0, 0.0, 0.0), |(x, y, z), [u, v, w]| {
                             (x + u, y + v, z + w)
                         });
-                    self.push(x / a.len() as f64);
-                    self.push(y / a.len() as f64);
-                    self.push(z / a.len() as f64);
+                    let n = a.len() as f64 / 3.0;
+                    self.push(x / n);
+                    self.push(y / n);
+                    self.push(z / n);
                 }
                 Instruction::Count => {
                     let a = self.pop().list();

@@ -308,13 +308,13 @@ const NAN: f64 = f64::NAN;
 #[case(r"1\times(2,3)", (2, 3))]
 #[case(r"(4,5)\times6", (24, 30))]
 #[case(r"\total([])", -0.0)]
-#[case(r"[][7]", f64::NAN)]
+#[case(r"[][7]", NAN)]
 #[case(r"\polygon([])", polygon([]))]
 #[case(r"\polygon([],[],[])", Value::PolygonList(vec![]))]
 #[case(r"\polygon((8,9),[])", Value::PolygonList(vec![]))]
 #[case(r"[\polygon()][1]", polygon([]))]
 #[case(r"\unique([])+(0,0)", [(0, 0); 0])]
-#[case(r"[][1,2,3]", &[f64::NAN, f64::NAN, f64::NAN])]
+#[case(r"[][1,2,3]", &[NAN, NAN, NAN])]
 #[case(r"\argmin([])", 0)]
 #[case(r"\argmin([3])", 1)]
 #[case(r"\argmin([3,3])", 1)]
@@ -322,7 +322,9 @@ const NAN: f64 = f64::NAN;
 #[case(r"\argmax([4,9,2,5,2,9,1/0])", 7)]
 #[case(r"\argmax([4,9,2,5,0/0,9,1/0])", 0)]
 #[case(r"\sortPerm([])", [0; 0])]
-#[case(r"\sortPerm([4,9,2,3])", [2,3,0,1])]
+#[case(r"\sortPerm([4,9,2,3])", [2, 3, 0, 1])]
+#[case(r"\mean((1,2),(3,4))", (2, 3))]
+#[case(r"\mean((1,2,3),(4,5,6))", (2.5, 3.5, 4.5))]
 fn expression_eq(#[case] expression: &str, #[case] expected: impl Into<Value>) {
     assert_expression_eq(expression, expected.into());
 }

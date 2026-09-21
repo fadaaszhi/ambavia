@@ -10,7 +10,7 @@ use std::{
 
 use bytemuck::Zeroable;
 use eval::vm::{self, Instruction, VarIndex, Vm};
-use glam::{DVec2, Vec2, dvec2, uvec2};
+use glam::{DVec2, Vec2, dvec2, uvec2, vec2};
 use parse::analyze_expression_list::PlotKind;
 use winit::{
     event::{ElementState, MouseButton},
@@ -159,8 +159,12 @@ struct Shape {
 impl Shape {
     const LINE: u32 = 0;
     const POINT: u32 = 1;
-    const RECTANGLE: u32 = 2;
-    const TILE: u32 = 3;
+    const POINT_SQUARE: u32 = 2;
+    const POINT_TRIANGLE: u32 = 3;
+    const POINT_DIAMOND: u32 = 4;
+    const POINT_STAR: u32 = 5;
+    const RECTANGLE: u32 = 6;
+    const TILE: u32 = 7;
 
     fn line(color: [f32; 4], width: f32) -> Self {
         Self {
@@ -176,6 +180,42 @@ impl Shape {
             color,
             width,
             kind: Shape::POINT,
+            ..Shape::zeroed()
+        }
+    }
+
+    fn square(color: [f32; 4], width: f32) -> Self {
+        Self {
+            color,
+            width,
+            kind: Shape::POINT_SQUARE,
+            ..Shape::zeroed()
+        }
+    }
+
+    fn triangle(color: [f32; 4], radius: f32) -> Self {
+        Self {
+            color,
+            width: radius,
+            kind: Shape::POINT_TRIANGLE,
+            ..Shape::zeroed()
+        }
+    }
+
+    fn diamond(color: [f32; 4], radius: f32) -> Self {
+        Self {
+            color,
+            width: radius,
+            kind: Shape::POINT_DIAMOND,
+            ..Shape::zeroed()
+        }
+    }
+
+    fn star(color: [f32; 4], radius: f32) -> Self {
+        Self {
+            color,
+            width: radius,
+            kind: Shape::POINT_STAR,
             ..Shape::zeroed()
         }
     }
@@ -325,7 +365,13 @@ fn create_bind_group(
 }
 
 fn draggable_point_width(width: f32) -> f32 {
-    32f32.clamp(width, 2.0 * width) + width
+    if width < 16.0 {
+        width * 3.0
+    } else if width > 32.0 {
+        width * 2.0
+    } else {
+        width + 32.0
+    }
 }
 
 impl GraphPaper {
@@ -1209,26 +1255,237 @@ impl GraphPaper {
                 GeometryKind::Point { p, draggable } => {
                     let p = to_physical(*p).as_vec2();
                     let mut width = *width;
+                    let start_vertex = vertices.len();
 
-                    if let Some(id) = *draggable {
-                        let shape = shapes.len() as u32;
-                        let mut color = *color;
-                        color[3] *= 0.35;
-                        let draggable_width = draggable_point_width(width);
-                        shapes.push(Shape::point(
-                            color,
-                            ctx.scale_factor as f32 * draggable_width,
-                        ));
-                        vertices.push(Vertex::new(p, shape));
+                    // TODO remove code duplication
+                    match point_style {
+                        PointStyle::Point | PointStyle::Open => {
+                            let mut open_width_multiplier = 0.5;
 
-                        if self.hovered == DragTarget::Point(id) {
-                            width = draggable_width;
+                            if let Some(id) = *draggable {
+                                let shape = shapes.len() as u32;
+                                let mut color = *color;
+                                color[3] *= 0.35;
+                                let draggable_width = draggable_point_width(width);
+                                shapes.push(Shape::point(
+                                    color,
+                                    ctx.scale_factor as f32 * draggable_width,
+                                ));
+                                vertices.push(Vertex::new(p, shape));
+
+                                if self.hovered == DragTarget::Point(id) {
+                                    width = draggable_width;
+                                    open_width_multiplier = 1.0 / 3.0;
+                                }
+                            }
+
+                            let shape = shapes.len() as u32;
+                            shapes.push(Shape::point(*color, ctx.scale_factor as f32 * width));
+                            vertices.push(Vertex::new(p, shape));
+
+                            if point_style == &PointStyle::Open {
+                                let shape = shapes.len() as u32;
+                                shapes.push(Shape::point(
+                                    [1.0, 1.0, 1.0, color[3]],
+                                    ctx.scale_factor as f32 * width * open_width_multiplier,
+                                ));
+                                vertices.push(Vertex::new(p, shape));
+                            }
+                        }
+                        PointStyle::Cross | PointStyle::Plus => {
+                            let mut draw = |color, line_width: f32| {
+                                let shape = shapes.len() as u32;
+                                shapes
+                                    .push(Shape::line(color, line_width * ctx.scale_factor as f32));
+                                let a = 0.5 * line_width.max(width) * ctx.scale_factor as f32;
+                                let b = if *point_style == PointStyle::Plus {
+                                    vec2(a, 0.0)
+                                } else {
+                                    Vec2::splat(a / 2f32.sqrt())
+                                };
+                                vertices.push(Vertex::new(p - b, shape));
+                                vertices.push(Vertex::new(p + b, shape));
+                                vertices.push(Vertex::BREAK);
+                                vertices.push(Vertex::new(p - b.perp(), shape));
+                                vertices.push(Vertex::new(p + b.perp(), shape));
+                            };
+
+                            let mut line_width = 0.35 * width;
+                            if let Some(id) = *draggable {
+                                let mut color = *color;
+                                color[3] *= 0.35;
+                                let draggable_width = draggable_point_width(width)
+                                    * if *point_style == PointStyle::Plus {
+                                        0.475
+                                    } else {
+                                        0.537
+                                    };
+                                draw(color, draggable_width);
+
+                                if self.hovered == DragTarget::Point(id) {
+                                    line_width = draggable_width;
+                                }
+                            }
+
+                            draw(*color, line_width);
+                        }
+                        PointStyle::Square => {
+                            let radius = 0.5 * width * ctx.scale_factor as f32;
+                            let mut draw = |color, line_width: f32| {
+                                let shape = shapes.len() as u32;
+                                shapes
+                                    .push(Shape::line(color, line_width * ctx.scale_factor as f32));
+                                let radius = radius.max(line_width * 1.18);
+                                vertices.push(Vertex::new(p + vec2(radius, radius), shape));
+                                vertices.push(Vertex::new(p + vec2(-radius, radius), shape));
+                                vertices.push(Vertex::new(p + vec2(-radius, -radius), shape));
+                                vertices.push(Vertex::new(p + vec2(radius, -radius), shape));
+                                vertices.push(Vertex::new(p + vec2(radius, radius), shape));
+                            };
+
+                            let mut line_width = 0.0;
+
+                            if let Some(id) = *draggable {
+                                let mut color = *color;
+                                color[3] *= 0.35;
+                                let draggable_width = draggable_point_width(width) * 0.43;
+                                draw(color, draggable_width);
+
+                                if self.hovered == DragTarget::Point(id) {
+                                    line_width = draggable_width;
+                                }
+                            }
+
+                            if draggable.is_some() {
+                                draw(*color, line_width);
+                            }
+
+                            let shape = shapes.len() as u32;
+                            shapes.push(Shape::square(*color, width * ctx.scale_factor as f32));
+                            vertices.push(Vertex::new(p, shape));
+                        }
+                        PointStyle::Triangle => {
+                            let radius = 0.7 * width * ctx.scale_factor as f32;
+                            let mut draw = |color, line_width: f32| {
+                                let shape = shapes.len() as u32;
+                                shapes
+                                    .push(Shape::line(color, line_width * ctx.scale_factor as f32));
+                                let radius = radius.max(line_width * 2.1);
+                                for i in 0..=3 {
+                                    let angle =
+                                        (i as f32 * 2.0 + 0.25) / 3.0 * std::f32::consts::TAU;
+                                    vertices.push(Vertex::new(
+                                        p + radius * Vec2::from_angle(angle),
+                                        shape,
+                                    ));
+                                }
+                            };
+
+                            let mut line_width = 0.0;
+
+                            if let Some(id) = *draggable {
+                                let mut color = *color;
+                                color[3] *= 0.35;
+                                let draggable_width = draggable_point_width(width) * 0.355;
+                                draw(color, draggable_width);
+
+                                if self.hovered == DragTarget::Point(id) {
+                                    line_width = draggable_width;
+                                }
+                            }
+
+                            if draggable.is_some() {
+                                draw(*color, line_width);
+                            }
+
+                            let shape = shapes.len() as u32;
+                            shapes.push(Shape::triangle(
+                                *color,
+                                0.7 * width * ctx.scale_factor as f32,
+                            ));
+                            vertices.push(Vertex::new(p, shape));
+                        }
+                        PointStyle::Diamond => {
+                            let radius = 0.6 * width * ctx.scale_factor as f32;
+                            let mut draw = |color, line_width: f32| {
+                                let shape = shapes.len() as u32;
+                                shapes
+                                    .push(Shape::line(color, line_width * ctx.scale_factor as f32));
+                                let radius = radius.max(line_width * 1.46);
+                                vertices.push(Vertex::new(p + vec2(0.0, radius), shape));
+                                vertices.push(Vertex::new(p + vec2(-radius, 0.0), shape));
+                                vertices.push(Vertex::new(p + vec2(0.0, -radius), shape));
+                                vertices.push(Vertex::new(p + vec2(radius, 0.0), shape));
+                                vertices.push(Vertex::new(p + vec2(0.0, radius), shape));
+                            };
+
+                            let mut line_width = 0.0;
+
+                            if let Some(id) = *draggable {
+                                let mut color = *color;
+                                color[3] *= 0.35;
+                                let draggable_width = draggable_point_width(width) * 0.43;
+                                draw(color, draggable_width);
+
+                                if self.hovered == DragTarget::Point(id) {
+                                    line_width = draggable_width;
+                                }
+                            }
+
+                            if draggable.is_some() {
+                                draw(*color, line_width);
+                            }
+
+                            let shape = shapes.len() as u32;
+                            shapes.push(Shape::diamond(
+                                *color,
+                                0.6 * width * ctx.scale_factor as f32,
+                            ));
+                            vertices.push(Vertex::new(p, shape));
+                        }
+                        PointStyle::Star => {
+                            let radius = 0.654 * width * ctx.scale_factor as f32;
+                            let mut draw = |color, line_width: f32| {
+                                let shape = shapes.len() as u32;
+                                shapes
+                                    .push(Shape::line(color, line_width * ctx.scale_factor as f32));
+                                let radius = radius.max(line_width * 5.05);
+                                for i in 0..=5 {
+                                    let angle =
+                                        (i as f32 * 2.0 - 0.25) / 5.0 * std::f32::consts::TAU;
+                                    vertices.push(Vertex::new(
+                                        p + radius * Vec2::from_angle(angle),
+                                        shape,
+                                    ));
+                                }
+                            };
+
+                            let mut line_width = 0.0;
+
+                            if let Some(id) = *draggable {
+                                let mut color = *color;
+                                color[3] *= 0.35;
+                                let draggable_width = draggable_point_width(width) * 0.167;
+                                draw(color, draggable_width);
+
+                                if self.hovered == DragTarget::Point(id) {
+                                    line_width = draggable_width;
+                                }
+                            }
+
+                            if draggable.is_some() {
+                                draw(*color, line_width);
+                            }
+
+                            let shape = shapes.len() as u32;
+                            shapes.push(Shape::star(*color, radius));
+                            vertices.push(Vertex::new(p, shape));
                         }
                     }
 
-                    let shape = shapes.len() as u32;
-                    shapes.push(Shape::point(*color, ctx.scale_factor as f32 * width));
-                    vertices.push(Vertex::new(p, shape));
+                    // Make the different layers of a point not blend over each
+                    // other when rendered at partial opacity
+                    vertices[start_vertex..].reverse();
                 }
                 GeometryKind::Fill(points) => {
                     tile_fill::tile_fill(

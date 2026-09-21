@@ -10,8 +10,12 @@ struct Uniforms {
 
 const LINE = 0u;
 const POINT = 1u;
-const RECTANGLE = 2u;
-const TILE = 3u;
+const POINT_SQUARE = 2u;
+const POINT_TRIANGLE = 3u;
+const POINT_DIAMOND = 4u;
+const POINT_STAR = 5u;
+const RECTANGLE = 6u;
+const TILE = 7u;
 
 struct Shape {
     color: vec4f,
@@ -36,6 +40,8 @@ struct Segment {
     // b: unorm8x2,
     ab: u32,
 }
+
+const PI = 3.1415927;
 
 struct VertexOutput {
     @builtin(position) position: vec4f,
@@ -100,8 +106,25 @@ fn vs_graph(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
         t *= 0.5 * shape.width;
         let n = vec2(-t.y, t.x);
         p = select(p0 - a0 * t, p1 + a1 * t, corner.x) + select(-n, n, corner.y);
-    } else if shape.kind == POINT {
-        p = vertex.position + 0.5 * shape.width * select(vec2(-1.0), vec2(1.0), corner);
+    } else if POINT <= shape.kind && shape.kind <= POINT_STAR {
+        var p0: vec2f;
+        var p1: vec2f;
+
+        if shape.kind == POINT || shape.kind == POINT_SQUARE {
+            p0 = vec2(-0.5);
+            p1 = vec2(0.5);
+        } else if shape.kind == POINT_TRIANGLE {
+            p0 = vec2(-sqrt(3.0) / 2.0, -1.0);
+            p1 = vec2(sqrt(3.0) / 2.0, 0.5);
+        } else if shape.kind == POINT_DIAMOND {
+            p0 = vec2(-1.0);
+            p1 = vec2(1.0);
+        } else /* if shape.kind == POINT_STAR */  {
+            p0 = vec2(-cos(0.1 * PI), -1.0);
+            p1 = vec2(cos(0.1 * PI), sin(0.3 * PI));
+        }
+
+        p = vertex.position + shape.width * select(p0, p1, corner);
     } else /* if shape.kind == RECTANGLE || shape.kind == TILE */ {
         let h = f32(uniforms.tile_size);
         let w = select(shape.width, h, shape.kind == TILE);
@@ -124,46 +147,79 @@ fn fs_graph(in: VertexOutput) -> @location(0) vec4f {
     let vertex = vertices[in.index];
     let shape = shapes[vertex.shape];
 
-    if shape.kind == LINE || shape.kind == POINT {
-        let p0 = vertex.position;
-        var p1: vec2f;
+    switch shape.kind {
+        case LINE, POINT {
+            let p0 = vertex.position;
+            var p1: vec2f;
 
-        if shape.kind == LINE {
-            p1 = vertices[in.index + 1].position;
-        } else /* if shape.kind == POINT */ {
-            p1 = p0;
-        }
+            if shape.kind == LINE {
+                p1 = vertices[in.index + 1].position;
+            } else /* if shape.kind == POINT */ {
+                p1 = p0;
+            }
 
-        let d = sd_segment(in.p, p0, p1);
+            let d = sd_segment(in.p, p0, p1);
 
-        if d > shape.width * 0.5 {
-            discard;
-        }
-    } else if shape.kind == RECTANGLE {
-        // no-op
-    } else /* if shape.kind == TILE */ {
-        let p = (in.p - vertex.position) / f32(uniforms.tile_size);
-        var winding_number = shape.tile.winding_number;
-
-        for (var i = shape.tile.segment_start; i < shape.tile.segment_end; i++) {
-            let segment = segments[i];
-            let ab = unpack4x8unorm(segment.ab);
-            let a = ab.xy;
-            let b = ab.zw;
-            
-            winding_number -= i32(a.x == 0.0 && a.y > 0.0 && a.y <= p.y);
-            winding_number += i32(b.x == 0.0 && b.y > 0.0 && b.y <= p.y);
-
-            let is_within_y_bounds = min(a.y, b.y) <= p.y && p.y < max(a.y, b.y);
-            let is_right_of_segment = (b.x - a.x) * abs(p.y - a.y) < (p.x - a.x) * abs(b.y - a.y);
-
-            if is_within_y_bounds && is_right_of_segment {
-                winding_number += select(-1, 1, a.y < b.y);
+            if d > shape.width * 0.5 {
+                discard;
             }
         }
+        case POINT_TRIANGLE {
+            let p = in.p - vertex.position;
+            let radius = shape.width;
+            let d = max(sqrt(3.0) * abs(p.x) - p.y, 2.0 * p.y);
 
-        if winding_number == 0 {
-            discard;
+            if d > radius {
+                discard;
+            }
+        }
+        case POINT_DIAMOND {
+            let p = in.p - vertex.position;
+            let radius = shape.width;
+            let d = max(abs(p.x + p.y), abs(p.x - p.y));
+
+            if d > radius {
+                discard;
+            }
+        }
+        case POINT_STAR {
+            let p = in.p - vertex.position;
+            let radius = shape.width;
+            let a = abs(p.x);
+            let b = a * tan(0.2 * PI);
+            let c = p.y + radius * (sqrt(5.0) - 3.0) / 2.0;
+            if (a * tan(0.4 * PI) - p.y > radius || b < c) &&
+                (p.y < radius * cos(0.6 * PI) || -b < c) {
+                discard;
+            }
+        }
+        case RECTANGLE, POINT_SQUARE, default {
+            // no-op
+        }
+        case TILE {
+            let p = (in.p - vertex.position) / f32(uniforms.tile_size);
+            var winding_number = shape.tile.winding_number;
+
+            for (var i = shape.tile.segment_start; i < shape.tile.segment_end; i++) {
+                let segment = segments[i];
+                let ab = unpack4x8unorm(segment.ab);
+                let a = ab.xy;
+                let b = ab.zw;
+                
+                winding_number -= i32(a.x == 0.0 && a.y > 0.0 && a.y <= p.y);
+                winding_number += i32(b.x == 0.0 && b.y > 0.0 && b.y <= p.y);
+
+                let is_within_y_bounds = min(a.y, b.y) <= p.y && p.y < max(a.y, b.y);
+                let is_right_of_segment = (b.x - a.x) * abs(p.y - a.y) < (p.x - a.x) * abs(b.y - a.y);
+
+                if is_within_y_bounds && is_right_of_segment {
+                    winding_number += select(-1, 1, a.y < b.y);
+                }
+            }
+
+            if winding_number == 0 {
+                discard;
+            }
         }
     }
 

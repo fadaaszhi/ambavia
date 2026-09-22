@@ -675,11 +675,15 @@ impl Display for OpError {
                 }
                 OpName::Div => write!(f, "cannot divide {} by {}", a[0], a[1]),
                 OpName::Pow => write!(f, "cannot raise {} to {}", a[0], a[1]),
-                OpName::Point => write!(
-                    f,
-                    "cannot use {} and {} as the coordinates of a point",
-                    a[0], a[1]
-                ),
+                OpName::Point => {
+                    if let Some(t) = a.iter().find(|&&t| {
+                        t != Type::Number && t != Type::NumberList && t != Type::EmptyList
+                    }) {
+                        write!(f, "cannot use {t} as a coordinate of a point",)
+                    } else {
+                        write!(f, "[internal] failed to create point from {a:?}")
+                    }
+                }
                 OpName::Index => write!(f, "cannot index {} with {}", a[0], a[1]),
                 _ => write!(
                     f,

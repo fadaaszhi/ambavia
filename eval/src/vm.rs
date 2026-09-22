@@ -95,7 +95,6 @@ pub enum Instruction {
     Acos,
     Atan,
     Atan2,
-    AtanPoint,
     Asec,
     Acsc,
     Acot,
@@ -107,6 +106,7 @@ pub enum Instruction {
     Acoth,
     Abs,
     Sgn,
+    Arg,
     Round,
     RoundWithPrecision,
     Floor,
@@ -773,14 +773,9 @@ impl<'a, 'i> Vm<'a, 'i> {
                     self.push(a.atan());
                 }
                 Instruction::Atan2 => {
-                    let x = self.pop().number();
-                    let y = self.pop().number();
-                    self.push(y.atan2(x));
-                }
-                Instruction::AtanPoint => {
-                    let y = self.pop().number();
-                    let x = self.pop().number();
-                    self.push(y.atan2(x));
+                    let b = self.pop().number();
+                    let a = self.pop().number();
+                    self.push(a.atan2(b));
                 }
                 Instruction::Asec => {
                     let a = self.pop().number();
@@ -833,6 +828,11 @@ impl<'a, 'i> Vm<'a, 'i> {
                     } else {
                         f64::NAN
                     });
+                }
+                Instruction::Arg => {
+                    let y = self.pop().number();
+                    let x = self.pop().number();
+                    self.push(y.atan2(x));
                 }
                 Instruction::Round => {
                     let a = self.pop().number();

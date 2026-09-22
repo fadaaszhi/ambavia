@@ -88,6 +88,7 @@ impl OpName {
             "arccoth" | "arcoth" => Acoth,
             "abs" => Abs,
             "sgn" | "sign" | "signum" => Sgn,
+            "arg" => Arg,
             "round" => Round,
             "floor" => Floor,
             "ceil" => Ceil,

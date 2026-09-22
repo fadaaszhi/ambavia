@@ -709,7 +709,9 @@ impl TypeChecker {
                                     },
                                 ));
                             }
-                        } else if checked_args.is_empty() {
+                        } else if checked_args.is_empty()
+                            || checked_args.len() == 1 && checked_args[0].ty == Type::EmptyList
+                        {
                             return Ok(te(
                                 Type::Polygon,
                                 Expression::Op {
@@ -775,11 +777,6 @@ impl TypeChecker {
                         if checked_args.len() == 1 && checked_args[0].ty == Type::EmptyList =>
                     {
                         checked_args[0].ty = Type::NumberList;
-                    }
-                    OpName::Polygon
-                        if checked_args.len() == 1 && checked_args[0].ty == Type::EmptyList =>
-                    {
-                        checked_args[0].ty = Type::Point2List;
                     }
                     OpName::Repeat if checked_args.len() == 2 => {
                         if checked_args[1].ty == Type::EmptyList {

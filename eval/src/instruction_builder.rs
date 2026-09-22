@@ -195,7 +195,7 @@ impl InstructionBuilder {
             }
             Neg2 => (Type::Point2, Type::Point2),
             Neg3 => (Type::Point3, Type::Point3),
-            Point2X | Point2Y | Hypot2 => (Type::Point2, Type::Number),
+            Point2X | Point2Y | Hypot2 | AtanPoint => (Type::Point2, Type::Number),
             Point3X | Point3Y | Point3Z | Hypot3 => (Type::Point3, Type::Number),
             Min | Max | Median | Argmin | Argmax | Total | Mean | Count => {
                 (Type::NumberList, Type::Number)

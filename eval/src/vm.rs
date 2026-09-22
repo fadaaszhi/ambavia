@@ -95,6 +95,7 @@ pub enum Instruction {
     Acos,
     Atan,
     Atan2,
+    AtanPoint,
     Asec,
     Acsc,
     Acot,
@@ -772,9 +773,14 @@ impl<'a, 'i> Vm<'a, 'i> {
                     self.push(a.atan());
                 }
                 Instruction::Atan2 => {
-                    let b = self.pop().number();
-                    let a = self.pop().number();
-                    self.push(a.atan2(b));
+                    let x = self.pop().number();
+                    let y = self.pop().number();
+                    self.push(y.atan2(x));
+                }
+                Instruction::AtanPoint => {
+                    let y = self.pop().number();
+                    let x = self.pop().number();
+                    self.push(y.atan2(x));
                 }
                 Instruction::Asec => {
                     let a = self.pop().number();

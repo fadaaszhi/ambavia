@@ -282,6 +282,7 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
                         Op::Acos => builder.instr1(Acos, arg()),
                         Op::Atan => builder.instr1(Atan, arg()),
                         Op::Atan2 => builder.instr2(Atan2, arg(), arg()),
+                        Op::AtanPoint => builder.instr1(AtanPoint, arg()),
                         Op::Asec => builder.instr1(Asec, arg()),
                         Op::Acsc => builder.instr1(Acsc, arg()),
                         Op::Acot => builder.instr1(Acot, arg()),

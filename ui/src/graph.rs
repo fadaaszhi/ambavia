@@ -1332,10 +1332,10 @@ impl GraphPaper {
                         PointStyle::Square => {
                             let radius = 0.5 * width * ctx.scale_factor as f32;
                             let mut draw = |color, line_width: f32| {
+                                let line_width = line_width * ctx.scale_factor as f32;
                                 let shape = shapes.len() as u32;
-                                shapes
-                                    .push(Shape::line(color, line_width * ctx.scale_factor as f32));
-                                let radius = radius.max(line_width * 1.18);
+                                shapes.push(Shape::line(color, line_width));
+                                let radius = radius.max(line_width * 0.59);
                                 vertices.push(Vertex::new(p + vec2(radius, radius), shape));
                                 vertices.push(Vertex::new(p + vec2(-radius, radius), shape));
                                 vertices.push(Vertex::new(p + vec2(-radius, -radius), shape));
@@ -1367,10 +1367,10 @@ impl GraphPaper {
                         PointStyle::Triangle => {
                             let radius = 0.7 * width * ctx.scale_factor as f32;
                             let mut draw = |color, line_width: f32| {
+                                let line_width = line_width * ctx.scale_factor as f32;
                                 let shape = shapes.len() as u32;
-                                shapes
-                                    .push(Shape::line(color, line_width * ctx.scale_factor as f32));
-                                let radius = radius.max(line_width * 2.1);
+                                shapes.push(Shape::line(color, line_width));
+                                let radius = radius.max(line_width * 1.05);
                                 for i in 0..=3 {
                                     let angle =
                                         (i as f32 * 2.0 + 0.25) / 3.0 * std::f32::consts::TAU;
@@ -1408,10 +1408,10 @@ impl GraphPaper {
                         PointStyle::Diamond => {
                             let radius = 0.6 * width * ctx.scale_factor as f32;
                             let mut draw = |color, line_width: f32| {
+                                let line_width = line_width * ctx.scale_factor as f32;
                                 let shape = shapes.len() as u32;
-                                shapes
-                                    .push(Shape::line(color, line_width * ctx.scale_factor as f32));
-                                let radius = radius.max(line_width * 1.46);
+                                shapes.push(Shape::line(color, line_width));
+                                let radius = radius.max(line_width * 0.73);
                                 vertices.push(Vertex::new(p + vec2(0.0, radius), shape));
                                 vertices.push(Vertex::new(p + vec2(-radius, 0.0), shape));
                                 vertices.push(Vertex::new(p + vec2(0.0, -radius), shape));
@@ -1446,10 +1446,10 @@ impl GraphPaper {
                         PointStyle::Star => {
                             let radius = 0.654 * width * ctx.scale_factor as f32;
                             let mut draw = |color, line_width: f32| {
+                                let line_width = line_width * ctx.scale_factor as f32;
                                 let shape = shapes.len() as u32;
-                                shapes
-                                    .push(Shape::line(color, line_width * ctx.scale_factor as f32));
-                                let radius = radius.max(line_width * 5.05);
+                                shapes.push(Shape::line(color, line_width));
+                                let radius = radius.max(line_width * 2.525);
                                 for i in 0..=5 {
                                     let angle =
                                         (i as f32 * 2.0 - 0.25) / 5.0 * std::f32::consts::TAU;

@@ -701,6 +701,7 @@ impl Tree {
 
         let mut i = 0;
         let mut previous_was_operatorname = false;
+        let mut previous_bounds = Bounds::default();
 
         fn add_space_after_operatorname(next_node: &Node) -> bool {
             match next_node {
@@ -765,6 +766,7 @@ impl Tree {
                             ..Default::default()
                         };
                         bounds.position.x += self.bounds.width;
+                        previous_bounds = bounds.clone();
                         self.bounds.union(bounds);
                     }
 
@@ -842,13 +844,17 @@ impl Tree {
                     if let Some(lower) = lower {
                         lower.layout_relative(false);
                         lower.bounds.scale(SCRIPT_LOWER_SCALE);
-                        lower.bounds.position.y = SCRIPT_MIDDLE + lower.bounds.height;
+                        lower.bounds.position.y = SCRIPT_MIDDLE - CHAR_DEPTH
+                            + previous_bounds.depth
+                            + lower.bounds.height;
                         bounds.union(&lower.bounds);
                     }
                     if let Some(upper) = upper {
                         upper.layout_relative(allow_operatornames);
                         upper.bounds.scale(SCRIPT_UPPER_SCALE);
-                        upper.bounds.position.y = SCRIPT_MIDDLE - upper.bounds.depth;
+                        upper.bounds.position.y = SCRIPT_MIDDLE + CHAR_HEIGHT
+                            - previous_bounds.height
+                            - upper.bounds.depth;
                         bounds.union(&upper.bounds);
                     }
                     if previous_operatorname_requires_space {
@@ -999,6 +1005,7 @@ impl Tree {
             }
 
             bounds.position.x += self.bounds.width;
+            previous_bounds = bounds.clone();
             self.bounds.union(bounds);
             i += 1;
             previous_was_operatorname = false;

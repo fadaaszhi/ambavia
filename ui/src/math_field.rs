@@ -241,7 +241,7 @@ impl Tree {
                                 lower
                             }
                             (Some(lower), Some(upper)) => {
-                                if position.y < upper.bounds.bottom() {
+                                if position.y < (lower.bounds.top() + upper.bounds.bottom()) / 2.0 {
                                     path.push((i, ScriptUpper));
                                     upper
                                 } else {

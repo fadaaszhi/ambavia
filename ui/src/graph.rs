@@ -669,8 +669,7 @@ impl GraphPaper {
                 if self.dragging.is_some() =>
             {
                 self.dragging = None;
-                // TODO check why consuming release
-                response.consume_event();
+                response.request_redraw();
             }
             Event::CursorMoved { previous_cursor } => {
                 if let Some(target) = &mut self.dragging {

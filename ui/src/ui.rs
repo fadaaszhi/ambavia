@@ -479,6 +479,10 @@ impl Color for ([u8; 3], f64) {
     }
 }
 
+pub const fn rgb(r: u8, g: u8, b: u8) -> DVec4 {
+    dvec4(r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0, 1.0)
+}
+
 pub struct AnimatedValue {
     duration: f64,
     start_time: f64,

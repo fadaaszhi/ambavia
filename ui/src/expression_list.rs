@@ -15,7 +15,7 @@ use winit::{
 use crate::katex_font::Font;
 use crate::label::{Label, render_label};
 use crate::quad_renderer::{Quad, QuadKind};
-use crate::ui::{AnimatedValue, Button, ClickDragTracker, Color, PRIMARY_COLOR};
+use crate::ui::{AnimatedValue, Button, ClickDragTracker, Color, PRIMARY_COLOR, rgb};
 use crate::utility::FiniteExt;
 use crate::{
     graph::{Geometry, GeometryKind},
@@ -4013,12 +4013,12 @@ pub struct ExpressionList {
 
 const N_EXPRESSION_COLORS: usize = 6;
 const EXPRESSION_COLORS: [DVec4; N_EXPRESSION_COLORS] = [
-    dvec4(0.78, 0.267, 0.25, 1.0),
-    dvec4(0.176, 0.44, 0.7, 1.0),
-    dvec4(0.204, 0.52, 0.263, 1.0),
-    dvec4(0.98, 0.494, 0.098, 1.0),
-    dvec4(0.376, 0.26, 0.65, 1.0),
-    dvec4(0.0, 0.0, 0.0, 1.0),
+    rgb(199, 68, 64),
+    rgb(45, 112, 179),
+    rgb(56, 140, 70),
+    rgb(250, 126, 25),
+    rgb(96, 66, 166),
+    rgb(0, 0, 0),
 ];
 
 fn get_default_expression_color(i: usize) -> DVec4 {

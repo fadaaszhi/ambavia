@@ -210,12 +210,28 @@ pub struct Slider {
     pub play_direction: PlayDirection,
     #[serde(default, skip_serializing_if = "is_default")]
     pub is_playing: bool,
-    #[serde(default, skip_serializing_if = "is_default")]
+    #[serde(default = "neg_ten", skip_serializing_if = "is_neg_ten")]
     pub min: Latex,
-    #[serde(default, skip_serializing_if = "is_default")]
+    #[serde(default = "pos_ten", skip_serializing_if = "is_pos_ten")]
     pub max: Latex,
     #[serde(default, skip_serializing_if = "is_default")]
     pub step: Latex,
+}
+
+fn neg_ten() -> String {
+    "-10".into()
+}
+
+fn is_neg_ten(x: &String) -> bool {
+    x == "-10"
+}
+
+fn pos_ten() -> String {
+    "10".into()
+}
+
+fn is_pos_ten(x: &String) -> bool {
+    x == "10"
 }
 
 fn is_default<T: Default + PartialEq>(t: &T) -> bool {

@@ -1980,8 +1980,8 @@ impl MathField {
                                 if let Err(e) = ctx.set_clipboard_text(latex) {
                                     eprintln!("failed to set clipboard contents: {e}");
                                 }
+                                response.consume_event();
                             }
-                            response.consume_event();
                         }
                         Some('x')
                             if select
@@ -2001,7 +2001,7 @@ impl MathField {
                             }
                             response.consume_event();
                         }
-                        Some('v')
+                        Some('v' | 'V')
                             if write
                                 && (ctx.modifiers.control_key() || ctx.modifiers.super_key()) =>
                         {

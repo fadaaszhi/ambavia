@@ -36,7 +36,7 @@ use parse::{
     ast,
     ast_parser::{parse_standalone_expression, parse_statement},
     latex_parser::parse_latex,
-    latex_tree::{self, Bracket},
+    latex_tree::{self, Bracket, ToString},
     name_resolver::{Domain, ExpressionIndex, ExpressionListEntry, Slider as NrSlider},
     type_checker::Type,
 };
@@ -3556,6 +3556,7 @@ struct Expression {
     output: Output,
     style_gutter: StyleGutter,
     delete_button: Button,
+    copy_highlight_animation_start_time: f64,
     /// The cached height from the last update or render, or `None` if it's never
     /// been calculated before.
     height: Option<f64>,
@@ -3625,6 +3626,7 @@ impl Default for Expression {
                 color_buttons: Default::default(),
             },
             delete_button: Default::default(),
+            copy_highlight_animation_start_time: -f64::INFINITY,
             height: None,
         }
     }
@@ -3632,6 +3634,7 @@ impl Default for Expression {
 
 impl Expression {
     const PADDING: f64 = 16.0;
+    const COPY_HIGHLIGHT_ANIMATION_DURATION: f64 = 0.5;
 
     /// Returns the expression's height from the previous update or render. The height
     /// is guessed if the expression has never been updated or rendered before. If
@@ -3785,6 +3788,39 @@ impl Expression {
         }
 
         response = response.or(field_response);
+
+        if !response.consumed_event
+            && self.has_focus()
+            && let Event::KeyboardInput(KeyEvent {
+                logical_key: Key::Character(key),
+                state: ElementState::Pressed,
+                ..
+            }) = event
+            && key == "c"
+            && (ctx.modifiers.control_key() || ctx.modifiers.super_key())
+        {
+            let html = ExpressionList::make_dcg_clipboard_payload(&[convert_to_state_expression(
+                "".to_string(),
+                self,
+            )]);
+            let plain_text = self.field.to_latex().to_string();
+            if let Err(e) = ctx
+                .clipboard(|clipboard| clipboard.set_html(html, Some(plain_text)))
+                .flatten()
+            {
+                println!("failed to set clipboard contents: {e}");
+            } else {
+                self.copy_highlight_animation_start_time = ctx.time;
+                response.request_redraw();
+            }
+        }
+
+        if event == &Event::AnimationFrame
+            && ctx.time - self.copy_highlight_animation_start_time
+                < Self::COPY_HIGHLIGHT_ANIMATION_DURATION
+        {
+            response.request_redraw();
+        }
 
         // Maybe the parametric domain or slider settings got changed
         if let Some(m) = output_message {
@@ -3950,6 +3986,26 @@ impl Expression {
             ));
         }
 
+        let copy_animation = ctx.time - self.copy_highlight_animation_start_time;
+        if copy_animation < Self::COPY_HIGHLIGHT_ANIMATION_DURATION {
+            let t = copy_animation / Self::COPY_HIGHLIGHT_ANIMATION_DURATION;
+            let opacity = (4.0 * (1.0 - t).powi(2)).min(1.0);
+            let mut d = |p, s, o: f64| {
+                draw_quad(Quad::from_bounds(
+                    Bounds { pos: p, size: s },
+                    QuadKind::Rectangle,
+                    rgb(250, 214, 74).with_opacity(o * opacity),
+                ))
+            };
+            let w = 3.0;
+            let h = 4.0;
+            d(top_left, dvec2(width, h), 1.0);
+            d(top_left + dvec2(0.0, height), dvec2(width, -h), 1.0);
+            d(top_left + dvec2(0.0, h), dvec2(w, height - 2.0 * h), 1.0);
+            d(top_left + dvec2(width, h), dvec2(-w, height - 2.0 * h), 1.0);
+            d(top_left, dvec2(width, height), 0.1);
+        }
+
         self.height = Some(height);
     }
 
@@ -4021,6 +4077,220 @@ fn get_default_expression_color(i: usize) -> DVec4 {
     // skip orange
     let p = [0, 1, 2, 4, 5];
     EXPRESSION_COLORS[p[i % p.len()]]
+}
+
+fn convert_from_state_expression(e: state::ExpressionItem) -> Option<Expression> {
+    let state::ExpressionItemKind::Expression(e) = e.kind else {
+        return None;
+    };
+
+    fn parse_hex_color(color: &str) -> Option<DVec4> {
+        let c = color.strip_prefix('#')?;
+        let v = u32::from_str_radix(c, 16).ok()?;
+        Some(match c.len() {
+            3 => [8, 4, 0].map(|s| (v >> s & 15) as f64 / 15.0).to_rgbaf64(),
+            4 => [12, 8, 4, 0].map(|s| (v >> s & 15) as f64 / 15.0).into(),
+            6 => [16, 8, 0].map(|s| (v >> s & 255) as u8).to_rgbaf64(),
+            8 => [24, 16, 8, 0].map(|s| (v >> s & 255) as f64 / 255.0).into(),
+            _ => return None,
+        })
+    }
+
+    fn parse(latex: &str) -> Option<latex_tree::Nodes<'_>> {
+        match parse_latex(latex) {
+            Ok(latex) => Some(latex),
+            Err(e) => {
+                println!("parse_latex error: {e:?}");
+                None
+            }
+        }
+    }
+
+    fn set_inline_field(field: &mut (InlineField, Result<ast::Expression, String>), latex: &str) {
+        let Some(latex) = parse(latex) else { return };
+        field.0.set_latex(&latex);
+        if !field.0.is_empty() {
+            field.1 = parse_standalone_expression(&field.0.to_latex());
+        }
+    }
+
+    let mut r = Expression::default();
+
+    let color = parse_hex_color(&e.color).unwrap_or_else(|| {
+        println!("failed to parse color {:?}", e.color);
+        EXPRESSION_COLORS[0]
+    });
+    r.style.set_color(color);
+
+    // main latex
+    r.set_latex(&parse(&e.latex)?);
+    if !r.field.is_empty() {
+        r.ast = Some(parse_statement(&r.field.to_latex()));
+    }
+
+    // slider
+    if e.slider.hard_min {
+        set_inline_field(&mut r.slider.hard_min, &e.slider.min);
+    } else if let Ok(x) = e.slider.min.parse() {
+        r.slider.soft_min = x;
+    }
+
+    if e.slider.hard_max {
+        set_inline_field(&mut r.slider.hard_max, &e.slider.max);
+    } else if let Ok(x) = e.slider.max.parse() {
+        r.slider.soft_max = x;
+    }
+
+    set_inline_field(&mut r.slider.step, &e.slider.step);
+    r.slider.animation_period = e.slider.animation_period.as_secs();
+    r.slider.loop_mode = match e.slider.loop_mode {
+        state::LoopMode::LoopForwardReverse => SliderLoopMode::LoopForwardReverse,
+        state::LoopMode::LoopForward => SliderLoopMode::LoopForward,
+        state::LoopMode::PlayOnce => SliderLoopMode::PlayOnce,
+        state::LoopMode::PlayIndefinitely => SliderLoopMode::PlayIndefinitely,
+    };
+    r.slider.play_direction = e.slider.play_direction as i8 as f64;
+    r.slider.is_playing = e.slider.is_playing;
+
+    // parametric domain
+    set_inline_field(&mut r.parametric_domain.min, &e.parametric_domain.min);
+    set_inline_field(&mut r.parametric_domain.max, &e.parametric_domain.max);
+
+    // style
+    r.style.hidden = e.hidden;
+    set_inline_field(&mut r.style.color_latex, &e.color_latex);
+
+    r.style.line.enabled = e.lines;
+    r.style.line.style = match e.line_style {
+        state::LineStyle::Solid => LineStyle::Solid,
+        state::LineStyle::Dashed => LineStyle::Dashed,
+        state::LineStyle::Dotted => LineStyle::Dotted,
+    };
+    set_inline_field(&mut r.style.line.width, &e.line_width);
+    set_inline_field(&mut r.style.line.opacity, &e.line_opacity);
+
+    r.style.point.enabled = e.points;
+    r.style.point.style = match e.point_style {
+        state::PointStyle::Point => PointStyle::Point,
+        state::PointStyle::Open => PointStyle::Open,
+        state::PointStyle::Cross => PointStyle::Cross,
+        state::PointStyle::Square => PointStyle::Square,
+        state::PointStyle::Plus => PointStyle::Plus,
+        state::PointStyle::Triangle => PointStyle::Triangle,
+        state::PointStyle::Diamond => PointStyle::Diamond,
+        state::PointStyle::Star => PointStyle::Star,
+    };
+    set_inline_field(&mut r.style.point.size, &e.point_size);
+    set_inline_field(&mut r.style.point.opacity, &e.point_opacity);
+
+    r.style.fill.enabled = e.fill;
+    set_inline_field(&mut r.style.fill.opacity, &e.fill_opacity);
+
+    r.style.drag.enabled = if e.drag_mode == state::DragMode::None {
+        Some(false)
+    } else {
+        None
+    };
+    r.style.drag.mode = match e.drag_mode {
+        state::DragMode::None => DragMode::XY,
+        state::DragMode::X => DragMode::X,
+        state::DragMode::Y => DragMode::Y,
+        state::DragMode::XY => DragMode::XY,
+        state::DragMode::Auto => DragMode::XY,
+    };
+
+    Some(r)
+}
+
+fn convert_to_state_expression(id: String, e: &Expression) -> state::ExpressionItem {
+    fn to_hex_color(color: DVec4) -> String {
+        let color = color.to_array().map(|x| {
+            format!(
+                "{:02x}",
+                (x.if_finite_else(0.0).clamp(0.0, 1.0) * 255.0).round() as u8
+            )
+        });
+        '#'.to_string()
+            + &color[0]
+            + &color[1]
+            + &color[2]
+            + if color[3] != "ff" { &color[3] } else { "" }
+    }
+
+    let expression = state::Expression {
+        latex: e.field.to_latex().to_string(),
+        hidden: e.style.hidden,
+        color: to_hex_color(e.style.color),
+        color_latex: e.style.color_latex.0.to_latex().to_string(),
+        points: e.style.point.enabled,
+        point_style: match e.style.point.style {
+            PointStyle::Point => state::PointStyle::Point,
+            PointStyle::Open => state::PointStyle::Open,
+            PointStyle::Cross => state::PointStyle::Cross,
+            PointStyle::Square => state::PointStyle::Square,
+            PointStyle::Plus => state::PointStyle::Plus,
+            PointStyle::Triangle => state::PointStyle::Triangle,
+            PointStyle::Diamond => state::PointStyle::Diamond,
+            PointStyle::Star => state::PointStyle::Star,
+        },
+        point_opacity: e.style.point.opacity.0.to_latex().to_string(),
+        point_size: e.style.point.size.0.to_latex().to_string(),
+        lines: e.style.line.enabled,
+        line_style: match e.style.line.style {
+            LineStyle::Solid => state::LineStyle::Solid,
+            LineStyle::Dashed => state::LineStyle::Dashed,
+            LineStyle::Dotted => state::LineStyle::Dotted,
+        },
+        line_opacity: e.style.line.opacity.0.to_latex().to_string(),
+        line_width: e.style.line.width.0.to_latex().to_string(),
+        fill: e.style.fill.enabled,
+        fill_opacity: e.style.fill.opacity.0.to_latex().to_string(),
+        drag_mode: match (e.style.drag.enabled, e.style.drag.mode) {
+            (Some(false), _) => state::DragMode::None,
+            (_, DragMode::X) => state::DragMode::X,
+            (_, DragMode::Y) => state::DragMode::Y,
+            (_, DragMode::XY) => state::DragMode::XY,
+            // TODO figure out when we are supposed to use state::DragMode::Auto
+        },
+        slider: state::Slider {
+            hard_min: !e.slider.hard_min.0.is_empty(),
+            hard_max: !e.slider.hard_max.0.is_empty(),
+            animation_period: state::AnimationPeriod::from_secs(e.slider.animation_period),
+            loop_mode: match e.slider.loop_mode {
+                SliderLoopMode::LoopForwardReverse => state::LoopMode::LoopForwardReverse,
+                SliderLoopMode::LoopForward => state::LoopMode::LoopForward,
+                SliderLoopMode::PlayOnce => state::LoopMode::PlayOnce,
+                SliderLoopMode::PlayIndefinitely => state::LoopMode::PlayIndefinitely,
+            },
+            play_direction: match e.slider.play_direction {
+                1.0 => state::PlayDirection::Forward,
+                -1.0 => state::PlayDirection::Reverse,
+                other => panic!("slider play direction was {other}"),
+            },
+            is_playing: e.slider.is_playing,
+            min: if e.slider.hard_min.0.is_empty() {
+                e.slider.soft_min.to_string()
+            } else {
+                e.slider.hard_min.0.to_latex().to_string()
+            },
+            max: if e.slider.hard_max.0.is_empty() {
+                e.slider.soft_max.to_string()
+            } else {
+                e.slider.hard_max.0.to_latex().to_string()
+            },
+            step: e.slider.step.0.to_latex().to_string(),
+        },
+        parametric_domain: state::Domain {
+            min: e.parametric_domain.min.0.to_latex().to_string(),
+            max: e.parametric_domain.max.0.to_latex().to_string(),
+        },
+    };
+
+    state::ExpressionItem {
+        id,
+        folder_id: None,
+        kind: state::ExpressionItemKind::Expression(expression),
+    }
 }
 
 impl ExpressionList {
@@ -4132,6 +4402,30 @@ impl ExpressionList {
             .is_some_and(|hash| !hash.is_empty())
     }
 
+    fn get_dcg_clipboard_payload(html: &str) -> Option<String> {
+        // one of the html parsers of all time
+        let a = html.split_once("data-dcg-clipboard-payload=\"")?.1;
+        let escaped_payload = a.split_once('"')?.0;
+        let payload = escaped_payload
+            .replace("&quot;", "\"")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&amp;", "&");
+        Some(payload)
+    }
+
+    fn make_dcg_clipboard_payload(list: &[state::ExpressionItem]) -> String {
+        let payload = serde_json::to_string(list).unwrap();
+        let escaped_payload = payload
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;");
+        format!(
+            r#"<meta charset='utf-8'><div data-dcg-clipboard-format="dcg-copy-expression" data-dcg-clipboard-payload="{escaped_payload}">was i supposed to put something here :skull:</div>"#
+        )
+    }
+
     fn paste_link(&mut self, index: ExpressionId, link: &str) -> Option<state::Graph> {
         println!("importing graph {link:?}...");
         let response = ureq::get(link).header("Accept", "application/json").call();
@@ -4143,142 +4437,47 @@ impl ExpressionList {
             }
         };
 
-        fn parse_hex_color(color: &str) -> Option<DVec4> {
-            let c = color.strip_prefix('#')?;
-            let v = u32::from_str_radix(c, 16).ok()?;
-            Some(match c.len() {
-                3 => [8, 4, 0].map(|s| (v >> s & 15) as f64 / 15.0).to_rgbaf64(),
-                4 => [12, 8, 4, 0].map(|s| (v >> s & 15) as f64 / 15.0).into(),
-                6 => [16, 8, 0].map(|s| (v >> s & 255) as u8).to_rgbaf64(),
-                8 => [24, 16, 8, 0].map(|s| (v >> s & 255) as f64 / 255.0).into(),
-                _ => return None,
-            })
-        }
-
-        fn parse(latex: &str) -> Option<latex_tree::Nodes<'_>> {
-            match parse_latex(latex) {
-                Ok(latex) => Some(latex),
-                Err(e) => {
-                    println!("parse_latex error: {e:?}");
-                    None
-                }
-            }
-        }
-
-        fn set_inline_field(
-            field: &mut (InlineField, Result<ast::Expression, String>),
-            latex: &str,
-        ) {
-            let Some(latex) = parse(latex) else { return };
-            field.0.set_latex(&latex);
-            if !field.0.is_empty() {
-                field.1 = parse_standalone_expression(&field.0.to_latex());
-            }
-        }
-
-        fn map(e: state::ExpressionItem) -> Option<Expression> {
-            let state::ExpressionItemKind::Expression(e) = e.kind else {
-                return None;
-            };
-
-            let mut r = Expression::default();
-
-            let color = parse_hex_color(&e.color).unwrap_or_else(|| {
-                println!("failed to parse color {:?}", e.color);
-                EXPRESSION_COLORS[0]
-            });
-            r.style.set_color(color);
-
-            // main latex
-            r.set_latex(&parse(&e.latex)?);
-            if !r.field.is_empty() {
-                r.ast = Some(parse_statement(&r.field.to_latex()));
-            }
-
-            // slider
-            if e.slider.hard_min {
-                set_inline_field(&mut r.slider.hard_min, &e.slider.min);
-            } else if let Ok(x) = e.slider.min.parse() {
-                r.slider.soft_min = x;
-            }
-
-            if e.slider.hard_max {
-                set_inline_field(&mut r.slider.hard_max, &e.slider.max);
-            } else if let Ok(x) = e.slider.max.parse() {
-                r.slider.soft_max = x;
-            }
-
-            set_inline_field(&mut r.slider.step, &e.slider.step);
-            r.slider.animation_period = e.slider.animation_period.as_secs();
-            r.slider.loop_mode = match e.slider.loop_mode {
-                state::LoopMode::LoopForwardReverse => SliderLoopMode::LoopForwardReverse,
-                state::LoopMode::LoopForward => SliderLoopMode::LoopForward,
-                state::LoopMode::PlayOnce => SliderLoopMode::PlayOnce,
-                state::LoopMode::PlayIndefinitely => SliderLoopMode::PlayIndefinitely,
-            };
-            r.slider.play_direction = e.slider.play_direction as i8 as f64;
-            r.slider.is_playing = e.slider.is_playing;
-
-            // parametric domain
-            set_inline_field(&mut r.parametric_domain.min, &e.parametric_domain.min);
-            set_inline_field(&mut r.parametric_domain.max, &e.parametric_domain.max);
-
-            // style
-            r.style.hidden = e.hidden;
-            set_inline_field(&mut r.style.color_latex, &e.color_latex);
-
-            r.style.line.enabled = e.lines;
-            r.style.line.style = match e.line_style {
-                state::LineStyle::Solid => LineStyle::Solid,
-                state::LineStyle::Dashed => LineStyle::Dashed,
-                state::LineStyle::Dotted => LineStyle::Dotted,
-            };
-            set_inline_field(&mut r.style.line.width, &e.line_width);
-            set_inline_field(&mut r.style.line.opacity, &e.line_opacity);
-
-            r.style.point.enabled = e.points;
-            r.style.point.style = match e.point_style {
-                state::PointStyle::Point => PointStyle::Point,
-                state::PointStyle::Open => PointStyle::Open,
-                state::PointStyle::Cross => PointStyle::Cross,
-                state::PointStyle::Square => PointStyle::Square,
-                state::PointStyle::Plus => PointStyle::Plus,
-                state::PointStyle::Triangle => PointStyle::Triangle,
-                state::PointStyle::Diamond => PointStyle::Diamond,
-                state::PointStyle::Star => PointStyle::Star,
-            };
-            set_inline_field(&mut r.style.point.size, &e.point_size);
-            set_inline_field(&mut r.style.point.opacity, &e.point_opacity);
-
-            r.style.fill.enabled = e.fill;
-            set_inline_field(&mut r.style.fill.opacity, &e.fill_opacity);
-
-            r.style.drag.enabled = if e.drag_mode == state::DragMode::None {
-                Some(false)
-            } else {
-                None
-            };
-            r.style.drag.mode = match e.drag_mode {
-                state::DragMode::None => DragMode::XY,
-                state::DragMode::X => DragMode::X,
-                state::DragMode::Y => DragMode::Y,
-                state::DragMode::XY => DragMode::XY,
-                state::DragMode::Auto => DragMode::XY,
-            };
-
-            Some(r)
-        }
-
         let replace_graph_state = self.expressions.len() <= 2;
 
         self.expressions.splice(
             index..index + 1.into(),
-            graph.state.expressions.list.into_iter().filter_map(map),
+            graph
+                .state
+                .expressions
+                .list
+                .into_iter()
+                .filter_map(convert_from_state_expression),
         );
 
         println!("graph imported!");
 
         replace_graph_state.then_some(graph.state.graph)
+    }
+
+    fn paste_dcg_clipboard_payload(
+        &mut self,
+        index: ExpressionId,
+        payload: &str,
+    ) -> Option<ExpressionId> {
+        let expressions = match serde_json::from_str::<Vec<state::ExpressionItem>>(payload) {
+            Ok(list) => list,
+            Err(e) => {
+                println!("failed to paste ({e})");
+                return None;
+            }
+        };
+        let mut count = 0;
+        self.expressions.splice(
+            index + 1.into()..index + 1.into(),
+            expressions.into_iter().filter_map(|e| {
+                let e = convert_from_state_expression(e);
+                if e.is_some() {
+                    count += 1;
+                }
+                e
+            }),
+        );
+        Some(index + count.into())
     }
 
     const SEPARATOR_WIDTH: f64 = 1.0;
@@ -4392,6 +4591,7 @@ impl ExpressionList {
             _ => {
                 let mut message = None;
                 let mut pasted_link = None;
+                let mut dcg_clipboard_payload = None;
                 let separator_width = ctx.round_nonzero(Self::SEPARATOR_WIDTH);
                 let gutter_width = ctx.round_nonzero(Self::GUTTER_WIDTH);
                 let expression_width = bounds.size.x - 2.0 * separator_width - gutter_width;
@@ -4409,20 +4609,34 @@ impl ExpressionList {
 
                     let is_last = i.0 == expressions_len - 1;
 
+                    let mut consumed_event = false;
+
                     if has_focus
                         && let Event::KeyboardInput(KeyEvent {
                             logical_key: Key::Character(key),
                             state: ElementState::Pressed,
                             ..
                         }) = event
-                        && key == "v"
+                        && (key == "v" || key == "V")
+                        && !ctx.modifiers.shift_key()
                         && (ctx.modifiers.control_key() || ctx.modifiers.super_key())
-                        && let Ok(text) = ctx.get_clipboard_text()
-                        && Self::can_paste_link(&text)
                     {
-                        response.consume_event();
-                        pasted_link = Some((i, text));
-                    } else {
+                        if let Ok(Ok(html)) = ctx.clipboard(|clipboard| clipboard.get().html())
+                            && let Some(payload) = Self::get_dcg_clipboard_payload(&html)
+                        {
+                            response.consume_event();
+                            dcg_clipboard_payload = Some((i, payload));
+                            consumed_event = true;
+                        } else if let Ok(text) = ctx.get_clipboard_text()
+                            && Self::can_paste_link(&text)
+                        {
+                            response.consume_event();
+                            pasted_link = Some((i, text));
+                            consumed_event = true;
+                        }
+                    }
+
+                    if !consumed_event {
                         let (r, m) = expression.update(
                             ctx,
                             event,
@@ -4558,6 +4772,19 @@ impl ExpressionList {
                     graph_state = self.paste_link(i, &link);
                     if let Some(e) = self.expressions.get_mut(i) {
                         e.unfocus();
+                    }
+                    self.expressions_changed = true;
+                    response.request_redraw();
+                }
+
+                if let Some((i, payload)) = dcg_clipboard_payload {
+                    let j = self.paste_dcg_clipboard_payload(i, &payload);
+                    if let Some(j) = j {
+                        self.expressions[i].unfocus();
+                        self.expressions[j].focus();
+                        if self.expressions[i].field.is_empty() {
+                            self.expressions.remove(i);
+                        }
                     }
                     self.expressions_changed = true;
                     response.request_redraw();

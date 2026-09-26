@@ -1013,6 +1013,11 @@ pub enum Message {
 }
 
 impl MathField {
+    pub fn set_latex(&mut self, latex: &[latex_tree::Node]) {
+        self.tree = Tree::from(latex);
+        self.tree.layout();
+    }
+
     pub fn set_placeholder(&mut self, latex: &[latex_tree::Node]) {
         self.placeholder = latex.into();
         self.placeholder.layout();

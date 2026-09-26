@@ -4,6 +4,7 @@ mod katex_font;
 mod label;
 mod math_field;
 mod quad_renderer;
+mod state;
 mod timer;
 mod ui;
 mod utility;
@@ -467,10 +468,15 @@ impl MainThing {
                 self.expression_list.point_dragged(i, p);
             }
 
-            let (r_expression_list, geometry) = self.expression_list.update(ctx, event, left);
+            let (r_expression_list, geometry, graph_state) =
+                self.expression_list.update(ctx, event, left);
 
             if let Some((geometry, vm_vars)) = geometry {
                 self.graph_paper.set_geometry(geometry, vm_vars);
+            }
+
+            if let Some(graph_state) = graph_state {
+                self.graph_paper.set_graph_state(graph_state);
             }
 
             r_graph.or(r_expression_list)

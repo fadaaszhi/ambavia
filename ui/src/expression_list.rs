@@ -7,6 +7,8 @@ use derive_more::{Add, From, Into, Sub};
 use glam::{DVec2, DVec4, dvec2, dvec4};
 use parse::name_resolver::PropertyIndex;
 use typed_index_collections::{TiVec, ti_vec};
+use winit::event::KeyEvent;
+use winit::keyboard::Key;
 use winit::{
     event::{ElementState, MouseButton},
     window::CursorIcon,
@@ -15,6 +17,7 @@ use winit::{
 use crate::katex_font::Font;
 use crate::label::{Label, render_label};
 use crate::quad_renderer::{Quad, QuadKind};
+use crate::state;
 use crate::ui::{AnimatedValue, Button, ClickDragTracker, Color, PRIMARY_COLOR, rgb};
 use crate::utility::FiniteExt;
 use crate::{
@@ -1819,7 +1822,6 @@ impl OutputUi {
         let ui = match self {
             OutputUi::Slider(ui) => ui,
             _ => {
-                slider.is_playing = false;
                 *self = OutputUi::Slider(SliderUi::new(name.into()));
                 match self {
                     OutputUi::Slider(ui) => ui,
@@ -3573,12 +3575,8 @@ fn create_slider_latex<'a>(name_equal_field: &MathField, value: f64) -> latex_tr
     latex
 }
 
-impl Expression {
-    const PADDING: f64 = 16.0;
-
-    fn new(color: DVec4) -> Expression {
-        let mut style = ExpressionStyle::default();
-        style.set_color(color);
+impl Default for Expression {
+    fn default() -> Expression {
         Expression {
             field: Default::default(),
             slider: Slider {
@@ -3599,7 +3597,7 @@ impl Expression {
                 min: create_with_placeholder(PARAMETRIC_DOMAIN_MIN_DEFAULT),
                 max: create_with_placeholder(PARAMETRIC_DOMAIN_MAX_DEFAULT),
             },
-            style,
+            style: Default::default(),
             ast: None,
             output: Default::default(),
             style_gutter: StyleGutter {
@@ -3630,6 +3628,10 @@ impl Expression {
             height: None,
         }
     }
+}
+
+impl Expression {
+    const PADDING: f64 = 16.0;
 
     /// Returns the expression's height from the previous update or render. The height
     /// is guessed if the expression has never been updated or rendered before. If
@@ -3639,12 +3641,6 @@ impl Expression {
     fn height(&self) -> f64 {
         self.height
             .unwrap_or_else(|| 2.0 * Self::PADDING + self.field.expression_size().y)
-    }
-
-    fn from_latex(latex: &[latex_tree::Node], color: DVec4) -> Self {
-        let mut e = Expression::new(color);
-        e.set_latex(latex);
-        e
     }
 
     const DELETE_BUTTON_PADDING: f64 = 7.0;
@@ -3843,7 +3839,7 @@ impl Expression {
     }
 
     fn set_latex(&mut self, latex: &[latex_tree::Node]) {
-        self.field = MathField::from(latex);
+        self.field.set_latex(latex);
         self.parse_ast();
 
         if let Some(Ok(ast::Statement::Assignment { value, .. })) = &self.ast
@@ -4036,9 +4032,11 @@ impl ExpressionList {
             .chain(Some(&""))
             .chain(expressions.is_empty().then_some(&""))
             .map(|s| {
-                let color = get_default_expression_color(next_color);
+                let mut e = Expression::default();
+                e.set_latex(&parse_latex(s).unwrap());
+                e.style.set_color(get_default_expression_color(next_color));
                 next_color += 1;
-                Expression::from_latex(parse_latex(s).unwrap().as_slice(), color)
+                e
             })
             .collect();
         Self {
@@ -4116,9 +4114,171 @@ impl ExpressionList {
     }
 
     fn new_expression(&mut self) -> Expression {
-        let color = get_default_expression_color(self.next_color);
+        let mut e = Expression::default();
+        e.style
+            .set_color(get_default_expression_color(self.next_color));
         self.next_color += 1;
-        Expression::new(color)
+        e
+    }
+
+    fn can_paste_link(link: &str) -> bool {
+        link.trim()
+            .strip_prefix("https://www.desmos.com/")
+            .and_then(|path| {
+                ["calculator/", "geometry/", "3d/"]
+                    .iter()
+                    .find_map(|product| path.strip_prefix(product))
+            })
+            .is_some_and(|hash| !hash.is_empty())
+    }
+
+    fn paste_link(&mut self, index: ExpressionId, link: &str) -> Option<state::Graph> {
+        println!("importing graph {link:?}...");
+        let response = ureq::get(link).header("Accept", "application/json").call();
+        let graph = match response.and_then(|mut r| r.body_mut().read_json::<state::GraphState>()) {
+            Ok(graph) => graph,
+            Err(e) => {
+                println!("failed to load {link:?} ({e})");
+                return None;
+            }
+        };
+
+        fn parse_hex_color(color: &str) -> Option<DVec4> {
+            let c = color.strip_prefix('#')?;
+            let v = u32::from_str_radix(c, 16).ok()?;
+            Some(match c.len() {
+                3 => [8, 4, 0].map(|s| (v >> s & 15) as f64 / 15.0).to_rgbaf64(),
+                4 => [12, 8, 4, 0].map(|s| (v >> s & 15) as f64 / 15.0).into(),
+                6 => [16, 8, 0].map(|s| (v >> s & 255) as u8).to_rgbaf64(),
+                8 => [24, 16, 8, 0].map(|s| (v >> s & 255) as f64 / 255.0).into(),
+                _ => return None,
+            })
+        }
+
+        fn parse(latex: &str) -> Option<latex_tree::Nodes<'_>> {
+            match parse_latex(latex) {
+                Ok(latex) => Some(latex),
+                Err(e) => {
+                    println!("parse_latex error: {e:?}");
+                    None
+                }
+            }
+        }
+
+        fn set_inline_field(
+            field: &mut (InlineField, Result<ast::Expression, String>),
+            latex: &str,
+        ) {
+            let Some(latex) = parse(latex) else { return };
+            field.0.set_latex(&latex);
+            if !field.0.is_empty() {
+                field.1 = parse_standalone_expression(&field.0.to_latex());
+            }
+        }
+
+        fn map(e: state::ExpressionItem) -> Option<Expression> {
+            let state::ExpressionItemKind::Expression(e) = e.kind else {
+                return None;
+            };
+
+            let mut r = Expression::default();
+
+            let color = parse_hex_color(&e.color).unwrap_or_else(|| {
+                println!("failed to parse color {:?}", e.color);
+                EXPRESSION_COLORS[0]
+            });
+            r.style.set_color(color);
+
+            // main latex
+            r.set_latex(&parse(&e.latex)?);
+            if !r.field.is_empty() {
+                r.ast = Some(parse_statement(&r.field.to_latex()));
+            }
+
+            // slider
+            if e.slider.hard_min {
+                set_inline_field(&mut r.slider.hard_min, &e.slider.min);
+            } else if let Ok(x) = e.slider.min.parse() {
+                r.slider.soft_min = x;
+            }
+
+            if e.slider.hard_max {
+                set_inline_field(&mut r.slider.hard_max, &e.slider.max);
+            } else if let Ok(x) = e.slider.max.parse() {
+                r.slider.soft_max = x;
+            }
+
+            set_inline_field(&mut r.slider.step, &e.slider.step);
+            r.slider.animation_period = e.slider.animation_period.as_secs();
+            r.slider.loop_mode = match e.slider.loop_mode {
+                state::LoopMode::LoopForwardReverse => SliderLoopMode::LoopForwardReverse,
+                state::LoopMode::LoopForward => SliderLoopMode::LoopForward,
+                state::LoopMode::PlayOnce => SliderLoopMode::PlayOnce,
+                state::LoopMode::PlayIndefinitely => SliderLoopMode::PlayIndefinitely,
+            };
+            r.slider.play_direction = e.slider.play_direction as i8 as f64;
+            r.slider.is_playing = e.slider.is_playing;
+
+            // parametric domain
+            set_inline_field(&mut r.parametric_domain.min, &e.parametric_domain.min);
+            set_inline_field(&mut r.parametric_domain.max, &e.parametric_domain.max);
+
+            // style
+            r.style.hidden = e.hidden;
+            set_inline_field(&mut r.style.color_latex, &e.color_latex);
+
+            r.style.line.enabled = e.lines;
+            r.style.line.style = match e.line_style {
+                state::LineStyle::Solid => LineStyle::Solid,
+                state::LineStyle::Dashed => LineStyle::Dashed,
+                state::LineStyle::Dotted => LineStyle::Dotted,
+            };
+            set_inline_field(&mut r.style.line.width, &e.line_width);
+            set_inline_field(&mut r.style.line.opacity, &e.line_opacity);
+
+            r.style.point.enabled = e.points;
+            r.style.point.style = match e.point_style {
+                state::PointStyle::Point => PointStyle::Point,
+                state::PointStyle::Open => PointStyle::Open,
+                state::PointStyle::Cross => PointStyle::Cross,
+                state::PointStyle::Square => PointStyle::Square,
+                state::PointStyle::Plus => PointStyle::Plus,
+                state::PointStyle::Triangle => PointStyle::Triangle,
+                state::PointStyle::Diamond => PointStyle::Diamond,
+                state::PointStyle::Star => PointStyle::Star,
+            };
+            set_inline_field(&mut r.style.point.size, &e.point_size);
+            set_inline_field(&mut r.style.point.opacity, &e.point_opacity);
+
+            r.style.fill.enabled = e.fill;
+            set_inline_field(&mut r.style.fill.opacity, &e.fill_opacity);
+
+            r.style.drag.enabled = if e.drag_mode == state::DragMode::None {
+                Some(false)
+            } else {
+                None
+            };
+            r.style.drag.mode = match e.drag_mode {
+                state::DragMode::None => DragMode::XY,
+                state::DragMode::X => DragMode::X,
+                state::DragMode::Y => DragMode::Y,
+                state::DragMode::XY => DragMode::XY,
+                state::DragMode::Auto => DragMode::XY,
+            };
+
+            Some(r)
+        }
+
+        let replace_graph_state = self.expressions.len() <= 2;
+
+        self.expressions.splice(
+            index..index + 1.into(),
+            graph.state.expressions.list.into_iter().filter_map(map),
+        );
+
+        println!("graph imported!");
+
+        replace_graph_state.then_some(graph.state.graph)
     }
 
     const SEPARATOR_WIDTH: f64 = 1.0;
@@ -4129,9 +4289,14 @@ impl ExpressionList {
         ctx: &Context,
         event: &Event,
         bounds: Bounds,
-    ) -> (Response, Option<(Vec<Geometry>, vm::Vars)>) {
+    ) -> (
+        Response,
+        Option<(Vec<Geometry>, vm::Vars)>,
+        Option<state::Graph>,
+    ) {
         self.height = bounds.size.y;
         let mut response = Response::default();
+        let mut graph_state = None;
 
         if let Some((drag_tracker, i, offset)) = &mut self.dragged_expression {
             if drag_tracker.drag(ctx.cursor) {
@@ -4226,6 +4391,7 @@ impl ExpressionList {
             }
             _ => {
                 let mut message = None;
+                let mut pasted_link = None;
                 let separator_width = ctx.round_nonzero(Self::SEPARATOR_WIDTH);
                 let gutter_width = ctx.round_nonzero(Self::GUTTER_WIDTH);
                 let expression_width = bounds.size.x - 2.0 * separator_width - gutter_width;
@@ -4242,15 +4408,31 @@ impl ExpressionList {
                     }
 
                     let is_last = i.0 == expressions_len - 1;
-                    let (r, m) = expression.update(
-                        ctx,
-                        event,
-                        dvec2(expression_left, expression_top),
-                        expression_width,
-                        is_last,
-                    );
-                    response = response.or(r);
-                    message = message.or(m.map(|m| (i, m)));
+
+                    if has_focus
+                        && let Event::KeyboardInput(KeyEvent {
+                            logical_key: Key::Character(key),
+                            state: ElementState::Pressed,
+                            ..
+                        }) = event
+                        && key == "v"
+                        && (ctx.modifiers.control_key() || ctx.modifiers.super_key())
+                        && let Ok(text) = ctx.get_clipboard_text()
+                        && Self::can_paste_link(&text)
+                    {
+                        response.consume_event();
+                        pasted_link = Some((i, text));
+                    } else {
+                        let (r, m) = expression.update(
+                            ctx,
+                            event,
+                            dvec2(expression_left, expression_top),
+                            expression_width,
+                            is_last,
+                        );
+                        response = response.or(r);
+                        message = message.or(m.map(|m| (i, m)));
+                    }
 
                     let gutter_response = expression.update_gutter(
                         ctx,
@@ -4370,6 +4552,15 @@ impl ExpressionList {
                             response.request_redraw();
                         }
                     }
+                }
+
+                if let Some((i, link)) = pasted_link {
+                    graph_state = self.paste_link(i, &link);
+                    if let Some(e) = self.expressions.get_mut(i) {
+                        e.unfocus();
+                    }
+                    self.expressions_changed = true;
+                    response.request_redraw();
                 }
 
                 if self.expressions.last().unwrap().has_focus() {
@@ -5421,7 +5612,7 @@ impl ExpressionList {
             self.scroll(ctx, 0.0);
         }
 
-        (response, geometry)
+        (response, geometry, graph_state)
     }
 
     pub fn render(&mut self, ctx: &Context, bounds: Bounds, draw_quad: &mut impl FnMut(Quad)) {

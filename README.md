@@ -25,6 +25,7 @@ Ambavia's ultimate goal is to implement a superset of Desmos's features, but it'
 - Plot explicit and implicit equations, parametric curves, points and polygons
 - Change the style of those plots (line width, color, etc.) by shift left clicking on the icon in the gutter
 - Create sliders and configure their animation properties
+- Paste a link to an existing Desmos graph to import it
 - See any expression errors printed in the terminal
 
 ### Currently unsupported features

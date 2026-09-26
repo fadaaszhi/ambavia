@@ -26,6 +26,7 @@ use crate::{
         tile_fill::{Segment, TILE_SIZE, Tile, clip_segment},
     },
     quad_renderer::{Quad, QuadKind},
+    state,
     ui::{AnimatedValue, Button, Color, CursorMode},
     utility::{ClampToBounds, FiniteExt, flip_y, mix, set, snap},
 };
@@ -561,6 +562,15 @@ impl GraphPaper {
     pub fn set_geometry(&mut self, geometry: Vec<Geometry>, vm_vars: vm::Vars) {
         self.geometry = geometry;
         self.vm_vars = vm_vars;
+    }
+
+    pub fn set_graph_state(&mut self, s: state::Graph) {
+        self.viewport.center = dvec2(
+            s.viewport.xmin.midpoint(s.viewport.xmax),
+            s.viewport.ymin.midpoint(s.viewport.ymax),
+        );
+        self.viewport.width = s.viewport.xmax - s.viewport.xmin;
+        self.viewport.height = (!s.square_axes).then_some(s.viewport.ymax - s.viewport.ymin);
     }
 
     pub fn update(

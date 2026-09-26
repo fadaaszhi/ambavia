@@ -217,6 +217,7 @@ impl InstructionBuilder {
             UniquePermColor => (Type::ColorList, Type::NumberList),
             Polygon => (Type::Point2List, Type::Polygon),
             Vertices => (Type::Polygon, Type::Point2List),
+            Rgb | Hsv => (Type::Point3, Type::Color),
             BuildListFromRangeEnd => (Type::Number, Type::NumberList),
             _ => panic!("instruction '{instr:?}' not unary"),
         };

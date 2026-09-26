@@ -263,7 +263,9 @@ declare_ops! {
         Polygon(P2L) -> Pg,
         Vertices(Pg) -> P2L,
         Rgb(N, N, N) -> C,
+        RgbPoint(P3) -> C,
         Hsv(N, N, N) -> C,
+        HsvPoint(P3) -> C,
         // These have more complicated type signatures than what we can represent (due to potential list of list)
         // and are thus left taking "no" input and handled as a special case
         JoinNumber() -> NL,
@@ -391,8 +393,8 @@ impl OpName {
             OpName::SortPerm => &[SortPerm],
             OpName::Polygon => &[Polygon],
             OpName::Vertices => &[Vertices],
-            OpName::Rgb => &[Rgb],
-            OpName::Hsv => &[Hsv],
+            OpName::Rgb => &[Rgb, RgbPoint],
+            OpName::Hsv => &[Hsv, HsvPoint],
             OpName::Join => &[],
         }
     }

@@ -1663,9 +1663,13 @@ impl MathField {
                                         Script {
                                             lower: Some(lower), ..
                                         } => {
-                                            path.push((i, ScriptLower));
-                                            let index = lower.len();
-                                            self.set_cursor((path, index));
+                                            lower.pop();
+                                            if lower.is_empty() {
+                                                nodes.remove(i);
+                                                self.tree_updated((path, i));
+                                            } else {
+                                                self.tree_updated((path, i + 1));
+                                            }
                                         }
                                         Script { .. } => unreachable!(),
                                         Radical { arg, .. } => {

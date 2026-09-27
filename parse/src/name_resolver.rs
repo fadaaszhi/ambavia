@@ -709,7 +709,7 @@ impl<'a> Resolver<'a> {
                     || matches!(
                         self.definitions.get(callee.as_str()),
                         Some(Ok((Statement::FunctionDeclaration { .. }, _)))
-                    )
+                    ) && self.find_substitution(&callee, true).is_none()
                 {
                     self.resolve_call(callee, args)
                 } else {

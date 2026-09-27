@@ -325,6 +325,7 @@ const NAN: f64 = f64::NAN;
 #[case(r"\sortPerm([4,9,2,3])", [2, 3, 0, 1])]
 #[case(r"\mean((1,2),(3,4))", (2, 3))]
 #[case(r"\mean((1,2,3),(4,5,6))", (2.5, 3.5, 4.5))]
+#[case(r"[\rgb(1,2,3),\rgb(1,2,3.1),\rgb(1,2,4)].\unique.\count", 2)]
 fn expression_eq(#[case] expression: &str, #[case] expected: impl Into<Value>) {
     assert_expression_eq(expression, expected.into());
 }

@@ -153,6 +153,14 @@ pub fn apply_slider(mut value: f64, min: f64, max: f64, step: f64) -> f64 {
     value
 }
 
+pub fn normalize_color_component(x: f64) -> f64 {
+    if x.is_nan() {
+        0.0
+    } else {
+        (x.round() / 255.0).clamp(0.0, 1.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use rstest::rstest;

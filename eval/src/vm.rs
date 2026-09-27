@@ -1324,16 +1324,9 @@ impl<'a, 'i> Vm<'a, 'i> {
                     let b = self.pop().number();
                     let g = self.pop().number();
                     let r = self.pop().number();
-                    let f = |x: f64| {
-                        if x.is_nan() {
-                            0.0
-                        } else {
-                            (x / 255.0).clamp(0.0, 1.0)
-                        }
-                    };
-                    self.push(f(r));
-                    self.push(f(g));
-                    self.push(f(b));
+                    self.push(math::normalize_color_component(r));
+                    self.push(math::normalize_color_component(g));
+                    self.push(math::normalize_color_component(b));
                 }
                 Instruction::Hsv => {
                     let v = self.pop().number().clamp(0.0, 1.0);
@@ -1348,7 +1341,8 @@ impl<'a, 'i> Vm<'a, 'i> {
                         // https://en.wikipedia.org/wiki/HSL_and_HSV#HSV_to_RGB_alternative
                         let f = |n: f64| {
                             let k = (n + h / 60.0).rem_euclid(6.0);
-                            v - v * s * k.min(4.0 - k).clamp(0.0, 1.0)
+                            let x = v - v * s * k.min(4.0 - k).clamp(0.0, 1.0);
+                            math::normalize_color_component(255.0 * x)
                         };
                         self.push(f(5.0));
                         self.push(f(3.0));

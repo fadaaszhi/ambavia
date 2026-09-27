@@ -218,7 +218,6 @@ impl InstructionBuilder {
             Polygon => (Type::Point2List, Type::Polygon),
             Vertices => (Type::Polygon, Type::Point2List),
             Rgb | Hsv => (Type::Point3, Type::Color),
-            BuildListFromRangeEnd => (Type::Number, Type::NumberList),
             _ => panic!("instruction '{instr:?}' not unary"),
         };
         self.assert_pop(a, a_type);
@@ -269,7 +268,7 @@ impl InstructionBuilder {
             Index3 => (Type::Point3List, Type::Number, Type::Point3),
             IndexPolygonList => (Type::PolygonList, Type::Number, Type::Polygon),
             IndexColorList => (Type::ColorList, Type::Number, Type::Color),
-            Repeat | BuildListFromRange => (Type::Number, Type::Number, Type::NumberList),
+            Repeat => (Type::Number, Type::Number, Type::NumberList),
             Repeat2 => (Type::Point2, Type::Number, Type::Point2List),
             Repeat3 => (Type::Point3, Type::Number, Type::Point3List),
             RepeatPolygon => (Type::Polygon, Type::Number, Type::PolygonList),
@@ -361,6 +360,27 @@ impl InstructionBuilder {
             BaseType::Color => BuildList(3 * n),
         });
         self.create_and_push_value(Type::list_of(base))
+    }
+
+    pub fn build_list_range(
+        &mut self,
+        before_ellipsis: Vec<Value>,
+        after_ellipsis: Vec<Value>,
+    ) -> Value {
+        assert!(!after_ellipsis.is_empty());
+        let n_before_ellipsis = before_ellipsis.len() as u32;
+        let n_after_ellipsis = after_ellipsis.len() as u32;
+        for v in after_ellipsis.into_iter().rev() {
+            self.assert_pop(v, Type::Number);
+        }
+        for v in before_ellipsis.into_iter().rev() {
+            self.assert_pop(v, Type::Number);
+        }
+        self.instructions.push(BuildListRange {
+            n_before_ellipsis,
+            n_after_ellipsis,
+        });
+        self.create_and_push_value(Type::NumberList)
     }
 
     pub fn append(&mut self, list: &Value, v: Value) {
@@ -745,7 +765,7 @@ mod tests {
         let mut ib = InstructionBuilder::default();
         let a = ib.load_const(1.0);
         let b = ib.load_const(2.0);
-        let c = ib.instr2(BuildListFromRange, a, b);
+        let c = ib.build_list_range(vec![a], vec![b]);
         assert_eq!(
             c,
             Value {
@@ -770,7 +790,10 @@ mod tests {
             [
                 LoadConst(1.0),
                 LoadConst(2.0),
-                BuildListFromRange,
+                BuildListRange {
+                    n_before_ellipsis: 1,
+                    n_after_ellipsis: 1
+                },
                 LoadConst(3.0),
                 Index,
             ]
@@ -782,7 +805,7 @@ mod tests {
         let mut ib = InstructionBuilder::default();
         let a = ib.load_const(1.0);
         let b = ib.load_const(2.0);
-        let c = ib.instr2(BuildListFromRange, a, b);
+        let c = ib.build_list_range(vec![a], vec![b]);
         let d = ib.load_const(3.0);
         let _ = ib.load_const(5.0);
         assert_panics(move || ib.instr2(Index, c, d));
@@ -793,7 +816,7 @@ mod tests {
         let mut ib = InstructionBuilder::default();
         let a = ib.load_const(1.0);
         let b = ib.load_const(2.0);
-        let c = ib.instr2(BuildListFromRange, a, b);
+        let c = ib.build_list_range(vec![a], vec![b]);
         let d = ib.load_const(3.0);
         let e = ib.load_const(4.0);
         let de = ib.instr2(Point2, d, e);
@@ -813,7 +836,10 @@ mod tests {
             [
                 LoadConst(1.0),
                 LoadConst(2.0),
-                BuildListFromRange,
+                BuildListRange {
+                    n_before_ellipsis: 1,
+                    n_after_ellipsis: 1
+                },
                 LoadConst(3.0),
                 LoadConst(4.0),
                 LoadConst(5.0),
@@ -827,7 +853,7 @@ mod tests {
         let mut ib = InstructionBuilder::default();
         let a = ib.load_const(1.0);
         let b = ib.load_const(2.0);
-        let _c = ib.instr2(BuildListFromRange, a, b);
+        let _c = ib.build_list_range(vec![a], vec![b]);
         let d = ib.load_const(3.0);
         let e = ib.load_const(4.0);
         let de = ib.instr2(Point2, d, e);

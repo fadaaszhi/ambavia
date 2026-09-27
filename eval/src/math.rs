@@ -161,6 +161,105 @@ pub fn normalize_color_component(x: f64) -> f64 {
     }
 }
 
+pub fn build_list_range(before_ellipsis: &[f64], after_ellipsis: &[f64]) -> Option<Vec<f64>> {
+    if before_ellipsis.iter().any(|x| !x.is_finite())
+        || after_ellipsis.iter().any(|x| !x.is_finite())
+    {
+        return None;
+    }
+
+    let last = after_ellipsis.last().expect("no open-ended ranges");
+    let step = match before_ellipsis {
+        [first, second, ..] => second - first,
+        [first] => {
+            if first > last {
+                -1.0
+            } else {
+                1.0
+            }
+        }
+        [] => 1.0,
+    };
+
+    if step == 0.0 {
+        return None;
+    }
+
+    let first = before_ellipsis.first().cloned().unwrap_or(1.0);
+    let count = ((last - first) / step).round() + 1.0;
+
+    if count.is_nan() || count > 1e8 {
+        return None;
+    }
+
+    let count = count.max(0.0); // max removes NaN so do after NaN check 
+
+    if before_ellipsis.len() > count as usize || after_ellipsis.len() > count as usize {
+        return None;
+    }
+
+    let within_error = |index: f64, value: &f64| {
+        ((value - first) / step - index).abs() <= f64::exp2(-43.0) * index.max(1.0)
+    };
+
+    let mut i = 1.0;
+    for value in &before_ellipsis[before_ellipsis.len().min(2)..] {
+        i += 1.0;
+        if !within_error(i, value) {
+            return None;
+        }
+    }
+
+    let mut i = count - after_ellipsis.len() as f64;
+    for value in &after_ellipsis[..after_ellipsis.len() - 1] {
+        if !within_error(i, value) {
+            return None;
+        }
+        i += 1.0;
+    }
+
+    let first_rat = Rational::exact(first);
+    let step_rat = Rational::exact(step);
+
+    Some(match (first_rat, step_rat) {
+        (Some(first_rat), Some(step_rat)) => (0..count as usize)
+            .map(|i| {
+                let i = i as f64;
+
+                let x = (first_rat.num * step_rat.den + first_rat.den * step_rat.num * i)
+                    / (first_rat.den * step_rat.den);
+                if x.is_finite() {
+                    return x;
+                }
+
+                let x = first + step_rat.num * i / step_rat.den;
+                if x.is_finite() {
+                    return x;
+                }
+
+                first + step * i
+            })
+            .collect(),
+
+        (None, Some(step_rat)) => (0..count as usize)
+            .map(|i| {
+                let i = i as f64;
+
+                let x = first + step_rat.num * i / step_rat.den;
+                if x.is_finite() {
+                    return x;
+                }
+
+                first + step * i
+            })
+            .collect(),
+
+        (_, None) => (0..count as usize)
+            .map(|i| first + step * i as f64)
+            .collect(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use rstest::rstest;

@@ -187,8 +187,10 @@ pub enum Instruction {
     UncheckedIndexPolygonList(usize),
     BuildList(usize),
     BuildPolygonList(usize),
-    BuildListFromRange,
-    BuildListFromRangeEnd,
+    BuildListRange {
+        n_before_ellipsis: u32,
+        n_after_ellipsis: u32,
+    },
     Append(usize),
     Append2(usize),
     Append3(usize),
@@ -1496,21 +1498,21 @@ impl<'a, 'i> Vm<'a, 'i> {
                     list.reverse();
                     self.push(Rc::new(RefCell::new(list)));
                 }
-                Instruction::BuildListFromRange => {
-                    let b = self.pop().number().round() as i64;
-                    let a = self.pop().number().round() as i64;
+                Instruction::BuildListRange {
+                    n_before_ellipsis,
+                    n_after_ellipsis,
+                } => {
+                    let mut values = vec![0.0; (n_before_ellipsis + n_after_ellipsis) as _];
 
-                    self.push(Rc::new(RefCell::new(if a <= b {
-                        (a..=b).map(|i| i as f64).collect::<Vec<_>>()
-                    } else {
-                        (b..=a).rev().map(|i| i as f64).collect()
-                    })));
-                }
-                Instruction::BuildListFromRangeEnd => {
-                    let a = self.pop().number().round() as i64;
+                    for v in values.iter_mut().rev() {
+                        *v = self.pop().number();
+                    }
 
+                    let (before_ellipsis, after_ellipsis) = values.split_at(n_before_ellipsis as _);
+
+                    // TODO figure out a way to do runtime errors
                     self.push(Rc::new(RefCell::new(
-                        (1..=a).map(|i| i as f64).collect::<Vec<_>>(),
+                        math::build_list_range(before_ellipsis, after_ellipsis).unwrap_or_default(),
                     )));
                 }
                 Instruction::Append(index) => {

@@ -63,18 +63,20 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
         Expression::ListRange {
             before_ellipsis,
             after_ellipsis,
-        } => match (&before_ellipsis[..], &after_ellipsis[..]) {
-            ([start], [end]) => {
-                let start = compile_expression(start, builder);
-                let end = compile_expression(end, builder);
-                builder.instr2(BuildListFromRange, start, end)
+        } => {
+            if after_ellipsis.is_empty() {
+                todo!("open-ended list ranges like L[4...]");
             }
-            ([], [end]) => {
-                let end = compile_expression(end, builder);
-                builder.instr1(BuildListFromRangeEnd, end)
-            }
-            _ => todo!(),
-        },
+            let before_ellipsis = before_ellipsis
+                .iter()
+                .map(|e| compile_expression(e, builder))
+                .collect::<Vec<_>>();
+            let after_ellipsis = after_ellipsis
+                .iter()
+                .map(|e| compile_expression(e, builder))
+                .collect::<Vec<_>>();
+            builder.build_list_range(before_ellipsis, after_ellipsis)
+        }
         Expression::Broadcast {
             scalars,
             vectors,

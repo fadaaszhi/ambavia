@@ -659,9 +659,13 @@ impl<'a> Resolver<'a> {
             });
         }
 
-        if self.find_substitution(callee, true).is_some() {
+        if let Some(info) = self.find_substitution(callee, true) {
+            self.push_dependency(callee, Dependency::Substitution(info));
             return Err(NameError::VariableAsFunction(callee.into()));
         }
+
+        // TODO change the name of "Computed" to better reflect that it includes dependencies on function definitions
+        self.push_dependency(callee, Dependency::Computed);
 
         let (parameters, body) = match self.definitions.get(callee) {
             Some(Ok((
@@ -5286,4 +5290,17 @@ mod tests {
     // TODO add tests for plot types
 
     // TODO add test for f(f(f(f(f(x)))))
+
+    // TODO add tests for substituting for name of function
+    // 1. a(x) = 3x
+    //    a.a with a=5
+    //    a(a) with a=5
+    // 2. f(x) = 3x
+    //    a = f(5)
+    //    a with f=7
+    //    f(5) with f=7
+    // 3. f(x) = 3x
+    //    a = x.f
+    //    a with f=7
+    //    x.f with f=7
 }

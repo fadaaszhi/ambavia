@@ -5,7 +5,6 @@ use std::{collections::HashMap, ops::Deref};
 
 use derive_more::{Add, From, Into, Sub};
 use glam::{DVec2, DVec4, dvec2, dvec4};
-use parse::name_resolver::PropertyIndex;
 use typed_index_collections::{TiVec, ti_vec};
 use winit::event::KeyEvent;
 use winit::keyboard::Key;
@@ -28,7 +27,7 @@ use crate::{
 };
 use eval::{
     compiler::compile_assignments,
-    math::{apply_slider, apply_slider_step},
+    math,
     vm::{self, Vm},
 };
 use parse::{
@@ -37,7 +36,9 @@ use parse::{
     ast_parser::{parse_standalone_expression, parse_statement},
     latex_parser::parse_latex,
     latex_tree::{self, Bracket, ToString},
-    name_resolver::{Domain, ExpressionIndex, ExpressionListEntry, Slider as NrSlider},
+    name_resolver::{
+        Domain, ExpressionIndex, ExpressionListEntry, PropertyIndex, Slider as NrSlider,
+    },
     type_checker::Type,
 };
 
@@ -703,8 +704,8 @@ impl SliderUi {
             // correct timing. check if it got invalidated by something like
             // an action updating the slider value
             if let Some(expected) = self.expected_value
-                && apply_slider(expected, f64::NAN, f64::NAN, step)
-                    != apply_slider(*value, f64::NAN, f64::NAN, step)
+                && math::apply_slider(expected, f64::NAN, f64::NAN, step)
+                    != math::apply_slider(*value, f64::NAN, f64::NAN, step)
             {
                 self.animated_value = *value;
             }
@@ -716,7 +717,7 @@ impl SliderUi {
             // TODO round value to fewest required decimal places based on animation period,framerate,step
             if set(
                 value,
-                apply_slider(self.animated_value, f64::NAN, f64::NAN, step),
+                math::apply_slider(self.animated_value, f64::NAN, f64::NAN, step),
             ) {
                 new_value = Some(*value);
                 self.expected_value = Some(*value);
@@ -759,7 +760,7 @@ impl SliderUi {
             // Not using `.clamp()` because it panics if sidebar is resized too small
             let point_x = (ctx.cursor.x + offset).max(l.bar_left).min(l.bar_right);
             *value = mix(*min, *max, unmix(point_x, l.bar_left, l.bar_right));
-            *value = apply_slider(*value, *min, *max, *step);
+            *value = math::apply_slider(*value, *min, *max, *step);
             new_value = Some(*value);
             should_update_soft_bounds = true;
             response.consume_event();
@@ -813,8 +814,8 @@ impl SliderUi {
                     // correct timing. check if it got invalidated by something like
                     // an action updating the slider value
                     if let Some(expected) = self.expected_value
-                        && apply_slider(expected, *min, *max, *step)
-                            != apply_slider(*value, *min, *max, *step)
+                        && math::apply_slider(expected, *min, *max, *step)
+                            != math::apply_slider(*value, *min, *max, *step)
                     {
                         self.animated_value = *value;
                     }
@@ -842,7 +843,10 @@ impl SliderUi {
                     self.animated_value = mix(smin, smax, z).if_finite_else(*value);
 
                     // TODO round value to fewest required decimal places based on animation period,framerate,max-min,step
-                    if set(value, apply_slider(self.animated_value, *min, *max, *step)) {
+                    if set(
+                        value,
+                        math::apply_slider(self.animated_value, *min, *max, *step),
+                    ) {
                         new_value = Some(*value);
                         self.expected_value = Some(*value);
                     }
@@ -1798,7 +1802,7 @@ fn color_to_latex(nodes: &mut Vec<latex_tree::Node>, r: f64, g: f64, b: f64) {
     let f = |nodes: &mut _, x: f64| {
         number_to_latex(
             nodes,
-            (x.if_finite_else(0.0).clamp(0.0, 1.0) * 255.0).round(),
+            math::round(x.if_finite_else(0.0).clamp(0.0, 1.0) * 255.0),
         )
     };
     f(nodes, r);
@@ -3776,7 +3780,7 @@ impl Expression {
                     }
                     if max.is_none_or(|max| value != max)
                         && let Some(step) = step
-                        && value != apply_slider_step(value, offset, step, f64::round)
+                        && value != math::apply_slider_step(value, offset, step, math::round)
                     {
                         self.slider.step.0.clear();
                     }
@@ -5675,7 +5679,7 @@ impl ExpressionList {
                                 let value =
                                     value.map(|id| vm.vars[var_indices[&id]].clone().number());
                                 let slider_min = min.ok().map(|min| {
-                                    min.unwrap_or(apply_slider_step(
+                                    min.unwrap_or(math::apply_slider_step(
                                         value.unwrap_or(0.0).min(expression.slider.soft_min),
                                         0.0,
                                         step.ok().flatten().unwrap_or(SLIDER_STEP_DEFAULT),
@@ -5688,7 +5692,7 @@ impl ExpressionList {
                                             value.unwrap_or(0.0).max(expression.slider.soft_max);
                                         if let Ok(Some(step)) = step {
                                             let offset = min.ok().flatten().unwrap_or(0.0);
-                                            apply_slider_step(max, offset, step, f64::ceil)
+                                            math::apply_slider_step(max, offset, step, f64::ceil)
                                         } else {
                                             max
                                         }

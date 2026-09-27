@@ -1,3 +1,7 @@
+pub fn round(x: f64) -> f64 {
+    (x + 0.5).floor()
+}
+
 pub fn sort_perm(list: &[f64]) -> Vec<usize> {
     let mut indices = (0..list.len()).collect::<Vec<_>>();
     indices.sort_by(|a, b| list[*a].total_cmp(&list[*b]));
@@ -139,7 +143,7 @@ pub fn apply_slider(mut value: f64, min: f64, max: f64, step: f64) -> f64 {
 
     if step.is_finite() && step != 0.0 {
         let offset = if min.is_finite() { min } else { 0.0 };
-        value = apply_slider_step(value, offset, step, f64::round);
+        value = apply_slider_step(value, offset, step, round);
     }
 
     if max.is_finite() {
@@ -157,7 +161,7 @@ pub fn normalize_color_component(x: f64) -> f64 {
     if x.is_nan() {
         0.0
     } else {
-        (x.round() / 255.0).clamp(0.0, 1.0)
+        (round(x) / 255.0).clamp(0.0, 1.0)
     }
 }
 
@@ -186,7 +190,7 @@ pub fn build_list_range(before_ellipsis: &[f64], after_ellipsis: &[f64]) -> Opti
     }
 
     let first = before_ellipsis.first().cloned().unwrap_or(1.0);
-    let count = ((last - first) / step).round() + 1.0;
+    let count = round((last - first) / step) + 1.0;
 
     if count.is_nan() || count > 1e8 {
         return None;

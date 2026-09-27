@@ -838,13 +838,13 @@ impl<'a, 'i> Vm<'a, 'i> {
                 }
                 Instruction::Round => {
                     let a = self.pop().number();
-                    self.push(a.round());
+                    self.push(math::round(a));
                 }
                 Instruction::RoundWithPrecision => {
                     let b = self.pop().number();
                     let a = self.pop().number();
-                    let p = 10f64.powi(b.round().clamp(-1e3, 1e3) as i32);
-                    self.push((a * p).round() / p);
+                    let p = 10f64.powi(math::round(b).clamp(-1e3, 1e3) as i32);
+                    self.push(math::round(a * p) / p);
                 }
                 Instruction::Floor => {
                     let a = self.pop().number();
@@ -1049,25 +1049,25 @@ impl<'a, 'i> Vm<'a, 'i> {
                     self.push(a.borrow().len() as f64);
                 }
                 Instruction::Repeat => {
-                    let count = self.pop().number().round().max(0.0) as usize;
+                    let count = math::round(self.pop().number()).max(0.0) as usize;
                     let value = self.pop().number();
                     self.push(Rc::new(RefCell::new(vec![value; count])));
                 }
                 Instruction::Repeat2 => {
-                    let count = self.pop().number().round().max(0.0) as usize;
+                    let count = math::round(self.pop().number()).max(0.0) as usize;
                     let y = self.pop().number();
                     let x = self.pop().number();
                     self.push(Rc::new(RefCell::new([x, y].repeat(count))));
                 }
                 Instruction::Repeat3 | Instruction::RepeatColor => {
-                    let count = self.pop().number().round().max(0.0) as usize;
+                    let count = math::round(self.pop().number()).max(0.0) as usize;
                     let z = self.pop().number();
                     let y = self.pop().number();
                     let x = self.pop().number();
                     self.push(Rc::new(RefCell::new([x, y, z].repeat(count))));
                 }
                 Instruction::RepeatPolygon => {
-                    let count = self.pop().number().round().max(0.0) as usize;
+                    let count = math::round(self.pop().number()).max(0.0) as usize;
                     let value = self.pop().list();
                     self.push(Rc::new(RefCell::new(vec![value; count])));
                 }
@@ -1080,7 +1080,7 @@ impl<'a, 'i> Vm<'a, 'i> {
 
                     // TODO "When the arguments of 'repeat' are lists, they must have the same length."
                     for (&value, &count) in zip(values.iter(), counts.iter()) {
-                        let count = count.round().max(0.0) as usize;
+                        let count = math::round(count).max(0.0) as usize;
                         list.resize(list.len() + count, value);
                     }
 
@@ -1094,7 +1094,7 @@ impl<'a, 'i> Vm<'a, 'i> {
                     let mut list = vec![];
 
                     for (&[x, y], &count) in zip(values.as_chunks().0, counts.iter()) {
-                        let count = count.round().max(0.0) as usize;
+                        let count = math::round(count).max(0.0) as usize;
                         list.reserve(count * 2);
                         for _ in 0..count {
                             list.push(x);
@@ -1112,7 +1112,7 @@ impl<'a, 'i> Vm<'a, 'i> {
                     let mut list = vec![];
 
                     for (&[x, y, z], &count) in zip(values.as_chunks().0, counts.iter()) {
-                        let count = count.round().max(0.0) as usize;
+                        let count = math::round(count).max(0.0) as usize;
                         list.reserve(count * 3);
                         for _ in 0..count {
                             list.push(x);
@@ -1131,7 +1131,7 @@ impl<'a, 'i> Vm<'a, 'i> {
                     let mut list = vec![];
 
                     for (value, &count) in zip(values.iter(), counts.iter()) {
-                        let count = count.round().max(0.0) as usize;
+                        let count = math::round(count).max(0.0) as usize;
                         list.resize(list.len() + count, Rc::clone(value));
                     }
 

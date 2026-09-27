@@ -659,6 +659,10 @@ impl<'a> Resolver<'a> {
             });
         }
 
+        if self.find_substitution(callee, true).is_some() {
+            return Err(NameError::VariableAsFunction(callee.into()));
+        }
+
         let (parameters, body) = match self.definitions.get(callee) {
             Some(Ok((
                 Statement::FunctionDeclaration {
@@ -709,7 +713,7 @@ impl<'a> Resolver<'a> {
                     || matches!(
                         self.definitions.get(callee.as_str()),
                         Some(Ok((Statement::FunctionDeclaration { .. }, _)))
-                    ) && self.find_substitution(&callee, true).is_none()
+                    ) && self.find_substitution(callee, true).is_none()
                 {
                     self.resolve_call(callee, args)
                 } else {

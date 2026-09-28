@@ -167,6 +167,7 @@ pub enum DragMode {
     None,
     X,
     Y,
+    #[serde(rename = "XY")]
     XY,
     #[default]
     Auto,

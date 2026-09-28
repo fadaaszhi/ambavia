@@ -174,7 +174,18 @@ pub fn build_list_range(before_ellipsis: &[f64], after_ellipsis: &[f64]) -> Opti
 
     let last = after_ellipsis.last().expect("no open-ended ranges");
     let step = match before_ellipsis {
-        [first, second, ..] => second - first,
+        [first, second, ..] => {
+            if let Some(first) = Rational::exact(*first)
+                && let Some(second) = Rational::exact(*second)
+                && let step =
+                    (second.num * first.den - first.num * second.den) / (first.den * second.den)
+                && step.is_finite()
+            {
+                step
+            } else {
+                second - first
+            }
+        }
         [first] => {
             if first > last {
                 -1.0

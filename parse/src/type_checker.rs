@@ -403,6 +403,10 @@ impl TypeChecker {
                 before_ellipsis,
                 after_ellipsis,
             } => {
+                if after_ellipsis.is_empty() {
+                    return Err(TypeError::Todo("open ended ranges like L[4...]"));
+                }
+
                 let before_ellipsis = self.check_expressions(before_ellipsis)?;
                 let after_ellipsis = self.check_expressions(after_ellipsis)?;
 
@@ -618,6 +622,12 @@ impl TypeChecker {
             }
             nr::Expression::Op { operation, args } => {
                 use crate::op::OpName;
+
+                match operation {
+                    OpName::Fac => return Err(TypeError::Todo("factorial")),
+                    OpName::Erf => return Err(TypeError::Todo("erf")),
+                    _ => {}
+                }
 
                 let mut checked_args = self.check_expressions(args)?;
                 match operation {
@@ -959,6 +969,7 @@ pub enum TypeError {
     PiecewiseBranchMismatch(Type, Type),
     OpError(OpError),
     SliderFieldNotANumber(&'static str, Type),
+    Todo(&'static str),
 }
 
 impl From<OpError> for TypeError {
@@ -989,6 +1000,7 @@ impl Display for TypeError {
             TypeError::SliderFieldNotANumber(field, ty) => {
                 write!(f, "slider {field} must be {}, not {ty}", Type::Number)
             }
+            TypeError::Todo(feature) => write!(f, "todo: {feature} not implemented yet"),
         }
     }
 }

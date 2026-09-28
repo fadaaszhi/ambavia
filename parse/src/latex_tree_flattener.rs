@@ -202,6 +202,7 @@ fn flatten_helper<'a>(
                     } else {
                         index += 1;
                         string.push('.');
+                        skip_space(nodes, &mut index);
 
                         while let Some(Node::Char(digit @ '0'..='9')) = nodes.get(index) {
                             index += 1;
@@ -323,6 +324,11 @@ mod tests {
         assert_eq!(
             flatten(&[Char(' '), Char('.'), Char('5')]),
             Ok(vec![Tk::Number(".5".into()),])
+        );
+
+        assert_eq!(
+            flatten(&[Char('2'), Char('.'), Char(' '), Char('3')]),
+            Ok(vec![Tk::Number("2.3".into()),])
         );
 
         assert_eq!(

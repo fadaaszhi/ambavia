@@ -404,7 +404,7 @@ impl TypeChecker {
                 after_ellipsis,
             } => {
                 if after_ellipsis.is_empty() {
-                    return Err(TypeError::Todo("open ended ranges like L[4...]"));
+                    return Err(TypeError::Todo("open-ended ranges like L[4...]"));
                 }
 
                 let before_ellipsis = self.check_expressions(before_ellipsis)?;

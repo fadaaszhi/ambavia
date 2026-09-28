@@ -543,8 +543,8 @@ impl TypeChecker {
 
                 match (c.ty == Type::EmptyList, a.ty == Type::EmptyList) {
                     (true, true) => return empty_list(B::Empty),
-                    (true, false) => c.ty = Type::list_of(a.ty.base()),
-                    (false, true) => a.ty = Type::list_of(c.ty.base()),
+                    (true, false) => c = te(Type::list_of(a.ty.base()), Expression::List(vec![])),
+                    (false, true) => a = te(Type::list_of(c.ty.base()), Expression::List(vec![])),
                     (false, false) => (),
                 }
 

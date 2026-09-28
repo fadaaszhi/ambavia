@@ -7,7 +7,7 @@ use derive_more::{Add, From, Into, Sub};
 use glam::{DVec2, DVec4, dvec2, dvec4};
 use typed_index_collections::{TiVec, ti_vec};
 use winit::event::KeyEvent;
-use winit::keyboard::Key;
+use winit::keyboard::{Key, NamedKey};
 use winit::{
     event::{ElementState, MouseButton},
     window::CursorIcon,
@@ -21,7 +21,7 @@ use crate::ui::{AnimatedValue, Button, ClickDragTracker, Color, PRIMARY_COLOR, r
 use crate::utility::FiniteExt;
 use crate::{
     graph::{Geometry, GeometryKind},
-    math_field::{Cursor, Interactiveness, MathField, Message, UserSelection},
+    math_field::{ContentsChanged, Cursor, Interactiveness, MathField, UserSelection},
     ui::{Bounds, Context, CursorMode, Event, Response},
     utility::{max, mix, set, union, unmix},
 };
@@ -154,11 +154,11 @@ impl InlineField {
         ctx: &Context,
         event: &Event,
         bounds: Bounds,
-    ) -> (Response, Option<Message>) {
-        let (mut response, message) = self.field.update(ctx, event, bounds, None);
+    ) -> (Response, Option<ContentsChanged>) {
+        let (mut response, change) = self.field.update(ctx, event, bounds, None);
         self.underline
             .update(ctx, &self.field, bounds, &mut response);
-        (response, message)
+        (response, change)
     }
 
     fn render(&mut self, ctx: &Context, bounds: Bounds, draw_quad: &mut impl FnMut(Quad)) {
@@ -573,7 +573,7 @@ impl SliderUi {
         width: f64,
         field_has_focus: bool,
         slider: &mut Slider,
-    ) -> (Response, Option<f64>, Option<Message>, Bounds) {
+    ) -> (Response, Option<f64>, Option<ContentsChanged>, Bounds) {
         let mut result = match self.layout(ctx, padding, top_left, width, field_has_focus, slider) {
             SliderLayout::Edit(layout) => self.update_slider_edit(ctx, event, slider, layout),
             SliderLayout::Bar(layout) => self.update_slider_bar(ctx, event, slider, layout),
@@ -594,94 +594,129 @@ impl SliderUi {
         event: &Event,
         slider: &mut Slider,
         l: SliderEditLayout,
-    ) -> (Response, Option<f64>, Option<Message>, Bounds) {
+    ) -> (Response, Option<f64>, Option<ContentsChanged>, Bounds) {
         let mut response = Response::default();
-        let mut message = None;
+        let mut change = None;
+        // all field updates need to happen before left/right arrow keys are handled
+        let (mut step_response, step_change) = slider.step.0.update(ctx, event, l.step_field);
+        // we want to know if it had focus right after update before left/right arrow keys handled
+        let step_has_focus = slider.step.0.has_focus();
 
         if let Some(l) = &l.min_name_max {
-            let (min_response, mut min_message) = slider.hard_min.0.update(ctx, event, l.min_field);
-            let (max_response, mut max_message) = slider.hard_max.0.update(ctx, event, l.max_field);
+            let (mut min_response, mut min_change) =
+                slider.hard_min.0.update(ctx, event, l.min_field);
+            let (mut max_response, mut max_change) =
+                slider.hard_max.0.update(ctx, event, l.max_field);
+            let min_has_focus = slider.hard_min.0.has_focus();
+            let max_has_focus = slider.hard_max.0.has_focus();
 
-            match min_message {
-                Some(Message::ContentsChanged { .. }) => {
-                    slider.soft_min = SLIDER_SOFT_MIN_DEFAULT;
-                    if !slider.hard_min.0.is_empty() {
-                        slider.hard_min.1 =
-                            parse_standalone_expression(&slider.hard_min.0.to_latex());
-                    }
+            if min_change.is_some() {
+                slider.soft_min = SLIDER_SOFT_MIN_DEFAULT;
+                if !slider.hard_min.0.is_empty() {
+                    slider.hard_min.1 = parse_standalone_expression(&slider.hard_min.0.to_latex());
                 }
-                Some(Message::Left) => min_message = None,
-                Some(Message::Right) => {
-                    min_message = None;
-                    slider.hard_min.0.unfocus();
-                    slider.hard_max.0.select_all();
-                }
-                Some(Message::Up | Message::Down | Message::Add) => {
-                    slider.hard_min.0.unfocus();
-                }
-                Some(Message::Remove) => {
-                    min_message = None;
-                    if set(&mut slider.soft_min, SLIDER_SOFT_MIN_DEFAULT) {
-                        min_message = Some(Message::ContentsChanged { user_driven: true });
-                    }
-                }
-                None => {}
             }
 
-            match max_message {
-                Some(Message::ContentsChanged { .. }) => {
-                    slider.soft_max = SLIDER_SOFT_MAX_DEFAULT;
-                    if !slider.hard_max.0.is_empty() {
-                        slider.hard_max.1 =
-                            parse_standalone_expression(&slider.hard_max.0.to_latex());
+            if max_change.is_some() {
+                slider.soft_max = SLIDER_SOFT_MAX_DEFAULT;
+                if !slider.hard_max.0.is_empty() {
+                    slider.hard_max.1 = parse_standalone_expression(&slider.hard_max.0.to_latex());
+                }
+            }
+
+            if min_has_focus
+                && !min_response.consumed_event
+                && let Event::KeyboardInput(KeyEvent {
+                    logical_key: Key::Named(key),
+                    state: ElementState::Pressed,
+                    ..
+                }) = event
+            {
+                match key {
+                    NamedKey::ArrowLeft => {
+                        min_response.consume_event();
                     }
-                }
-                Some(Message::Left) => {
-                    max_message = None;
-                    slider.hard_max.0.unfocus();
-                    slider.hard_min.0.select_all();
-                }
-                Some(Message::Right) => {
-                    max_message = None;
-                    slider.hard_max.0.unfocus();
-                    slider.step.0.select_all();
-                }
-                Some(Message::Up | Message::Down | Message::Add) => {
-                    slider.hard_max.0.unfocus();
-                }
-                Some(Message::Remove) => {
-                    max_message = None;
-                    if set(&mut slider.soft_max, SLIDER_SOFT_MAX_DEFAULT) {
-                        max_message = Some(Message::ContentsChanged { user_driven: true });
+                    NamedKey::ArrowRight => {
+                        slider.hard_min.0.unfocus();
+                        slider.hard_max.0.select_all();
+                        min_response.request_redraw();
+                        min_response.consume_event();
                     }
+                    NamedKey::Backspace => {
+                        if set(&mut slider.soft_min, SLIDER_SOFT_MIN_DEFAULT) {
+                            min_change = Some(ContentsChanged { user_driven: true });
+                        }
+                        min_response.request_redraw();
+                        min_response.consume_event();
+                    }
+                    _ => {}
                 }
-                None => {}
+            }
+
+            if max_has_focus
+                && !max_response.consumed_event
+                && let Event::KeyboardInput(KeyEvent {
+                    logical_key: Key::Named(key),
+                    state: ElementState::Pressed,
+                    ..
+                }) = event
+            {
+                match key {
+                    NamedKey::ArrowLeft => {
+                        slider.hard_max.0.unfocus();
+                        slider.hard_min.0.select_all();
+                        max_response.request_redraw();
+                        max_response.consume_event();
+                    }
+                    NamedKey::ArrowRight => {
+                        slider.hard_max.0.unfocus();
+                        slider.step.0.select_all();
+                        max_response.request_redraw();
+                        max_response.consume_event();
+                    }
+                    NamedKey::Backspace => {
+                        if set(&mut slider.soft_max, SLIDER_SOFT_MAX_DEFAULT) {
+                            max_change = Some(ContentsChanged { user_driven: true });
+                        }
+                        max_response.request_redraw();
+                        max_response.consume_event();
+                    }
+                    _ => {}
+                }
             }
 
             response = response.or(min_response).or(max_response);
-            message = message.or(min_message).or(max_message);
+            change = change.or(min_change).or(max_change);
         }
 
-        let (step_response, mut step_message) = slider.step.0.update(ctx, event, l.step_field);
+        if step_change.is_some() {
+            if slider.step.0.is_empty() {
+                slider.step.1 = Ok(ast::Expression::Number(0.0));
+            } else {
+                slider.step.1 = parse_standalone_expression(&slider.step.0.to_latex());
+            }
+        }
 
-        match step_message {
-            Some(Message::ContentsChanged { .. }) => {
-                if slider.step.0.is_empty() {
-                    slider.step.1 = Ok(ast::Expression::Number(0.0));
-                } else {
-                    slider.step.1 = parse_standalone_expression(&slider.step.0.to_latex());
+        if step_has_focus
+            && !step_response.consumed_event
+            && let Event::KeyboardInput(KeyEvent {
+                logical_key: Key::Named(key),
+                state: ElementState::Pressed,
+                ..
+            }) = event
+        {
+            match key {
+                NamedKey::ArrowLeft if l.min_name_max.is_some() => {
+                    slider.step.0.unfocus();
+                    slider.hard_max.0.select_all();
+                    step_response.request_redraw();
+                    step_response.consume_event();
                 }
+                NamedKey::ArrowLeft | NamedKey::ArrowRight | NamedKey::Backspace => {
+                    step_response.consume_event();
+                }
+                _ => {}
             }
-            Some(Message::Left) if l.min_name_max.is_some() => {
-                step_message = None;
-                slider.step.0.unfocus();
-                slider.hard_max.0.select_all();
-            }
-            Some(Message::Left | Message::Right | Message::Remove) => step_message = None,
-            Some(Message::Up | Message::Down | Message::Add) => {
-                slider.step.0.unfocus();
-            }
-            None => {}
         }
 
         if slider.step.0.has_focus() && set(&mut slider.is_playing, false) {
@@ -730,8 +765,8 @@ impl SliderUi {
         }
 
         response = response.or(step_response);
-        message = message.or(step_message);
-        (response, new_value, message, l.bounds)
+        change = change.or(step_change);
+        (response, new_value, change, l.bounds)
     }
 
     fn update_slider_bar(
@@ -740,7 +775,7 @@ impl SliderUi {
         event: &Event,
         slider: &mut Slider,
         l: SliderBarLayout,
-    ) -> (Response, Option<f64>, Option<Message>, Bounds) {
+    ) -> (Response, Option<f64>, Option<ContentsChanged>, Bounds) {
         let (Some(ref mut value), Some(ref mut min), Some(ref mut max), Some(ref mut step)) =
             (self.value, self.min, self.max, self.step)
         else {
@@ -1537,7 +1572,7 @@ impl FieldUi {
         top_left: DVec2,
         width: f64,
         padding: f64,
-    ) -> (Response, Option<f64>, Option<Message>, Bounds) {
+    ) -> (Response, Option<f64>, Option<ContentsChanged>, Bounds) {
         let bounds = self.layout(ctx, top_left, width, padding);
         let (mut response, _) = self.0.update(ctx, event, bounds, None);
 
@@ -1655,51 +1690,78 @@ impl ParametricDomainUi {
         padding: f64,
         top_left: DVec2,
         domain: &mut ParametricDomain,
-    ) -> (Response, Option<f64>, Option<Message>, Bounds) {
+    ) -> (Response, Option<f64>, Option<ContentsChanged>, Bounds) {
         let l = self.layout(ctx, padding, top_left, domain);
 
-        let (min_response, mut min_message) = domain.min.0.update(ctx, event, l.min_field);
-        let (max_response, mut max_message) = domain.max.0.update(ctx, event, l.max_field);
+        let (mut min_response, min_change) = domain.min.0.update(ctx, event, l.min_field);
+        let (mut max_response, max_change) = domain.max.0.update(ctx, event, l.max_field);
+        // we want to know whether focused before left/right keys handled
+        let min_has_focus = domain.min.0.has_focus();
+        let max_has_focus = domain.max.0.has_focus();
 
-        match min_message {
-            Some(Message::ContentsChanged { .. }) => {
-                let mut latex = domain.min.0.to_latex();
-                if latex.is_empty() {
-                    latex = domain.min.0.get_placeholder();
-                }
-                domain.min.1 = parse_standalone_expression(&latex)
+        if min_change.is_some() {
+            let mut latex = domain.min.0.to_latex();
+            if latex.is_empty() {
+                latex = domain.min.0.get_placeholder();
             }
-            Some(Message::Left | Message::Remove) => min_message = None,
-            Some(Message::Right) => {
-                min_message = None;
-                domain.min.0.unfocus();
-                domain.max.0.select_all();
-            }
-            Some(Message::Up | Message::Down | Message::Add) => domain.min.0.unfocus(),
-            None => {}
+            domain.min.1 = parse_standalone_expression(&latex)
         }
 
-        match max_message {
-            Some(Message::ContentsChanged { .. }) => {
-                let mut latex = domain.max.0.to_latex();
-                if latex.is_empty() {
-                    latex = domain.max.0.get_placeholder();
+        if max_change.is_some() {
+            let mut latex = domain.max.0.to_latex();
+            if latex.is_empty() {
+                latex = domain.max.0.get_placeholder();
+            }
+            domain.max.1 = parse_standalone_expression(&latex)
+        }
+
+        if min_has_focus
+            && !min_response.consumed_event
+            && let Event::KeyboardInput(KeyEvent {
+                logical_key: Key::Named(key),
+                state: ElementState::Pressed,
+                ..
+            }) = event
+        {
+            match key {
+                NamedKey::ArrowRight => {
+                    domain.min.0.unfocus();
+                    domain.max.0.select_all();
+                    min_response.request_redraw();
+                    min_response.consume_event();
                 }
-                domain.max.1 = parse_standalone_expression(&latex)
+                NamedKey::ArrowLeft | NamedKey::Backspace => {
+                    min_response.consume_event();
+                }
+                _ => {}
             }
-            Some(Message::Left) => {
-                max_message = None;
-                domain.max.0.unfocus();
-                domain.min.0.select_all();
+        }
+
+        if max_has_focus
+            && !max_response.consumed_event
+            && let Event::KeyboardInput(KeyEvent {
+                logical_key: Key::Named(key),
+                state: ElementState::Pressed,
+                ..
+            }) = event
+        {
+            match key {
+                NamedKey::ArrowLeft => {
+                    domain.max.0.unfocus();
+                    domain.min.0.select_all();
+                    max_response.request_redraw();
+                    max_response.consume_event();
+                }
+                NamedKey::ArrowRight | NamedKey::Backspace => {
+                    max_response.consume_event();
+                }
+                _ => {}
             }
-            Some(Message::Right | Message::Remove) => max_message = None,
-            Some(Message::Up | Message::Down | Message::Add) => domain.max.0.unfocus(),
-            None => {}
         }
 
         let response = min_response.or(max_response);
-        let message = min_message.or(max_message);
-        (response, None, message, l.bounds)
+        let change = min_change.or(max_change);
+        (response, None, change, l.bounds)
     }
 
     fn render(
@@ -1847,6 +1909,39 @@ impl OutputUi {
         *self = OutputUi::ParametricDomain(ParametricDomainUi::new(name.into()))
     }
 
+    fn has_focus(&self, slider: &Slider, parametric_domain: &ParametricDomain) -> bool {
+        match self {
+            OutputUi::None => false,
+            OutputUi::Slider(_) => {
+                slider.hard_min.0.has_focus()
+                    || slider.hard_max.0.has_focus()
+                    || slider.step.0.has_focus()
+            }
+            OutputUi::Field(ui) => ui.0.has_focus(),
+            OutputUi::ParametricDomain(_) => {
+                parametric_domain.min.0.has_focus() || parametric_domain.max.0.has_focus()
+            }
+        }
+    }
+
+    fn unfocus(&mut self, slider: &mut Slider, parametric_domain: &mut ParametricDomain) {
+        match self {
+            OutputUi::None => {}
+            OutputUi::Slider(_) => {
+                slider.hard_min.0.unfocus();
+                slider.hard_max.0.unfocus();
+                slider.step.0.unfocus();
+            }
+            OutputUi::Field(ui) => {
+                ui.0.unfocus();
+            }
+            OutputUi::ParametricDomain(_) => {
+                parametric_domain.min.0.unfocus();
+                parametric_domain.max.0.unfocus();
+            }
+        }
+    }
+
     fn update(
         &mut self,
         ctx: &Context,
@@ -1857,7 +1952,7 @@ impl OutputUi {
         field_has_focus: bool,
         slider: &mut Slider,
         parametric_domain: &mut ParametricDomain,
-    ) -> (Response, Option<f64>, Option<Message>, Bounds) {
+    ) -> (Response, Option<f64>, Option<ContentsChanged>, Bounds) {
         match self {
             OutputUi::None => (Response::default(), None, None, Bounds::default()),
             OutputUi::Slider(ui) => ui.update(
@@ -2903,11 +2998,11 @@ impl StyleGutter {
         expression_list_bounds: Bounds,
         gutter_bounds: Bounds,
         style: &mut ExpressionStyle,
-    ) -> (Response, Option<Message>) {
+    ) -> (Response, Option<ContentsChanged>) {
         let mut response = Response::default();
-        let mut message = None;
+        let mut change = None;
         let Some(l) = self.layout_popup(ctx, expression_list_bounds, gutter_bounds, style) else {
-            return (response, message);
+            return (response, change);
         };
 
         let update_title = |l: &StylePopupTitleLayout,
@@ -2966,36 +3061,50 @@ impl StyleGutter {
                     }
                 }
 
-                let (r, m_opacity) = style.line.opacity.0.update(ctx, event, l.opacity.field);
-                response = response.or(r);
-                let (r, m_width) = style.line.width.0.update(ctx, event, l.width.field);
-                response = response.or(r);
+                let (mut r_opacity, c_opacity) =
+                    style.line.opacity.0.update(ctx, event, l.opacity.field);
+                let (mut r_width, c_width) = style.line.width.0.update(ctx, event, l.width.field);
+                let opacity_has_focus = style.line.opacity.0.has_focus();
+                let width_has_focus = style.line.width.0.has_focus();
 
-                match m_opacity {
-                    Some(Message::Down) => {
-                        style.line.opacity.0.unfocus();
-                        style.line.width.0.focus();
-                        response.request_redraw();
-                    }
-                    Some(Message::ContentsChanged { .. }) => {
-                        parse(&mut style.line.opacity);
-                        message = message.or(m_opacity);
-                    }
-                    _ => {}
+                if c_opacity.is_some() {
+                    parse(&mut style.line.opacity);
                 }
 
-                match m_width {
-                    Some(Message::Up) => {
-                        style.line.opacity.0.focus();
-                        style.line.width.0.unfocus();
-                        response.request_redraw();
-                    }
-                    Some(Message::ContentsChanged { .. }) => {
-                        parse(&mut style.line.width);
-                        message = message.or(m_width);
-                    }
-                    _ => {}
+                if c_width.is_some() {
+                    parse(&mut style.line.width);
                 }
+
+                if opacity_has_focus
+                    && !r_opacity.consumed_event
+                    && let Event::KeyboardInput(KeyEvent {
+                        logical_key: Key::Named(NamedKey::ArrowDown),
+                        state: ElementState::Pressed,
+                        ..
+                    }) = event
+                {
+                    style.line.opacity.0.unfocus();
+                    style.line.width.0.focus();
+                    r_opacity.request_redraw();
+                    r_opacity.consume_event();
+                }
+
+                if width_has_focus
+                    && !r_width.consumed_event
+                    && let Event::KeyboardInput(KeyEvent {
+                        logical_key: Key::Named(NamedKey::ArrowUp),
+                        state: ElementState::Pressed,
+                        ..
+                    }) = event
+                {
+                    style.line.width.0.unfocus();
+                    style.line.opacity.0.focus();
+                    r_width.request_redraw();
+                    r_width.consume_event();
+                }
+
+                response = response.or(r_opacity).or(r_width);
+                change = change.or(c_opacity).or(c_width);
             }
         }
 
@@ -3034,36 +3143,50 @@ impl StyleGutter {
                     }
                 }
 
-                let (r, m_opacity) = style.point.opacity.0.update(ctx, event, l.opacity.field);
-                response = response.or(r);
-                let (r, m_size) = style.point.size.0.update(ctx, event, l.size.field);
-                response = response.or(r);
+                let (mut r_opacity, c_opacity) =
+                    style.point.opacity.0.update(ctx, event, l.opacity.field);
+                let (mut r_size, c_size) = style.point.size.0.update(ctx, event, l.size.field);
+                let opacity_has_focus = style.point.opacity.0.has_focus();
+                let size_has_focus = style.point.size.0.has_focus();
 
-                match m_opacity {
-                    Some(Message::Down) => {
-                        style.point.opacity.0.unfocus();
-                        style.point.size.0.focus();
-                        response.request_redraw();
-                    }
-                    Some(Message::ContentsChanged { .. }) => {
-                        parse(&mut style.point.opacity);
-                        message = message.or(m_opacity);
-                    }
-                    _ => {}
+                if c_opacity.is_some() {
+                    parse(&mut style.point.opacity);
                 }
 
-                match m_size {
-                    Some(Message::Up) => {
-                        style.point.opacity.0.focus();
-                        style.point.size.0.unfocus();
-                        response.request_redraw();
-                    }
-                    Some(Message::ContentsChanged { .. }) => {
-                        parse(&mut style.point.size);
-                        message = message.or(m_size);
-                    }
-                    _ => {}
+                if c_size.is_some() {
+                    parse(&mut style.point.size);
                 }
+
+                if opacity_has_focus
+                    && !r_opacity.consumed_event
+                    && let Event::KeyboardInput(KeyEvent {
+                        logical_key: Key::Named(NamedKey::ArrowDown),
+                        state: ElementState::Pressed,
+                        ..
+                    }) = event
+                {
+                    style.point.opacity.0.unfocus();
+                    style.point.size.0.focus();
+                    r_opacity.request_redraw();
+                    r_opacity.consume_event();
+                }
+
+                if size_has_focus
+                    && !r_size.consumed_event
+                    && let Event::KeyboardInput(KeyEvent {
+                        logical_key: Key::Named(NamedKey::ArrowUp),
+                        state: ElementState::Pressed,
+                        ..
+                    }) = event
+                {
+                    style.point.size.0.unfocus();
+                    style.point.opacity.0.focus();
+                    r_size.request_redraw();
+                    r_size.consume_event();
+                }
+
+                response = response.or(r_opacity).or(r_size);
+                change = change.or(c_opacity).or(c_size);
             }
         }
 
@@ -3080,13 +3203,15 @@ impl StyleGutter {
             );
 
             if let Some(l) = contents {
-                let (r, m_opacity) = style.fill.opacity.0.update(ctx, event, l.opacity.field);
-                response = response.or(r);
+                let (r_opacity, c_opacity) =
+                    style.fill.opacity.0.update(ctx, event, l.opacity.field);
 
-                if matches!(m_opacity, Some(Message::ContentsChanged { .. })) {
+                if c_opacity.is_some() {
                     parse(&mut style.fill.opacity);
-                    message = message.or(m_opacity);
                 }
+
+                response = response.or(r_opacity);
+                change = change.or(c_opacity);
             }
         }
 
@@ -3126,18 +3251,19 @@ impl StyleGutter {
                 if clicked {
                     style.set_color(EXPRESSION_COLORS[i]);
                     style.changed = true;
-                    message = message.or(Some(Message::ContentsChanged { user_driven: true }));
+                    change = change.or(Some(ContentsChanged { user_driven: true }));
                     response.request_redraw();
                 }
             }
 
-            let (r, m_color) = style.color_latex.0.update(ctx, event, l.color_latex.field);
-            response = response.or(r);
+            let (r_color, c_color) = style.color_latex.0.update(ctx, event, l.color_latex.field);
 
-            if matches!(m_color, Some(Message::ContentsChanged { .. })) {
+            if c_color.is_some() {
                 parse(&mut style.color_latex);
-                message = message.or(m_color);
             }
+
+            response = response.or(r_color);
+            change = change.or(c_color);
         }
 
         // TODO figure out more robust way to make popups steal the correct inputs from things beneath them
@@ -3163,7 +3289,7 @@ impl StyleGutter {
             response.request_redraw();
         }
 
-        (response, message)
+        (response, change)
     }
 
     fn render_popup(
@@ -3660,9 +3786,10 @@ impl Expression {
         top_left: DVec2,
         width: f64,
         is_last: bool,
-    ) -> (Response, Option<Message>) {
+    ) -> (Response, Option<ContentsChanged>, bool) {
         let mut response = Response::default();
-        let mut message = None;
+        let mut change = None;
+        let mut delete_clicked = false;
         let mut height = 0.0;
 
         let use_fake_field = matches!(self.output.ui, OutputUi::Slider { .. });
@@ -3687,7 +3814,7 @@ impl Expression {
             size: dvec2(width, field_bounds.size.y + padding * 1.5),
         };
         height += 0.5 * padding;
-        let (output_response, new_value, output_message, output_bounds) = self.output.ui.update(
+        let (output_response, new_value, output_change, output_bounds) = self.output.ui.update(
             ctx,
             event,
             padding,
@@ -3703,10 +3830,11 @@ impl Expression {
             self.set_latex(&create_slider_latex(&self.field, value));
             // TODO distinguish between value changed because user dragged
             // slider (user driven) vs slider animation (not user driven)
-            message = Some(Message::ContentsChanged { user_driven: false });
+            change = Some(ContentsChanged { user_driven: false });
         }
 
         response = response.or(output_response);
+        change = change.or(output_change);
         height += output_bounds.size.y;
         height += 0.5 * padding;
 
@@ -3719,22 +3847,16 @@ impl Expression {
                 size: DVec2::splat(delete_button_hitbox_size),
             };
 
-            let delete_clicked;
             (delete_response, delete_clicked) =
                 self.delete_button.update(ctx, event, delete_button_hitbox);
             response = response.or(delete_response);
-
-            if delete_clicked {
-                message = Some(Message::Remove);
-                response.request_redraw();
-            }
         }
 
         let field = match use_fake_field {
             true => &mut self.slider.fake_field,
             false => &mut self.field,
         };
-        let (field_response, field_message) = if delete_response.consumed_event {
+        let (field_response, field_change) = if delete_response.consumed_event {
             (Response::default(), None)
         } else {
             field.update(ctx, event, field_bounds, Some(field_hit_test_bounds))
@@ -3747,7 +3869,7 @@ impl Expression {
         if !field.has_focus() && use_fake_field {
             self.field.unfocus();
         }
-        if matches!(field_message, Some(Message::ContentsChanged { .. })) {
+        if field_change.is_some() {
             if use_fake_field {
                 self.field = self.slider.fake_field.clone();
             }
@@ -3787,11 +3909,9 @@ impl Expression {
                 }
             }
         }
-        if message.is_none() {
-            message = field_message;
-        }
 
         response = response.or(field_response);
+        change = change.or(field_change);
 
         if !response.consumed_event
             && self.has_focus()
@@ -3826,22 +3946,29 @@ impl Expression {
             response.request_redraw();
         }
 
-        // Maybe the parametric domain or slider settings got changed
-        if let Some(m) = output_message {
-            message = match m {
-                Message::ContentsChanged { .. } | Message::Down | Message::Add => Some(m),
-                Message::Left | Message::Right | Message::Remove => unreachable!(),
-                Message::Up => {
-                    self.focus();
-                    None
-                }
-            };
+        if self
+            .output
+            .ui
+            .has_focus(&self.slider, &self.parametric_domain)
+            && !output_response.consumed_event
+            && let Event::KeyboardInput(KeyEvent {
+                logical_key: Key::Named(NamedKey::ArrowUp),
+                state: ElementState::Pressed,
+                ..
+            }) = event
+        {
+            self.output
+                .ui
+                .unfocus(&mut self.slider, &mut self.parametric_domain);
+            self.focus();
+            response.consume_event();
+            response.request_redraw();
         }
 
         // Adjust height after field was updated
         height += ctx.ceil(self.field.expression_size().y) - field_bounds.size.y;
         self.height = Some(height);
-        (response, message)
+        (response, change, delete_clicked)
     }
 
     fn update_gutter(&mut self, ctx: &Context, event: &Event, bounds: Bounds) -> Response {
@@ -3858,7 +3985,7 @@ impl Expression {
         event: &Event,
         expression_list_bounds: Bounds,
         gutter_bounds: Bounds,
-    ) -> (Response, Option<Message>) {
+    ) -> (Response, Option<ContentsChanged>) {
         if let OutputUi::Slider(ui) = &mut self.output.ui {
             let response = ui.update_popup(
                 ctx,
@@ -3917,18 +4044,13 @@ impl Expression {
     fn has_focus(&self) -> bool {
         self.field.has_focus()
             || match &self.output.ui {
-                OutputUi::None | OutputUi::Field(_) => false,
-                OutputUi::Slider(_) => {
-                    self.slider.fake_field.has_focus()
-                        || self.slider.hard_min.0.has_focus()
-                        || self.slider.hard_max.0.has_focus()
-                        || self.slider.step.0.has_focus()
-                }
-                OutputUi::ParametricDomain(_) => {
-                    self.parametric_domain.min.0.has_focus()
-                        || self.parametric_domain.max.0.has_focus()
-                }
+                OutputUi::Slider(_) => self.slider.fake_field.has_focus(),
+                _ => false,
             }
+            || self
+                .output
+                .ui
+                .has_focus(&self.slider, &self.parametric_domain)
     }
 
     fn render(
@@ -4593,9 +4715,16 @@ impl ExpressionList {
                 response.request_redraw();
             }
             _ => {
+                enum Message {
+                    Changed(ContentsChanged),
+                    Up,
+                    Down,
+                    Add,
+                    Remove,
+                    PastedLink(String),
+                    DcgClipboardPayload(String),
+                }
                 let mut message = None;
-                let mut pasted_link = None;
-                let mut dcg_clipboard_payload = None;
                 let separator_width = ctx.round_nonzero(Self::SEPARATOR_WIDTH);
                 let gutter_width = ctx.round_nonzero(Self::GUTTER_WIDTH);
                 let expression_width = bounds.size.x - 2.0 * separator_width - gutter_width;
@@ -4629,19 +4758,19 @@ impl ExpressionList {
                             && let Some(payload) = Self::get_dcg_clipboard_payload(&html)
                         {
                             response.consume_event();
-                            dcg_clipboard_payload = Some((i, payload));
+                            message = Some((i, Message::DcgClipboardPayload(payload)));
                             consumed_event = true;
                         } else if let Ok(text) = ctx.get_clipboard_text()
                             && Self::can_paste_link(&text)
                         {
                             response.consume_event();
-                            pasted_link = Some((i, text));
+                            message = Some((i, Message::PastedLink(text)));
                             consumed_event = true;
                         }
                     }
 
                     if !consumed_event {
-                        let (r, m) = expression.update(
+                        let (r, change, delete_clicked) = expression.update(
                             ctx,
                             event,
                             dvec2(expression_left, expression_top),
@@ -4649,7 +4778,30 @@ impl ExpressionList {
                             is_last,
                         );
                         response = response.or(r);
-                        message = message.or(m.map(|m| (i, m)));
+                        message = message.or_else(|| {
+                            if let Some(change) = change {
+                                Some((i, Message::Changed(change)))
+                            } else if delete_clicked {
+                                Some((i, Message::Remove))
+                            } else if expression.has_focus()
+                                && !r.consumed_event
+                                && let Event::KeyboardInput(KeyEvent {
+                                    logical_key: Key::Named(key),
+                                    state: ElementState::Pressed,
+                                    ..
+                                }) = event
+                            {
+                                match key {
+                                    NamedKey::ArrowUp => Some((i, Message::Up)),
+                                    NamedKey::ArrowDown => Some((i, Message::Down)),
+                                    NamedKey::Enter => Some((i, Message::Add)),
+                                    NamedKey::Backspace => Some((i, Message::Remove)),
+                                    _ => None,
+                                }
+                            } else {
+                                None
+                            }
+                        });
                     }
 
                     let gutter_response = expression.update_gutter(
@@ -4725,13 +4877,13 @@ impl ExpressionList {
 
                 if let Some((i, m)) = message {
                     match m {
-                        Message::ContentsChanged { user_driven } => {
+                        Message::Changed(ContentsChanged { user_driven }) => {
                             self.expressions_changed = true;
                             if user_driven {
                                 self.scroll_into_view(ctx, i);
+                                response.request_redraw();
                             }
                         }
-                        Message::Left | Message::Right => {}
                         Message::Up => {
                             if i.0 > 0 {
                                 self.expressions[i].unfocus();
@@ -4769,29 +4921,27 @@ impl ExpressionList {
                             }
                             response.request_redraw();
                         }
-                    }
-                }
-
-                if let Some((i, link)) = pasted_link {
-                    graph_state = self.paste_link(i, &link);
-                    if let Some(e) = self.expressions.get_mut(i) {
-                        e.unfocus();
-                    }
-                    self.expressions_changed = true;
-                    response.request_redraw();
-                }
-
-                if let Some((i, payload)) = dcg_clipboard_payload {
-                    let j = self.paste_dcg_clipboard_payload(i, &payload);
-                    if let Some(j) = j {
-                        self.expressions[i].unfocus();
-                        self.expressions[j].focus();
-                        if self.expressions[i].field.is_empty() {
-                            self.expressions.remove(i);
+                        Message::PastedLink(link) => {
+                            graph_state = self.paste_link(i, &link);
+                            if let Some(e) = self.expressions.get_mut(i) {
+                                e.unfocus();
+                            }
+                            self.expressions_changed = true;
+                            response.request_redraw();
+                        }
+                        Message::DcgClipboardPayload(payload) => {
+                            let j = self.paste_dcg_clipboard_payload(i, &payload);
+                            if let Some(j) = j {
+                                self.expressions[i].unfocus();
+                                self.expressions[j].focus();
+                                if self.expressions[i].field.is_empty() {
+                                    self.expressions.remove(i);
+                                }
+                            }
+                            self.expressions_changed = true;
+                            response.request_redraw();
                         }
                     }
-                    self.expressions_changed = true;
-                    response.request_redraw();
                 }
 
                 if self.expressions.last().unwrap().has_focus() {
@@ -6103,7 +6253,7 @@ impl ExpressionList {
         let mut expression_top = bounds.pos.y - self.scroll;
 
         for expression in &mut self.expressions {
-            let (r, m) = expression.update_popup(
+            let (r, change) = expression.update_popup(
                 ctx,
                 event,
                 bounds,
@@ -6113,9 +6263,7 @@ impl ExpressionList {
                 },
             );
             response = response.or(r);
-            if matches!(m, Some(Message::ContentsChanged { .. })) {
-                self.expressions_changed = true;
-            }
+            self.expressions_changed |= change.is_some();
             if set(&mut expression.style.changed, false) {
                 self.redraw_geometry = true;
             }

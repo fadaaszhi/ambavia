@@ -999,17 +999,9 @@ impl From<&latex_tree::Nodes<'_>> for MathField {
 }
 
 #[derive(Debug, PartialEq)]
-pub enum Message {
-    ContentsChanged {
-        /// A user driven content change means the expression will be scrolled into view.
-        user_driven: bool,
-    },
-    Left,
-    Right,
-    Up,
-    Down,
-    Add,
-    Remove,
+pub struct ContentsChanged {
+    /// A user driven content change means the expression will be scrolled into view.
+    pub user_driven: bool,
 }
 
 impl MathField {
@@ -1146,10 +1138,9 @@ impl MathField {
         // The area used for determining if a mouse click hit the field. If you don't provide
         // this then it defaults to the `content_bounds`
         hit_test_bounds: Option<Bounds>,
-    ) -> (Response, Option<Message>) {
+    ) -> (Response, Option<ContentsChanged>) {
         self.width = content_bounds.size.x;
         let mut response = Response::default();
-        let mut message = None;
 
         let write = self.interactiveness.allows_writing();
         let select = self.interactiveness.allows_selection();
@@ -1188,10 +1179,6 @@ impl MathField {
                 let mut restart_cursor_blink = true;
 
                 match &logical_key {
-                    Key::Named(NamedKey::Enter) if write => {
-                        message = Some(Message::Add);
-                        response.consume_event();
-                    }
                     Key::Named(NamedKey::Space) if write => {
                         let cursor = self.tree.walk_mut(&path).add_char(path, span, ' ');
                         self.tree_updated(cursor);
@@ -1219,6 +1206,8 @@ impl MathField {
                                 0
                             };
                             self.set_selection((s.anchor, Cursor { path, index }));
+                            response.request_redraw();
+                            response.consume_event();
                         } else {
                             match span {
                                 SelectionSpan::Cursor(mut i) => {
@@ -1256,6 +1245,8 @@ impl MathField {
                                                 self.set_cursor((path, i))
                                             }
                                         }
+                                        response.request_redraw();
+                                        response.consume_event();
                                     } else if let Some((index, field)) = path.pop() {
                                         match field {
                                             RadicalArg => {
@@ -1275,15 +1266,17 @@ impl MathField {
                                                 self.set_cursor((path, index));
                                             }
                                         }
-                                    } else {
-                                        message = Some(Message::Left);
+                                        response.request_redraw();
+                                        response.consume_event();
                                     }
                                 }
-                                SelectionSpan::Range(r) => self.set_cursor((path, r.start)),
+                                SelectionSpan::Range(r) => {
+                                    self.set_cursor((path, r.start));
+                                    response.request_redraw();
+                                    response.consume_event();
+                                }
                             }
                         }
-                        response.request_redraw();
-                        response.consume_event();
                     }
                     Key::Named(NamedKey::ArrowRight) if select => {
                         if ctx.modifiers.shift_key() {
@@ -1309,6 +1302,8 @@ impl MathField {
                                 }
                             };
                             self.set_selection((s.anchor, Cursor { path, index }));
+                            response.consume_event();
+                            response.request_redraw();
                         } else {
                             match span {
                                 SelectionSpan::Cursor(i) => {
@@ -1343,6 +1338,8 @@ impl MathField {
                                                 self.set_cursor((path, i + 1))
                                             }
                                         }
+                                        response.consume_event();
+                                        response.request_redraw();
                                     } else if let Some((index, field)) = path.pop() {
                                         match field {
                                             RadicalRoot => {
@@ -1355,15 +1352,17 @@ impl MathField {
                                                 self.set_cursor((path, index + 1));
                                             }
                                         }
-                                    } else {
-                                        message = Some(Message::Right);
+                                        response.consume_event();
+                                        response.request_redraw();
                                     }
                                 }
-                                SelectionSpan::Range(r) => self.set_cursor((path, r.end)),
+                                SelectionSpan::Range(r) => {
+                                    self.set_cursor((path, r.end));
+                                    response.consume_event();
+                                    response.request_redraw();
+                                }
                             }
                         }
-                        response.consume_event();
-                        response.request_redraw();
                     }
                     Key::Named(NamedKey::ArrowDown) if select => {
                         if ctx.modifiers.shift_key() {
@@ -1386,6 +1385,8 @@ impl MathField {
                                 anchor.floor() as usize
                             };
                             self.set_selection((s.anchor, Cursor { path, index }));
+                            response.request_redraw();
+                            response.consume_event();
                         } else {
                             let i = span.as_range().end;
 
@@ -1480,7 +1481,6 @@ impl MathField {
                                             }
                                         }
                                     } else {
-                                        message = Some(Message::Down);
                                         break 'stuff;
                                     }
                                 }
@@ -1490,10 +1490,10 @@ impl MathField {
                                         .walk(&path)
                                         .get_hovered(path, dvec2(x, -f64::INFINITY)),
                                 );
+                                response.request_redraw();
+                                response.consume_event();
                             }
                         }
-                        response.request_redraw();
-                        response.consume_event();
                     }
                     Key::Named(NamedKey::ArrowUp) if select => {
                         if ctx.modifiers.shift_key() {
@@ -1516,6 +1516,8 @@ impl MathField {
                                 anchor.ceil() as usize
                             };
                             self.set_selection((s.anchor, Cursor { path, index }));
+                            response.request_redraw();
+                            response.consume_event();
                         } else {
                             let i = span.as_range().end;
 
@@ -1615,7 +1617,6 @@ impl MathField {
                                             BigOpUpper => {}
                                         }
                                     } else {
-                                        message = Some(Message::Up);
                                         break 'stuff;
                                     }
                                 }
@@ -1625,179 +1626,181 @@ impl MathField {
                                         .walk(&path)
                                         .get_hovered(path, dvec2(x, f64::INFINITY)),
                                 );
+                                response.request_redraw();
+                                response.consume_event();
                             }
                         }
-                        response.request_redraw();
-                        response.consume_event();
                     }
-                    Key::Named(NamedKey::Backspace) if write => {
-                        match span {
-                            SelectionSpan::Cursor(mut i) => {
-                                let nodes = self.tree.walk_mut(&path);
-                                if i > 0 {
-                                    i -= 1;
-                                    match &mut nodes[i].1 {
-                                        Bracket { left, .. } => {
-                                            if left.is_none() {
-                                                let (_, _, inner) = nodes.remove_bracket(i);
-                                                let index = i + inner.len();
-                                                nodes.splice(i..i, inner.nodes);
-                                                self.tree_updated((path, index));
-                                            } else {
-                                                let rest = nodes.drain(i + 1..).collect::<Vec<_>>();
-                                                let (_, right, inner) = nodes.get_bracket_mut(i);
-                                                let index = inner.len();
-                                                inner.extend(rest);
-                                                *right = None;
-                                                path.push((i, BracketInner));
-                                                self.tree_updated((path, index));
-                                            }
-                                        }
-                                        Script {
-                                            upper: Some(upper), ..
-                                        } => {
-                                            path.push((i, ScriptUpper));
-                                            let index = upper.len();
-                                            self.set_cursor((path, index));
-                                        }
-                                        Script {
-                                            lower: Some(lower), ..
-                                        } => {
-                                            lower.pop();
-                                            if lower.is_empty() {
-                                                nodes.remove(i);
-                                                self.tree_updated((path, i));
-                                            } else {
-                                                self.tree_updated((path, i + 1));
-                                            }
-                                        }
-                                        Script { .. } => unreachable!(),
-                                        Radical { arg, .. } => {
-                                            path.push((i, RadicalArg));
-                                            let index = arg.len();
-                                            self.set_cursor((path, index));
-                                        }
-                                        Frac { den, .. } => {
-                                            path.push((i, FracDen));
-                                            let index = den.len();
-                                            self.set_cursor((path, index));
-                                        }
-                                        BigOp { upper, .. } => {
-                                            path.push((i, BigOpUpper));
-                                            let index = upper.len();
-                                            self.set_cursor((path, index));
-                                        }
-                                        Char { .. } => {
-                                            nodes.remove(i);
-                                            self.tree_updated((path, i));
-                                        }
-                                    }
-                                } else if let Some((index, field)) = path.pop() {
-                                    let nodes = self.tree.walk_mut(&path);
-                                    match field {
-                                        BracketInner => {
-                                            if let Bracket { left: None, .. } = &nodes[index].1 {
-                                                self.set_cursor((path, index));
-                                            } else {
-                                                let (_, _, inner) = nodes.remove_bracket(index);
-                                                nodes.splice(index..index, inner.nodes);
-                                                self.tree_updated((path, index));
-                                            }
-                                        }
-                                        ScriptLower => {
-                                            let (Some(lower), upper) = nodes.remove_script(index)
-                                            else {
-                                                unreachable!()
-                                            };
-                                            nodes.splice(
-                                                index..index,
-                                                lower.nodes.into_iter().chain(upper.map(|upper| {
-                                                    bd({
-                                                        Script {
-                                                            lower: None,
-                                                            upper: Some(upper),
-                                                        }
-                                                    })
-                                                })),
-                                            );
+                    Key::Named(NamedKey::Backspace) if write => match span {
+                        SelectionSpan::Cursor(mut i) => {
+                            let nodes = self.tree.walk_mut(&path);
+                            if i > 0 {
+                                i -= 1;
+                                match &mut nodes[i].1 {
+                                    Bracket { left, .. } => {
+                                        if left.is_none() {
+                                            let (_, _, inner) = nodes.remove_bracket(i);
+                                            let index = i + inner.len();
+                                            nodes.splice(i..i, inner.nodes);
+                                            self.tree_updated((path, index));
+                                        } else {
+                                            let rest = nodes.drain(i + 1..).collect::<Vec<_>>();
+                                            let (_, right, inner) = nodes.get_bracket_mut(i);
+                                            let index = inner.len();
+                                            inner.extend(rest);
+                                            *right = None;
+                                            path.push((i, BracketInner));
                                             self.tree_updated((path, index));
                                         }
-                                        ScriptUpper => {
-                                            let (lower, Some(upper)) = nodes.remove_script(index)
-                                            else {
-                                                unreachable!()
-                                            };
-                                            let i = if lower.is_some() { index + 1 } else { index };
-                                            nodes.splice(
-                                                index..index,
-                                                lower
-                                                    .map(|lower| {
-                                                        bd(Script {
-                                                            lower: Some(lower),
-                                                            upper: None,
-                                                        })
-                                                    })
-                                                    .into_iter()
-                                                    .chain(upper.nodes),
-                                            );
+                                    }
+                                    Script {
+                                        upper: Some(upper), ..
+                                    } => {
+                                        path.push((i, ScriptUpper));
+                                        let index = upper.len();
+                                        self.set_cursor((path, index));
+                                    }
+                                    Script {
+                                        lower: Some(lower), ..
+                                    } => {
+                                        lower.pop();
+                                        if lower.is_empty() {
+                                            nodes.remove(i);
                                             self.tree_updated((path, i));
-                                        }
-                                        RadicalRoot | RadicalArg => {
-                                            let (root, arg) = nodes.remove_radical(index);
-                                            let i = if field == RadicalRoot {
-                                                index
-                                            } else {
-                                                index + root.as_ref().map_or(0, |root| root.len())
-                                            };
-                                            nodes.splice(
-                                                index..index,
-                                                root.map(|root| root.nodes)
-                                                    .into_iter()
-                                                    .flatten()
-                                                    .chain(arg.nodes),
-                                            );
-                                            self.tree_updated((path, i));
-                                        }
-                                        FracNum | FracDen => {
-                                            let (num, den) = nodes.remove_frac(index);
-                                            let i = if field == FracNum {
-                                                index
-                                            } else {
-                                                index + num.len()
-                                            };
-                                            nodes.splice(
-                                                index..index,
-                                                num.nodes.into_iter().chain(den.nodes),
-                                            );
-                                            self.tree_updated((path, i));
-                                        }
-                                        BigOpLower | BigOpUpper => {
-                                            let (_, lower, upper) = nodes.remove_big_op(index);
-                                            let i = if field == BigOpLower {
-                                                index
-                                            } else {
-                                                index + lower.len()
-                                            };
-                                            nodes.splice(
-                                                index..index,
-                                                lower.nodes.into_iter().chain(upper.nodes),
-                                            );
-                                            self.tree_updated((path, i));
+                                        } else {
+                                            self.tree_updated((path, i + 1));
                                         }
                                     }
-                                } else if self.tree.is_empty() {
-                                    message = Some(Message::Remove);
+                                    Script { .. } => unreachable!(),
+                                    Radical { arg, .. } => {
+                                        path.push((i, RadicalArg));
+                                        let index = arg.len();
+                                        self.set_cursor((path, index));
+                                    }
+                                    Frac { den, .. } => {
+                                        path.push((i, FracDen));
+                                        let index = den.len();
+                                        self.set_cursor((path, index));
+                                    }
+                                    BigOp { upper, .. } => {
+                                        path.push((i, BigOpUpper));
+                                        let index = upper.len();
+                                        self.set_cursor((path, index));
+                                    }
+                                    Char { .. } => {
+                                        nodes.remove(i);
+                                        self.tree_updated((path, i));
+                                    }
                                 }
-                            }
-                            SelectionSpan::Range(r) => {
-                                self.tree.walk_mut(&path).drain(r.clone());
-                                self.tree_updated((path, r.start));
+                                response.request_redraw();
+                                response.consume_event();
+                            } else if let Some((index, field)) = path.pop() {
+                                let nodes = self.tree.walk_mut(&path);
+                                match field {
+                                    BracketInner => {
+                                        if let Bracket { left: None, .. } = &nodes[index].1 {
+                                            self.set_cursor((path, index));
+                                        } else {
+                                            let (_, _, inner) = nodes.remove_bracket(index);
+                                            nodes.splice(index..index, inner.nodes);
+                                            self.tree_updated((path, index));
+                                        }
+                                    }
+                                    ScriptLower => {
+                                        let (Some(lower), upper) = nodes.remove_script(index)
+                                        else {
+                                            unreachable!()
+                                        };
+                                        nodes.splice(
+                                            index..index,
+                                            lower.nodes.into_iter().chain(upper.map(|upper| {
+                                                bd({
+                                                    Script {
+                                                        lower: None,
+                                                        upper: Some(upper),
+                                                    }
+                                                })
+                                            })),
+                                        );
+                                        self.tree_updated((path, index));
+                                    }
+                                    ScriptUpper => {
+                                        let (lower, Some(upper)) = nodes.remove_script(index)
+                                        else {
+                                            unreachable!()
+                                        };
+                                        let i = if lower.is_some() { index + 1 } else { index };
+                                        nodes.splice(
+                                            index..index,
+                                            lower
+                                                .map(|lower| {
+                                                    bd(Script {
+                                                        lower: Some(lower),
+                                                        upper: None,
+                                                    })
+                                                })
+                                                .into_iter()
+                                                .chain(upper.nodes),
+                                        );
+                                        self.tree_updated((path, i));
+                                    }
+                                    RadicalRoot | RadicalArg => {
+                                        let (root, arg) = nodes.remove_radical(index);
+                                        let i = if field == RadicalRoot {
+                                            index
+                                        } else {
+                                            index + root.as_ref().map_or(0, |root| root.len())
+                                        };
+                                        nodes.splice(
+                                            index..index,
+                                            root.map(|root| root.nodes)
+                                                .into_iter()
+                                                .flatten()
+                                                .chain(arg.nodes),
+                                        );
+                                        self.tree_updated((path, i));
+                                    }
+                                    FracNum | FracDen => {
+                                        let (num, den) = nodes.remove_frac(index);
+                                        let i = if field == FracNum {
+                                            index
+                                        } else {
+                                            index + num.len()
+                                        };
+                                        nodes.splice(
+                                            index..index,
+                                            num.nodes.into_iter().chain(den.nodes),
+                                        );
+                                        self.tree_updated((path, i));
+                                    }
+                                    BigOpLower | BigOpUpper => {
+                                        let (_, lower, upper) = nodes.remove_big_op(index);
+                                        let i = if field == BigOpLower {
+                                            index
+                                        } else {
+                                            index + lower.len()
+                                        };
+                                        nodes.splice(
+                                            index..index,
+                                            lower.nodes.into_iter().chain(upper.nodes),
+                                        );
+                                        self.tree_updated((path, i));
+                                    }
+                                }
+                                response.request_redraw();
+                                response.consume_event();
+                            } else if !self.tree.is_empty() {
+                                // still consume to prevent propagating backspace
+                                response.consume_event();
                             }
                         }
-
-                        response.consume_event();
-                        response.request_redraw();
-                    }
+                        SelectionSpan::Range(r) => {
+                            self.tree.walk_mut(&path).drain(r.clone());
+                            self.tree_updated((path, r.start));
+                            response.request_redraw();
+                            response.consume_event();
+                        }
+                    },
                     Key::Named(NamedKey::Delete) if write => {
                         match span {
                             SelectionSpan::Cursor(i) => {
@@ -2002,8 +2005,8 @@ impl MathField {
                                     self.tree_updated((path, r.start));
                                     response.request_redraw();
                                 }
+                                response.consume_event();
                             }
-                            response.consume_event();
                         }
                         Some('v' | 'V')
                             if write
@@ -2364,13 +2367,10 @@ impl MathField {
             }
         }
 
-        if self.tree_changed {
-            assert_eq!(message, None);
-            self.tree_changed = false;
-            message = Some(Message::ContentsChanged { user_driven: true });
-        }
+        let contents_changed =
+            set(&mut self.tree_changed, false).then_some(ContentsChanged { user_driven: true });
 
-        (response, message)
+        (response, contents_changed)
     }
 
     pub fn to_latex(&self) -> latex_tree::Nodes<'static> {

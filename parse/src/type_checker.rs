@@ -759,7 +759,7 @@ impl TypeChecker {
                         if checked_args.len() == 2
                             && let Some([a, b]) = checked_args.first_chunk_mut()
                             && [B::Point2, B::Point3].contains(&a.ty.base())
-                            && b.ty.base() == B::Number
+                            && matches!(b.ty.base(), B::Number | B::Empty)
                         {
                             mem::swap(a, b);
                         }

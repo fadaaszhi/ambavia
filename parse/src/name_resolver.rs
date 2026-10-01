@@ -1086,7 +1086,7 @@ fn resolve_relation(
 }
 
 pub fn resolve_names<'a>(
-    list: &TiSlice<ExpressionIndex, impl Borrow<ExpressionListEntry<'a>>>,
+    list: &TiSlice<ExpressionIndex, ExpressionListEntry<'a>>,
     builtin_constants: &[&str],
     properties: &TiSlice<PropertyIndex, &'a ast::Expression>,
     use_v1_9_scoping_rules: bool,

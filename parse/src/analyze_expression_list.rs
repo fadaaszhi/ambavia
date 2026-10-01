@@ -84,7 +84,7 @@ pub struct AnalysisResult {
 }
 
 pub fn analyze_expression_list<'a>(
-    list: &TiSlice<ExpressionIndex, impl Borrow<ExpressionListEntry<'a>>>,
+    list: &TiSlice<ExpressionIndex, ExpressionListEntry<'a>>,
     builtin_constants: &[&str],
     properties: &TiSlice<PropertyIndex, &'a ast::Expression>,
     use_v1_9_scoping_rules: bool,

@@ -5,7 +5,7 @@ use parse::{
     analyze_expression_list::{AnalysisError, ExpressionResult, analyze_expression_list},
     ast_parser::parse_statement,
     latex_parser::parse_latex,
-    name_resolver::{Domain, ExpressionListEntry},
+    name_resolver::ExpressionListEntry,
     op::{OpError, OpName},
     type_checker::{Type, TypeError},
 };
@@ -142,7 +142,6 @@ fn assert_expression_eq(source: &str, value: Value) {
     let analysis = analyze_expression_list(
         [ExpressionListEntry {
             expression: &statement,
-            parametric_domain: Domain::ZERO_TO_ONE,
             slider: None,
         }]
         .as_slice()
@@ -250,7 +249,6 @@ fn assert_type_error(source: &str, error: TypeError) {
     let analysis = analyze_expression_list(
         [ExpressionListEntry {
             expression: &statement,
-            parametric_domain: Domain::ZERO_TO_ONE,
             slider: None,
         }]
         .as_slice()

@@ -960,19 +960,6 @@ impl Display for NameError {
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq)]
-pub struct Domain<T> {
-    pub min: T,
-    pub max: T,
-}
-
-impl Domain<&'static ast::Expression> {
-    pub const ZERO_TO_ONE: Self = Domain {
-        min: &ast::Expression::Number(0.0),
-        max: &ast::Expression::Number(1.0),
-    };
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct Slider<T> {
     pub min: Option<T>,
@@ -1003,7 +990,6 @@ impl<T> Slider<T> {
 #[derive(Debug, PartialEq)]
 pub struct ExpressionListEntry<'a> {
     pub expression: &'a Statement,
-    pub parametric_domain: Domain<&'a ast::Expression>,
     // TODO design better types so that `slider` can only be
     // provided when `expression` is `Statement::Assignment`
     pub slider: Option<Slider<&'a ast::Expression>>,
@@ -1025,7 +1011,6 @@ pub enum ExpressionResult {
         allowed_kinds: PlotKinds,
         value: Id,
         parameters: Vec<Id>,
-        domain: Option<Domain<Result<Id, NameError>>>,
     },
 }
 
@@ -1045,7 +1030,7 @@ impl<T> ToVec for Option<T> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Output {
     pub assignments: Vec<Assignment>,
     pub results: TiVec<ExpressionIndex, ExpressionResult>,
@@ -1089,7 +1074,6 @@ fn resolve_relation(
                         resolver.resolve_variable("x").unwrap(),
                         resolver.resolve_variable("y").unwrap(),
                     ],
-                    domain: None,
                 }
             } else if freevars.is_empty() {
                 ExpressionResult::None
@@ -1144,7 +1128,7 @@ pub fn resolve_names<'a>(
             assert_eq!(resolver.cycle_detector.stack, Vec::<&str>::new());
             assert!(resolver.cycle_detector.counts.values().all(|&c| c == 0));
 
-            let mut result = match e.expression {
+            match e.expression {
                 Statement::Assignment { name, value } => {
                     let (id, slider_id, deps) = if !undefinable_names.contains(name.as_str())
                         && let Some((id, slider_id, deps)) =
@@ -1191,7 +1175,6 @@ pub fn resolve_names<'a>(
                                         .first()
                                         .map(|v| resolver.freevars[v])
                                         .to_vec(),
-                                    domain: None,
                                 }
                             } else if freevars.len() == 1
                                 && freevars != [name]
@@ -1209,7 +1192,6 @@ pub fn resolve_names<'a>(
                                         .first()
                                         .map(|v| resolver.freevars[v])
                                         .to_vec(),
-                                    domain: None,
                                 }
                             } else if undefinable_names.contains(name.as_str())
                                 && matches!(freevars[..], [] | ["x"] | ["y"] | ["x", "y"])
@@ -1231,7 +1213,6 @@ pub fn resolve_names<'a>(
                                         resolver.resolve_variable("x").unwrap(),
                                         resolver.resolve_variable("y").unwrap(),
                                     ],
-                                    domain: None,
                                 }
                             } else if freevars.is_empty() {
                                 ExpressionResult::Value(id)
@@ -1338,7 +1319,6 @@ pub fn resolve_names<'a>(
                                         .first()
                                         .map(|v| resolver.freevars[v])
                                         .to_vec(),
-                                    domain: None,
                                 },
                                 _ => ExpressionResult::Err(NameError::undefined(freevars)),
                             },
@@ -1382,13 +1362,11 @@ pub fn resolve_names<'a>(
                                 allowed_kinds: PlotKinds::NORMAL,
                                 value: id,
                                 parameters: vec![resolver.freevars["x"]],
-                                domain: None,
                             },
                             [v] if v != "y" => ExpressionResult::Plot {
                                 allowed_kinds: PlotKinds::PARAMETRIC,
                                 value: id,
                                 parameters: vec![resolver.freevars[v]],
-                                domain: None,
                             },
                             ["y"] => ExpressionResult::Err(NameError::ExpressionWithFreeVariablY),
                             _ => ExpressionResult::Err(NameError::undefined(freevars)),
@@ -1396,41 +1374,7 @@ pub fn resolve_names<'a>(
                         Err(e) => ExpressionResult::Err(e),
                     }
                 }
-            };
-
-            match &mut result {
-                ExpressionResult::Plot {
-                    allowed_kinds,
-                    domain,
-                    ..
-                } if allowed_kinds.contains(PlotKinds::PARAMETRIC) => {
-                    let mut f = |e, name| {
-                        let (value, deps) = resolver.resolve_expression_with_dependencies(e, None);
-                        value.and_then(|value| {
-                            let freevars = deps
-                                .keys()
-                                .filter(|&name| resolver.freevars.contains_key(name))
-                                .map(ToString::to_string)
-                                .collect::<Vec<_>>();
-                            if freevars.is_empty() {
-                                let level = deps.level();
-                                assert_eq!(level, Level(0));
-                                let id = resolver.push_assignment(name, level, value);
-                                Ok(id)
-                            } else {
-                                Err(NameError::undefined(freevars))
-                            }
-                        })
-                    };
-                    *domain = Some(Domain {
-                        min: f(e.parametric_domain.min, "<parametric min>"),
-                        max: f(e.parametric_domain.max, "<parametric max>"),
-                    });
-                }
-                _ => {}
             }
-
-            result
         })
         .collect();
 
@@ -1595,19 +1539,10 @@ mod tests {
                     allowed_kinds: _,
                     value,
                     parameters,
-                    domain,
                 } => {
                     f(value);
                     for p in parameters {
                         f(p);
-                    }
-                    if let Some(Domain { min, max }) = domain {
-                        if let Ok(id) = min {
-                            f(id);
-                        }
-                        if let Ok(id) = max {
-                            f(id);
-                        }
                     }
                 }
             }
@@ -1624,17 +1559,15 @@ mod tests {
 
     /// Rename `Id`s to be in a canonical order so that tests don't fail just
     /// because `Id`s are different even if they represent the same result
-    fn canonicalize_ids_with_builtins(
-        (mut assignments, mut results, mut freevars, mut builtin_constants): ResolveResultWithBuiltins,
-    ) -> ResolveResultWithBuiltins {
+    fn canonicalize_ids_full(mut o: Output) -> Output {
         let mut old_to_new = HashMap::new();
         let f = &mut |id: &mut Id| {
             let next = Id(old_to_new.len());
             *id = *old_to_new.entry(*id).or_insert(next);
         };
 
-        canonicalize_assignment_ids(&mut assignments, f);
-        for r in &mut results {
+        canonicalize_assignment_ids(&mut o.assignments, f);
+        for r in &mut o.results {
             r.canonicalize_ids(f);
         }
 
@@ -1643,10 +1576,39 @@ mod tests {
             kvs.sort_by_key(|(k, _)| *k);
             kvs.iter_mut().for_each(|(_, v)| f(v));
         };
-        g(&mut freevars);
-        g(&mut builtin_constants);
+        g(&mut o.freevars);
+        g(&mut o.builtin_constants);
 
-        (assignments, results, freevars, builtin_constants)
+        for p in &mut o.properties {
+            if let Ok(p) = p {
+                f(p);
+            }
+        }
+
+        o
+    }
+
+    /// Rename `Id`s to be in a canonical order so that tests don't fail just
+    /// because `Id`s are different even if they represent the same result
+    fn canonicalize_ids_with_builtins(
+        (assignments, results, freevars, builtin_constants): ResolveResultWithBuiltins,
+    ) -> ResolveResultWithBuiltins {
+        let o = Output {
+            assignments,
+            results: results.into(),
+            freevars,
+            builtin_constants,
+            properties: ti_vec![],
+        };
+
+        let o = canonicalize_ids_full(o);
+
+        (
+            o.assignments,
+            o.results.into(),
+            o.freevars,
+            o.builtin_constants,
+        )
     }
 
     /// Rename `Id`s to be in a canonical order so that tests don't fail just
@@ -1686,10 +1648,6 @@ mod tests {
             .iter()
             .map(|e| ExpressionListEntry {
                 expression: e,
-                parametric_domain: Domain {
-                    min: &ANum(0.0),
-                    max: &ANum(1.0),
-                },
                 slider: None,
             })
             .collect::<TiVec<_, _>>();
@@ -1705,10 +1663,6 @@ mod tests {
             .iter()
             .map(|e| ExpressionListEntry {
                 expression: e,
-                parametric_domain: Domain {
-                    min: &ANum(0.0),
-                    max: &ANum(1.0),
-                },
                 slider: None,
             })
             .collect::<TiVec<_, _>>();
@@ -1726,10 +1680,6 @@ mod tests {
             .iter()
             .map(|e| ExpressionListEntry {
                 expression: e,
-                parametric_domain: Domain {
-                    min: &ANum(0.0),
-                    max: &ANum(1.0),
-                },
                 slider: None,
             })
             .collect::<TiVec<_, _>>();
@@ -1746,6 +1696,10 @@ mod tests {
             canonicalize_ids_with_builtins(a),
             canonicalize_ids_with_builtins(b)
         );
+    }
+
+    fn assert_eq_full(a: Output, b: Output) {
+        assert_eq!(canonicalize_ids_full(a), canonicalize_ids_full(b));
     }
 
     #[test]
@@ -2578,16 +2532,6 @@ mod tests {
                         name: "b".into(),
                         value: Expression::Identifier(Id(0)),
                     },
-                    Assignment {
-                        id: Id(16),
-                        name: "<parametric min>".into(),
-                        value: Expression::Number(0.0),
-                    },
-                    Assignment {
-                        id: Id(17),
-                        name: "<parametric max>".into(),
-                        value: Expression::Number(1.0),
-                    },
                     // a3 = 5
                     Assignment {
                         id: Id(2),
@@ -2606,16 +2550,6 @@ mod tests {
                         id: Id(5),
                         name: "d".into(),
                         value: Expression::Identifier(Id(4)),
-                    },
-                    Assignment {
-                        id: Id(18),
-                        name: "<parametric min>".into(),
-                        value: Expression::Number(0.0),
-                    },
-                    Assignment {
-                        id: Id(19),
-                        name: "<parametric max>".into(),
-                        value: Expression::Number(1.0),
                     },
                     // with a1 = 6
                     Assignment {
@@ -2689,10 +2623,6 @@ mod tests {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(1),
                         parameters: vec![Id(0)],
-                        domain: Some(Domain {
-                            min: Ok(Id(16)),
-                            max: Ok(Id(17)),
-                        }),
                     },
                     ExpressionResult::Value(Id(3)),
                     ExpressionResult::Value(Id(2)),
@@ -2700,10 +2630,6 @@ mod tests {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(5),
                         parameters: vec![Id(4)],
-                        domain: Some(Domain {
-                            min: Ok(Id(18)),
-                            max: Ok(Id(19)),
-                        }),
                     },
                     ExpressionResult::Value(Id(15)),
                 ],
@@ -2766,16 +2692,6 @@ mod tests {
                         name: "b".into(),
                         value: Expression::Identifier(Id(0)),
                     },
-                    Assignment {
-                        id: Id(15),
-                        name: "<parametric min>".into(),
-                        value: Expression::Number(0.0),
-                    },
-                    Assignment {
-                        id: Id(16),
-                        name: "<parametric max>".into(),
-                        value: Expression::Number(1.0),
-                    },
                     // a3 = 5
                     Assignment {
                         id: Id(2),
@@ -2794,16 +2710,6 @@ mod tests {
                         id: Id(5),
                         name: "d".into(),
                         value: Expression::Identifier(Id(4)),
-                    },
-                    Assignment {
-                        id: Id(17),
-                        name: "<parametric min>".into(),
-                        value: Expression::Number(0.0),
-                    },
-                    Assignment {
-                        id: Id(18),
-                        name: "<parametric max>".into(),
-                        value: Expression::Number(1.0),
                     },
                     // with a1 = 6
                     Assignment {
@@ -2871,10 +2777,6 @@ mod tests {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(1),
                         parameters: vec![Id(0)],
-                        domain: Some(Domain {
-                            min: Ok(Id(15)),
-                            max: Ok(Id(16)),
-                        }),
                     },
                     ExpressionResult::Value(Id(3)),
                     ExpressionResult::Value(Id(2)),
@@ -2882,10 +2784,6 @@ mod tests {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(5),
                         parameters: vec![Id(4)],
-                        domain: Some(Domain {
-                            min: Ok(Id(17)),
-                            max: Ok(Id(18)),
-                        }),
                     },
                     ExpressionResult::Value(Id(14)),
                 ],
@@ -2952,16 +2850,6 @@ mod tests {
                         name: "b".into(),
                         value: Expression::Identifier(Id(4)),
                     },
-                    Assignment {
-                        id: Id(9),
-                        name: "<parametric min>".into(),
-                        value: Expression::Number(0.0),
-                    },
-                    Assignment {
-                        id: Id(10),
-                        name: "<parametric max>".into(),
-                        value: Expression::Number(1.0),
-                    },
                     // a = 1
                     Assignment {
                         id: Id(6),
@@ -2992,16 +2880,11 @@ mod tests {
                         allowed_kinds: PlotKinds::NORMAL,
                         value: Id(3),
                         parameters: vec![Id(0)],
-                        domain: None,
                     },
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(5),
                         parameters: vec![Id(4)],
-                        domain: Some(Domain {
-                            min: Ok(Id(9)),
-                            max: Ok(Id(10)),
-                        }),
                     },
                     ExpressionResult::Value(Id(8)),
                 ],
@@ -3071,16 +2954,6 @@ mod tests {
                         name: "b".into(),
                         value: Expression::Identifier(Id(4)),
                     },
-                    Assignment {
-                        id: Id(10),
-                        name: "<parametric min>".into(),
-                        value: Expression::Number(0.0),
-                    },
-                    Assignment {
-                        id: Id(11),
-                        name: "<parametric max>".into(),
-                        value: Expression::Number(1.0),
-                    },
                     // with a = 2
                     Assignment {
                         id: Id(6),
@@ -3117,16 +2990,11 @@ mod tests {
                         allowed_kinds: PlotKinds::NORMAL,
                         value: Id(3),
                         parameters: vec![Id(0)],
-                        domain: None,
                     },
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(5),
                         parameters: vec![Id(4)],
-                        domain: Some(Domain {
-                            min: Ok(Id(10)),
-                            max: Ok(Id(11)),
-                        }),
                     },
                     ExpressionResult::Value(Id(9)),
                 ],
@@ -3216,16 +3084,6 @@ mod tests {
                         id: Id(5),
                         name: "b".into(),
                         value: Expression::Identifier(Id(4)),
-                    },
-                    Assignment {
-                        id: Id(16),
-                        name: "<parametric min>".into(),
-                        value: Expression::Number(0.0),
-                    },
-                    Assignment {
-                        id: Id(17),
-                        name: "<parametric max>".into(),
-                        value: Expression::Number(1.0),
                     },
                     // a = <anonymous function argument>
                     Assignment {
@@ -3329,22 +3187,16 @@ mod tests {
                         allowed_kinds: PlotKinds::NORMAL,
                         value: Id(3),
                         parameters: vec![Id(0)],
-                        domain: None,
                     },
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(5),
                         parameters: vec![Id(4)],
-                        domain: Some(Domain {
-                            min: Ok(Id(16)),
-                            max: Ok(Id(17)),
-                        }),
                     },
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL,
                         value: Id(10),
                         parameters: vec![Id(0)],
-                        domain: None,
                     },
                     ExpressionResult::Value(Id(15)),
                 ],
@@ -3447,13 +3299,11 @@ mod tests {
                         allowed_kinds: PlotKinds::NORMAL,
                         value: Id(2),
                         parameters: vec![Id(0)],
-                        domain: None,
                     },
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL,
                         value: Id(5),
                         parameters: vec![Id(0)],
-                        domain: None,
                     },
                     ExpressionResult::Value(Id(9)),
                 ],
@@ -3661,17 +3511,6 @@ mod tests {
                             ],
                         },
                     },
-                    // parametric bounds for q=jj
-                    Assignment {
-                        id: Id(11),
-                        name: "<parametric min>".into(),
-                        value: Expression::Number(0.0),
-                    },
-                    Assignment {
-                        id: Id(12),
-                        name: "<parametric max>".into(),
-                        value: Expression::Number(1.0),
-                    },
                 ],
                 vec![
                     ExpressionResult::Value(Id(6)),
@@ -3681,10 +3520,6 @@ mod tests {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(8),
                         parameters: vec![Id(7)],
-                        domain: Some(Domain {
-                            min: Ok(Id(11)),
-                            max: Ok(Id(12)),
-                        }),
                     },
                     ExpressionResult::Value(Id(4)),
                 ],
@@ -3988,16 +3823,6 @@ mod tests {
                             ],
                         },
                     },
-                    Assignment {
-                        id: Id(18),
-                        name: "<parametric min>".into(),
-                        value: Expression::Number(0.0),
-                    },
-                    Assignment {
-                        id: Id(19),
-                        name: "<parametric max>".into(),
-                        value: Expression::Number(1.0),
-                    },
                     // freevar i: 15
                     // B = i^2
                     Assignment {
@@ -4007,16 +3832,6 @@ mod tests {
                             operation: OpName::Pow,
                             args: vec![Expression::Identifier(Id(15)), Expression::Number(2.0)],
                         },
-                    },
-                    Assignment {
-                        id: Id(20),
-                        name: "<parametric min>".into(),
-                        value: Expression::Number(0.0),
-                    },
-                    Assignment {
-                        id: Id(21),
-                        name: "<parametric max>".into(),
-                        value: Expression::Number(1.0),
                     },
                     // F = i + j
                     Assignment {
@@ -4038,19 +3853,11 @@ mod tests {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(14),
                         parameters: vec![Id(12)],
-                        domain: Some(Domain {
-                            min: Ok(Id(18)),
-                            max: Ok(Id(19)),
-                        }),
                     },
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(16),
                         parameters: vec![Id(15)],
-                        domain: Some(Domain {
-                            min: Ok(Id(20)),
-                            max: Ok(Id(21)),
-                        }),
                     },
                     ExpressionResult::Err(NameError::undefined(["i", "j"])),
                     ExpressionResult::Value(Id(6)),
@@ -4105,16 +3912,6 @@ mod tests {
                             ],
                         },
                     },
-                    Assignment {
-                        id: Id(6),
-                        name: "<parametric min>".into(),
-                        value: Expression::Number(0.0),
-                    },
-                    Assignment {
-                        id: Id(7),
-                        name: "<parametric max>".into(),
-                        value: Expression::Number(1.0),
-                    },
                     // freevar a: 4
                     // b = a
                     Assignment {
@@ -4122,35 +3919,17 @@ mod tests {
                         name: "b".into(),
                         value: Expression::Identifier(Id(4)),
                     },
-                    Assignment {
-                        id: Id(8),
-                        name: "<parametric min>".into(),
-                        value: Expression::Number(0.0),
-                    },
-                    Assignment {
-                        id: Id(9),
-                        name: "<parametric max>".into(),
-                        value: Expression::Number(1.0),
-                    },
                 ],
                 vec![
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::PARAMETRIC,
                         value: Id(3),
                         parameters: vec![Id(2)],
-                        domain: Some(Domain {
-                            min: Ok(Id(6)),
-                            max: Ok(Id(7)),
-                        }),
                     },
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(5),
                         parameters: vec![Id(4)],
-                        domain: Some(Domain {
-                            min: Ok(Id(8)),
-                            max: Ok(Id(9)),
-                        }),
                     },
                 ],
                 HashMap::from([("c".into(), Id(2)), ("a".into(), Id(4))]),
@@ -4188,31 +3967,11 @@ mod tests {
                         name: "a".into(),
                         value: Expression::Identifier(Id(1)),
                     },
-                    Assignment {
-                        id: Id(4),
-                        name: "<parametric min>".into(),
-                        value: Expression::Number(0.0),
-                    },
-                    Assignment {
-                        id: Id(5),
-                        name: "<parametric max>".into(),
-                        value: Expression::Number(1.0),
-                    },
                     // a
                     Assignment {
                         id: Id(3),
                         name: "<anonymous>".into(),
                         value: Expression::Identifier(Id(2)),
-                    },
-                    Assignment {
-                        id: Id(6),
-                        name: "<parametric min>".into(),
-                        value: Expression::Number(0.0),
-                    },
-                    Assignment {
-                        id: Id(7),
-                        name: "<parametric max>".into(),
-                        value: Expression::Number(1.0),
                     },
                 ],
                 vec![
@@ -4220,19 +3979,11 @@ mod tests {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
                         value: Id(2),
                         parameters: vec![Id(1)],
-                        domain: Some(Domain {
-                            min: Ok(Id(4)),
-                            max: Ok(Id(5)),
-                        }),
                     },
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::PARAMETRIC,
                         value: Id(3),
                         parameters: vec![Id(1)],
-                        domain: Some(Domain {
-                            min: Ok(Id(6)),
-                            max: Ok(Id(7)),
-                        }),
                     },
                 ],
                 HashMap::from([("c".into(), Id(1))]),
@@ -4661,7 +4412,6 @@ mod tests {
                         allowed_kinds: PlotKinds::NORMAL,
                         value: Id(4),
                         parameters: vec![Id(0)],
-                        domain: None,
                     },
                     ExpressionResult::Value(Id(2)),
                     ExpressionResult::Value(Id(3)),
@@ -4684,13 +4434,6 @@ mod tests {
                         operation: OpName::Point,
                         args: vec![id("t"), id("t")],
                     }),
-                    parametric_domain: Domain {
-                        min: &id("a"),
-                        max: &AOp {
-                            operation: OpName::Add,
-                            args: vec![id("a"), id("b")],
-                        },
-                    },
                     slider: None,
                 },
                 // a = 5
@@ -4699,20 +4442,29 @@ mod tests {
                         name: "a".into(),
                         value: ANum(5.0),
                     },
-                    parametric_domain: Domain::ZERO_TO_ONE,
                     slider: None,
                 },
             ]
             .as_slice()
             .as_ref(),
             &[],
-            Default::default(),
+            [
+                // min
+                &id("a"),
+                // max
+                &AOp {
+                    operation: OpName::Add,
+                    args: vec![id("a"), id("b")],
+                },
+            ]
+            .as_slice()
+            .as_ref(),
             false,
         );
-        assert_eq(
-            (a.assignments, a.results.into(), a.freevars),
-            (
-                vec![
+        assert_eq_full(
+            a,
+            Output {
+                assignments: vec![
                     // (t, t)
                     Assignment {
                         id: ids.new_id("1"),
@@ -4734,26 +4486,24 @@ mod tests {
                     // min = a
                     Assignment {
                         id: ids.new_id("min"),
-                        name: "<parametric min>".into(),
+                        name: "<property>".into(),
                         value: Expression::Identifier(ids["a"]),
                     },
                 ],
-                vec![
+                results: ti_vec![
                     // (t, t); a < t < b undefined
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::PARAMETRIC,
                         value: ids["1"],
                         parameters: vec![ids["t"]],
-                        domain: Some(Domain {
-                            min: Ok(ids["min"]),
-                            max: Err(NameError::Undefined(vec!["b".into()])),
-                        }),
                     },
                     // a
                     ExpressionResult::Value(ids["a"]),
                 ],
-                HashMap::from([("t".into(), ids["t"]), ("b".into(), ids.new_id("b"))]),
-            ),
+                freevars: HashMap::from([("t".into(), ids["t"]), ("b".into(), ids.new_id("b"))]),
+                builtin_constants: Default::default(),
+                properties: ti_vec![Ok(ids["min"]), Err(NameError::Undefined(vec!["b".into()])),],
+            },
         );
     }
 
@@ -4769,7 +4519,6 @@ mod tests {
                         name: "a".into(),
                         value: ANum(4.0),
                     },
-                    parametric_domain: Domain::ZERO_TO_ONE,
                     slider: Some(Slider {
                         min: Some(&id("b")),
                         max: None,
@@ -4782,7 +4531,6 @@ mod tests {
                         name: "b".into(),
                         value: ANum(3.0),
                     },
-                    parametric_domain: Domain::ZERO_TO_ONE,
                     slider: None,
                 },
                 // a with b = 5
@@ -4791,13 +4539,11 @@ mod tests {
                         body: bx(id("a")),
                         substitutions: vec![("b".into(), ANum(5.0))],
                     }),
-                    parametric_domain: Domain::ZERO_TO_ONE,
                     slider: None,
                 },
                 // c
                 ExpressionListEntry {
                     expression: &Statement::Expression(id("c")),
-                    parametric_domain: Domain::ZERO_TO_ONE,
                     slider: None,
                 },
                 // c with d = 6
@@ -4806,7 +4552,6 @@ mod tests {
                         body: bx(id("c")),
                         substitutions: vec![("d".into(), ANum(6.0))],
                     }),
-                    parametric_domain: Domain::ZERO_TO_ONE,
                     slider: None,
                 },
                 // c = 1; min = none, max = d, step = none
@@ -4815,7 +4560,6 @@ mod tests {
                         name: "c".into(),
                         value: ANum(1.0),
                     },
-                    parametric_domain: Domain::ZERO_TO_ONE,
                     slider: Some(Slider {
                         min: None,
                         max: Some(&id("d")),
@@ -4828,7 +4572,6 @@ mod tests {
                         name: "d".into(),
                         value: ANum(2.0),
                     },
-                    parametric_domain: Domain::ZERO_TO_ONE,
                     slider: Some(Slider {
                         min: None,
                         max: Some(&id("c")),
@@ -4841,7 +4584,6 @@ mod tests {
                         name: "e".into(),
                         value: ANum(6.0),
                     },
-                    parametric_domain: Domain::ZERO_TO_ONE,
                     slider: Some(Slider {
                         min: None,
                         max: Some(&id("f")),
@@ -4854,7 +4596,6 @@ mod tests {
                         body: bx(id("e")),
                         substitutions: vec![("f".into(), ANum(5.0))],
                     }),
-                    parametric_domain: Domain::ZERO_TO_ONE,
                     slider: None,
                 },
             ]
@@ -5246,21 +4987,18 @@ mod tests {
                         allowed_kinds: PlotKinds::IMPLICIT,
                         value: ids["pi - x"],
                         parameters: vec![ids["x"], ids.new_id("y")],
-                        domain: None,
                     },
                     // e = x
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::IMPLICIT,
                         value: ids["e - x"],
                         parameters: vec![ids["x"], ids["y"]],
-                        domain: None,
                     },
                     // d = x
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL,
                         value: ids["d"],
                         parameters: vec![ids["x"]],
-                        domain: None,
                     },
                     // c = e
                     ExpressionResult::Value(ids["c"]),
@@ -5269,7 +5007,6 @@ mod tests {
                         allowed_kinds: PlotKinds::NORMAL,
                         value: ids["f(e) plot"],
                         parameters: vec![ids["<anonymous function argument>"]],
-                        domain: None,
                     },
                     // f(3)
                     ExpressionResult::Value(ids["f(3)"]),

@@ -20,7 +20,7 @@ use crate::state;
 use crate::ui::{AnimatedValue, Button, ClickDragTracker, Color, PRIMARY_COLOR, rgb};
 use crate::utility::FiniteExt;
 use crate::{
-    graph::{Geometry, GeometryKind},
+    graph::{Geometry, GeometryKind, PlotKind as GraphPlotKind},
     math_field::{ContentsChanged, Cursor, Interactiveness, MathField, UserSelection},
     ui::{Bounds, Context, CursorMode, Event, Response},
     utility::{max, mix, set, union, unmix},
@@ -36,9 +36,7 @@ use parse::{
     ast_parser::{parse_standalone_expression, parse_statement},
     latex_parser::parse_latex,
     latex_tree::{self, Bracket, ToString},
-    name_resolver::{
-        Domain, ExpressionIndex, ExpressionListEntry, PropertyIndex, Slider as NrSlider,
-    },
+    name_resolver::{ExpressionIndex, ExpressionListEntry, PropertyIndex, Slider as NrSlider},
     type_checker::Type,
 };
 
@@ -2087,7 +2085,10 @@ struct Slider {
     fake_field_value: f64,
 }
 
-type ParametricDomain = Domain<(InlineField, Result<parse::ast::Expression, String>)>;
+struct ParametricDomain {
+    min: (InlineField, Result<parse::ast::Expression, String>),
+    max: (InlineField, Result<parse::ast::Expression, String>),
+}
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub enum LineStyle {
@@ -3724,7 +3725,7 @@ impl Default for Expression {
                 fake_field: Default::default(),
                 fake_field_value: 0.0,
             },
-            parametric_domain: Domain {
+            parametric_domain: ParametricDomain {
                 min: create_with_placeholder(PARAMETRIC_DOMAIN_MIN_DEFAULT),
                 max: create_with_placeholder(PARAMETRIC_DOMAIN_MAX_DEFAULT),
             },
@@ -4993,6 +4994,8 @@ impl ExpressionList {
                     let mut list: TiVec<ExpressionIndex, _> = ti_vec![];
                     let mut properties: TiVec<PropertyIndex, _> = ti_vec![];
                     struct ExpressionProperties {
+                        parametric_min: Option<PropertyIndex>,
+                        parametric_max: Option<PropertyIndex>,
                         line_width: Option<PropertyIndex>,
                         line_opacity: Option<PropertyIndex>,
                         point_size: Option<PropertyIndex>,
@@ -5023,6 +5026,8 @@ impl ExpressionList {
                             }
                         }
                         oi_to_pi.push(ExpressionProperties {
+                            parametric_min: push(&mut properties, &mut e.parametric_domain.min),
+                            parametric_max: push(&mut properties, &mut e.parametric_domain.max),
                             line_width: push(&mut properties, &mut e.style.line.width),
                             line_opacity: push(&mut properties, &mut e.style.line.opacity),
                             point_size: push(&mut properties, &mut e.style.point.size),
@@ -5082,16 +5087,6 @@ impl ExpressionList {
                         }
                         list.push(ExpressionListEntry {
                             expression: ast,
-                            parametric_domain: Domain {
-                                min: match &e.parametric_domain.min.1 {
-                                    Ok(ast) => ast,
-                                    Err(_) => &ast::Expression::Number(0.0),
-                                },
-                                max: match &e.parametric_domain.max.1 {
-                                    Ok(ast) => ast,
-                                    Err(_) => &ast::Expression::Number(1.0),
-                                },
-                            },
                             slider,
                         });
                         ei_to_oi.push(i);
@@ -5344,47 +5339,49 @@ impl ExpressionList {
                                     let kind = match kind {
                                         PlotKind::Normal => {
                                             expression.style.kind = ExpressionStyleKind::Equality;
-                                            PlotKind::Normal
+                                            GraphPlotKind::Normal
                                         }
                                         PlotKind::Inverse => {
                                             expression.style.kind = ExpressionStyleKind::Equality;
-                                            PlotKind::Inverse
+                                            GraphPlotKind::Inverse
                                         }
-                                        PlotKind::Parametric(d) => {
+                                        PlotKind::Parametric => {
                                             output.ui.set_parametric_domain(
                                                 &analysis.freevars[&parameters[0]],
                                             );
 
-                                            let min = match &expression.parametric_domain.min.1 {
-                                                Ok(_) => match &d.min {
-                                                    Ok(id) => match vm.vars[var_indices[id]]
-                                                        .clone()
-                                                        .number()
-                                                    {
-                                                        x if x.is_finite() => Ok(x),
-                                                        _ => Err(
-                                                            "value error: domain bound should be finite".into(),
-                                                        ),
-                                                    },
-                                                    Err(e) => Err(format!("analysis error: {e}")),
-                                                },
-                                                Err(e) => Err(format!("parse error: {e}")),
+                                            let f = |ast: &Result<_, String>, index: Option<PropertyIndex>, default: f64| {
+                                                if let Err(e) = ast {
+                                                    return Err(format!("parse error: {e}"));
+                                                }
+                                                let Some(pi) = index else {
+                                                    return Ok(default);
+                                                };
+                                                let (id, ty) = match &analysis.properties[pi] {
+                                                    Ok(v) => v,
+                                                    Err(e) => return Err(format!("analysis error: {e}")),
+                                                };
+                                                if ty != &Type::Number {
+                                                    return Err(format!("domain bound must be {}, not {ty}", Type::Number));
+                                                }
+                                                let x = vm.vars[var_indices[id]].clone().number();
+                                                if x.is_finite() {
+                                                    Ok(x)
+                                                } else {
+                                                    Err("domain bound should be finite".into())
+                                                }
                                             };
-                                            let max = match &expression.parametric_domain.max.1 {
-                                                Ok(_) => match &d.max {
-                                                    Ok(id) => match vm.vars[var_indices[id]]
-                                                        .clone()
-                                                        .number()
-                                                    {
-                                                        x if x.is_finite() => Ok(x),
-                                                        _ => Err(
-                                                            "value error: domain bound should be finite".into(),
-                                                        ),
-                                                    },
-                                                    Err(e) => Err(format!("analysis error: {e}")),
-                                                },
-                                                Err(e) => Err(format!("parse error: {e}")),
-                                            };
+
+                                            let min = f(
+                                                &expression.parametric_domain.min.1,
+                                                pi.parametric_min,
+                                                0.0,
+                                            );
+                                            let max = f(
+                                                &expression.parametric_domain.max.1,
+                                                pi.parametric_max,
+                                                1.0,
+                                            );
                                             expression.parametric_domain.min.0.underline.error =
                                                 min.is_err();
                                             expression.parametric_domain.max.0.underline.error =
@@ -5426,11 +5423,11 @@ impl ExpressionList {
                                             }
 
                                             expression.style.kind = ExpressionStyleKind::Parametric;
-                                            PlotKind::Parametric(Domain { min, max })
+                                            GraphPlotKind::Parametric { min, max }
                                         }
                                         PlotKind::Implicit => {
                                             expression.style.kind = ExpressionStyleKind::Equality;
-                                            PlotKind::Implicit
+                                            GraphPlotKind::Implicit
                                         }
                                     };
                                     output.data =
@@ -5472,10 +5469,7 @@ impl ExpressionList {
                                         ref kind,
                                         ref parameters,
                                         ..
-                                    } => {
-                                        !matches!(kind, PlotKind::Parametric(_))
-                                            && !parameters.is_empty()
-                                    }
+                                    } => kind != &PlotKind::Parametric && !parameters.is_empty(),
                                     _ => false,
                                 } {
                                     output.ui = OutputUi::None;

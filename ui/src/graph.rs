@@ -11,7 +11,6 @@ use std::{
 use bytemuck::Zeroable;
 use eval::vm::{self, Instruction, VarIndex, Vm};
 use glam::{DVec2, Vec2, dvec2, uvec2, vec2};
-use parse::analyze_expression_list::PlotKind;
 use winit::{
     event::{ElementState, MouseButton},
     window::CursorIcon,
@@ -55,6 +54,18 @@ impl Viewport {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlotKind {
+    /// `y = f(x)`
+    Normal,
+    /// `x = f(y)`
+    Inverse,
+    /// `(x(t), y(t))`
+    Parametric { min: f64, max: f64 },
+    /// `f(x, y) = 0`
+    Implicit,
+}
+
 #[derive(Debug, Clone)]
 pub enum GeometryKind {
     Line(Vec<DVec2>),
@@ -64,7 +75,7 @@ pub enum GeometryKind {
     },
     Fill(Vec<DVec2>),
     Plot {
-        kind: PlotKind<f64>,
+        kind: PlotKind,
         inputs: Vec<VarIndex>,
         output: VarIndex,
         instructions: Vec<Instruction>,
@@ -1164,7 +1175,7 @@ impl GraphPaper {
                             PlotKind::Normal => (physical.size.x * 4.0) as usize,
                             PlotKind::Inverse => (physical.size.y * 4.0) as usize,
                             // Desmos seems to do 2000
-                            PlotKind::Parametric(_) => 2000,
+                            PlotKind::Parametric { .. } => 2000,
                             PlotKind::Implicit => unreachable!(),
                         };
 
@@ -1201,7 +1212,7 @@ impl GraphPaper {
                                     n_uniform_samples,
                                 )
                             }
-                            PlotKind::Parametric(t) => {
+                            PlotKind::Parametric { min, max } => {
                                 let f = |t: f64| {
                                     run(&mut vm, inputs, &[t]);
                                     let x = vm.vars[*output].clone().number();
@@ -1210,8 +1221,8 @@ impl GraphPaper {
                                 };
                                 sample_explicit(
                                     f,
-                                    t.min,
-                                    t.max,
+                                    *min,
+                                    *max,
                                     vp_min,
                                     vp_max,
                                     tolerance,

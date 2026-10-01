@@ -11,8 +11,8 @@ use typed_index_collections::{TiSlice, TiVec};
 use crate::{
     ast,
     name_resolver::{
-        Domain, ExpressionIndex, ExpressionListEntry, ExpressionResult as NrEr, Id, NameError,
-        Output, PlotKinds, PropertyIndex, Slider, resolve_names,
+        ExpressionIndex, ExpressionListEntry, ExpressionResult as NrEr, Id, NameError, Output,
+        PlotKinds, PropertyIndex, Slider, resolve_names,
     },
     type_checker::{Assignment, Type, TypeError, type_check, walk_assignment_ids},
 };
@@ -21,13 +21,13 @@ use crate::{
 pub struct AssignmentIndex(usize);
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum PlotKind<T> {
+pub enum PlotKind {
     /// `y = f(x)`
     Normal,
     /// `x = f(y)`
     Inverse,
     /// `(x(t), y(t))`
-    Parametric(Domain<T>),
+    Parametric,
     /// `f(x, y) = 0`
     Implicit,
 }
@@ -65,7 +65,7 @@ pub enum ExpressionResult {
         slider: Slider<Result<Id, AnalysisError>>,
     },
     Plot {
-        kind: PlotKind<Result<Id, AnalysisError>>,
+        kind: PlotKind,
         value: Id,
         ty: Type,
         parameters: Vec<Id>,
@@ -187,7 +187,6 @@ pub fn analyze_expression_list<'a>(
                 allowed_kinds,
                 value,
                 parameters,
-                domain,
             } => {
                 let ty = match types[&value].clone() {
                     Ok(ty) => ty,
@@ -233,19 +232,7 @@ pub fn analyze_expression_list<'a>(
                                 // y = (3,4)
                                 return ExpressionResult::Value(value, ty);
                             }
-                            let d = domain.unwrap();
-                            let f = |name, m: Result<Id, NameError>| match m {
-                                Ok(id) => match types[&id].clone() {
-                                    Ok(Type::Number) => Ok(id),
-                                    Ok(ty) => Err(AnalysisError::DomainBoundNotANumber(name, ty)),
-                                    Err(e) => Err(AnalysisError::TypeError(e)),
-                                },
-                                Err(e) => Err(AnalysisError::NameError(e)),
-                            };
-                            PlotKind::Parametric(Domain {
-                                min: f("min", d.min),
-                                max: f("max", d.max),
-                            })
+                            PlotKind::Parametric
                         } else {
                             // f(t) = (t,t)
                             // y = (x,x)

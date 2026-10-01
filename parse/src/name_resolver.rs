@@ -1,5 +1,4 @@
 use std::{
-    borrow::Borrow,
     collections::{HashMap, HashSet},
     fmt::Display,
     iter::zip,
@@ -269,8 +268,7 @@ struct Resolver<'a> {
     use_v1_9_scoping_rules: bool,
     scopes: Vec<Scope<'a>>,
     line_count: usize,
-    definitions:
-        HashMap<&'a str, Result<(&'a Statement, Option<Slider<&'a ast::Expression>>), NameError>>,
+    definitions: HashMap<&'a str, Result<ExpressionListEntry<'a>, NameError>>,
     dependencies_being_tracked: Option<Dependencies<'a>>,
     assignments: TiVec<Level, Vec<Assignment>>,
     freevars: HashMap<&'a str, Id>,
@@ -286,14 +284,14 @@ pub struct PropertyIndex(usize);
 
 impl<'a> Resolver<'a> {
     fn new(
-        list: impl Iterator<Item = (&'a Statement, Option<Slider<&'a ast::Expression>>)>,
+        list: &[ExpressionListEntry<'a>],
         undefinable_names: &HashSet<&str>,
         use_v1_9_scoping_rules: bool,
     ) -> Self {
         let mut definitions = HashMap::new();
 
-        for (statement, slider) in list {
-            match statement {
+        for entry in list {
+            match entry.expression {
                 Statement::Assignment { name, .. }
                 | Statement::FunctionDeclaration { name, .. }
                     if !undefinable_names.contains(name.as_str()) =>
@@ -301,7 +299,7 @@ impl<'a> Resolver<'a> {
                     if let Some(result) = definitions.get_mut(name.as_str()) {
                         *result = Err(NameError::MultipleDefinitions(name.into()));
                     } else {
-                        definitions.insert(name.as_str(), Ok((statement, slider)));
+                        definitions.insert(name.as_str(), Ok(entry.clone()));
                     }
                 }
                 _ => continue,
@@ -557,11 +555,17 @@ impl<'a> Resolver<'a> {
         // It hasn't been computed before so we'll have to compute it again
         let (id, slider, deps) = if let Some(statement) = self.definitions.get(name) {
             let (expr, slider) = match statement.as_ref().map_err(Clone::clone)? {
-                (Statement::Assignment { value, .. }, slider) => (value, slider.clone()),
-                (Statement::FunctionDeclaration { .. }, None) => {
+                ExpressionListEntry {
+                    expression: Statement::Assignment { value, .. },
+                    slider,
+                } => (value, slider.clone()),
+                ExpressionListEntry {
+                    expression: Statement::FunctionDeclaration { .. },
+                    ..
+                } => {
                     return Err(NameError::FunctionAsVariable(name.into()));
                 }
-                _ => unreachable!(),
+                other => unreachable!("{:?}", other),
             };
 
             self.cycle_detector.push(name)?;
@@ -668,12 +672,13 @@ impl<'a> Resolver<'a> {
         self.push_dependency(callee, Dependency::Computed);
 
         let (parameters, body) = match self.definitions.get(callee) {
-            Some(Ok((
-                Statement::FunctionDeclaration {
-                    parameters, body, ..
-                },
-                _,
-            ))) => (parameters, body),
+            Some(Ok(ExpressionListEntry {
+                expression:
+                    Statement::FunctionDeclaration {
+                        parameters, body, ..
+                    },
+                ..
+            })) => (parameters, body),
             Some(Ok(_)) => return Err(NameError::VariableAsFunction(callee.into())),
             Some(Err(e)) => return Err(e.clone()),
             None => return Err(NameError::undefined([callee])),
@@ -716,7 +721,10 @@ impl<'a> Resolver<'a> {
                 if OpName::from_str(callee).is_some()
                     || matches!(
                         self.definitions.get(callee.as_str()),
-                        Some(Ok((Statement::FunctionDeclaration { .. }, _)))
+                        Some(Ok(ExpressionListEntry {
+                            expression: Statement::FunctionDeclaration { .. },
+                            ..
+                        }))
                     ) && self.find_substitution(callee, true).is_none()
                 {
                     self.resolve_call(callee, args)
@@ -987,7 +995,7 @@ impl<T> Slider<T> {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ExpressionListEntry<'a> {
     pub expression: &'a Statement,
     // TODO design better types so that `slider` can only be
@@ -1093,14 +1101,7 @@ pub fn resolve_names<'a>(
 ) -> Output {
     let mut undefinable_names = HashSet::new();
     undefinable_names.extend(builtin_constants.iter().cloned().chain(["x", "y"]));
-    let mut resolver = Resolver::new(
-        list.iter().map(|e| {
-            let e = e.borrow();
-            (e.expression, e.slider.clone())
-        }),
-        &undefinable_names,
-        use_v1_9_scoping_rules,
-    );
+    let mut resolver = Resolver::new(list.as_ref(), &undefinable_names, use_v1_9_scoping_rules);
 
     let builtin_constants = builtin_constants
         .iter()
@@ -1117,7 +1118,6 @@ pub fn resolve_names<'a>(
 
     let results = list
         .iter()
-        .map(Borrow::borrow)
         .map(|e| {
             // When we start resolving a new expression, there shouldn't be any
             // variables that are in scope from a `for` or `with` clause

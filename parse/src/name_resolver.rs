@@ -466,8 +466,16 @@ impl<'a> Resolver<'a> {
         let ((value, slider), deps) = self.resolve_with_dependencies(
             |this| {
                 let value = this.resolve_expression(value);
-                let slider =
-                    slider.map(|s| s.map(|e| this.resolve_expression_with_dependencies(e, None)));
+                let slider = slider.map(|s| {
+                    s.map(|e| {
+                        if let Err(e) = this.cycle_detector.push(name) {
+                            return (Err(e), Dependencies::default());
+                        }
+                        let s = this.resolve_expression_with_dependencies(e, None);
+                        this.cycle_detector.pop();
+                        s
+                    })
+                });
                 (value, slider)
             },
             None,
@@ -865,19 +873,20 @@ pub enum NameError {
     VariableAsFunction(String),
 }
 
-fn sorted<S: Into<String>>(n: impl IntoIterator<Item = S>) -> Vec<String> {
+fn sorted_and_deduped<S: Into<String>>(n: impl IntoIterator<Item = S>) -> Vec<String> {
     let mut n = n.into_iter().map(Into::into).collect::<Vec<_>>();
     n.sort();
+    n.dedup();
     n
 }
 
 impl NameError {
     pub fn cyclic_definition<S: Into<String>>(n: impl IntoIterator<Item = S>) -> NameError {
-        NameError::CyclicDefinition(sorted(n))
+        NameError::CyclicDefinition(sorted_and_deduped(n))
     }
 
     pub fn undefined<S: Into<String>>(n: impl IntoIterator<Item = S>) -> NameError {
-        NameError::Undefined(sorted(n))
+        NameError::Undefined(sorted_and_deduped(n))
     }
 }
 
@@ -4817,6 +4826,76 @@ mod tests {
                     ExpressionResult::Value(ids["e with f = 5"]),
                 ],
                 HashMap::from([("f".into(), ids["f"])]),
+            ),
+        );
+    }
+
+    #[test]
+    fn cyclic_slider_error() {
+        let id = |s: &str| AId(s.into());
+        let mut ids = IdGenerator::default();
+        let a = resolve_names(
+            [
+                // a = 4; min = b, max = none, step = None
+                ExpressionListEntry {
+                    expression: &Statement::Assignment {
+                        name: "a".into(),
+                        value: ANum(4.0),
+                    },
+                    slider: Some(Slider {
+                        min: Some(&id("b")),
+                        max: None,
+                        step: None,
+                    }),
+                },
+                // b = a with b = 2
+                ExpressionListEntry {
+                    expression: &Statement::Assignment {
+                        name: "b".into(),
+                        value: AWith {
+                            body: bx(id("a")),
+                            substitutions: vec![("b".into(), ANum(2.0))],
+                        },
+                    },
+                    slider: None,
+                },
+            ]
+            .as_slice()
+            .as_ref(),
+            &[],
+            Default::default(),
+            false,
+        );
+        assert_eq(
+            (a.assignments, a.results.into(), a.freevars),
+            (
+                vec![
+                    // with b = 2
+                    Assignment {
+                        id: ids.new_id("b"),
+                        name: "b".into(),
+                        value: Expression::Number(2.0),
+                    },
+                ],
+                vec![
+                    // a = 4; min = b, max = none, step = None
+                    ExpressionResult::Slider {
+                        value: None,
+                        slider: Slider {
+                            min: Some(Err(NameError::CyclicDefinition(vec![
+                                "a".into(),
+                                "b".into(),
+                            ]))),
+                            max: None,
+                            step: None,
+                        },
+                    },
+                    ExpressionResult::Err(NameError::CyclicDefinition(vec![
+                        "a".into(),
+                        "b".into(),
+                    ])),
+                ],
+                HashMap::default(),
             ),
         );
     }

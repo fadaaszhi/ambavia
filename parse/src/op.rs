@@ -123,11 +123,14 @@ pub enum OpName {
     Vertices,
     Rgb,
     Hsv,
+    Random { expression_seed: u64, position: u64 },
+    Shuffle { expression_seed: u64, position: u64 },
     Join,
 }
 use Type::{
     BoolList as BL, Color as C, ColorList as CL, Number as N, NumberList as NL, Point2 as P2,
     Point2List as P2L, Point3 as P3, Point3List as P3L, Polygon as Pg, PolygonList as PgL,
+    RandomSeed as S,
 };
 declare_ops! {
     #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -266,6 +269,11 @@ declare_ops! {
         RgbPoint(P3) -> C,
         Hsv(N, N, N) -> C,
         HsvPoint(P3) -> C,
+        // These are handled as special cases, the type signatures are just for documentation
+        Random(S) -> N,
+        ShufflePerm(S, N) -> NL,
+        CombineSeeds(S, S) -> S,
+        Hash(/* any */) -> S,
         // These have more complicated type signatures than what we can represent (due to potential list of list)
         // and are thus left taking "no" input and handled as a special case
         JoinNumber() -> NL,
@@ -276,7 +284,7 @@ declare_ops! {
     }
 }
 impl OpName {
-    pub(crate) const fn overloads(self) -> &'static [Op] {
+    pub(crate) const fn overloads(&self) -> &'static [Op] {
         use Op::*;
         match self {
             OpName::Neg => &[NegNumber, NegPoint2, NegPoint3],
@@ -395,6 +403,8 @@ impl OpName {
             OpName::Vertices => &[Vertices],
             OpName::Rgb => &[Rgb, RgbPoint],
             OpName::Hsv => &[Hsv, HsvPoint],
+            OpName::Random { .. } => &[],
+            OpName::Shuffle { .. } => &[],
             OpName::Join => &[],
         }
     }
@@ -650,6 +660,8 @@ impl OpName {
             OpName::Vertices => "vertices",
             OpName::Rgb => "rgb",
             OpName::Hsv => "hsv",
+            OpName::Random { .. } => "random",
+            OpName::Shuffle { .. } => "shuffle",
             OpName::Join => "join",
         }
     }

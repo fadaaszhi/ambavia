@@ -15,6 +15,7 @@ pub enum BaseType {
     Polygon,
     Color,
     Bool,
+    U64,
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -31,6 +32,8 @@ pub enum Type {
     ColorList,
     Bool,
     BoolList,
+    U64,
+    U64List,
 }
 
 impl Type {
@@ -44,7 +47,9 @@ impl Type {
             | Type::PolygonList
             | Type::ColorList
             | Type::Bool
-            | Type::BoolList => 1,
+            | Type::BoolList
+            | Type::U64
+            | Type::U64List => 1,
             Type::Point2 => 2,
             Type::Point3 => 3,
             Type::Color => 3,
@@ -59,6 +64,7 @@ impl Type {
             Type::Polygon | Type::PolygonList => BaseType::Polygon,
             Type::Color | Type::ColorList => BaseType::Color,
             Type::Bool | Type::BoolList => BaseType::Bool,
+            Type::U64 | Type::U64List => BaseType::U64,
         }
     }
 
@@ -70,6 +76,7 @@ impl Type {
             BaseType::Polygon => Type::PolygonList,
             BaseType::Color => Type::ColorList,
             BaseType::Bool => Type::BoolList,
+            BaseType::U64 => Type::U64List,
         }
     }
 
@@ -81,6 +88,7 @@ impl Type {
             BaseType::Polygon => Type::Polygon,
             BaseType::Color => Type::Color,
             BaseType::Bool => Type::Bool,
+            BaseType::U64 => Type::U64,
         }
     }
 
@@ -93,6 +101,7 @@ impl Type {
                 | Type::PolygonList
                 | Type::ColorList
                 | Type::BoolList
+                | Type::U64List
         )
     }
 }
@@ -112,6 +121,8 @@ impl std::fmt::Display for Type {
             Type::ColorList => "a list of colors",
             Type::Bool => "a true/false value",
             Type::BoolList => "a list of true/false values",
+            Type::U64 => "a u64",
+            Type::U64List => "a list of u64s",
         })
     }
 }
@@ -186,6 +197,18 @@ impl InstructionBuilder {
         self.create_and_push_value(Type::Number)
     }
 
+    pub fn load_const_u64(&mut self, x: u64) -> Value {
+        self.instructions.push(LoadConstU64(x));
+        self.create_and_push_value(Type::U64)
+    }
+
+    pub fn hash(&mut self, v: Value, initial: u64) -> Value {
+        let ty = v.ty;
+        self.assert_pop(v, ty);
+        self.instructions.push(Hash { initial });
+        self.create_and_push_value(Type::U64)
+    }
+
     pub fn instr1(&mut self, instr: Instruction, a: Value) -> Value {
         let (a_type, return_type) = match instr {
             Neg | Sqrt | Ln | Exp | Erf | Sin | Cos | Tan | Sec | Csc | Cot | Sinh | Cosh
@@ -218,6 +241,7 @@ impl InstructionBuilder {
             Polygon => (Type::Point2List, Type::Polygon),
             Vertices => (Type::Polygon, Type::Point2List),
             Rgb | Hsv => (Type::Point3, Type::Color),
+            Random => (Type::U64, Type::Number),
             _ => panic!("instruction '{instr:?}' not unary"),
         };
         self.assert_pop(a, a_type);
@@ -278,6 +302,8 @@ impl InstructionBuilder {
             Repeat3List => (Type::Point3List, Type::NumberList, Type::Point3List),
             RepeatPolygonList => (Type::PolygonList, Type::NumberList, Type::PolygonList),
             RepeatColorList => (Type::ColorList, Type::NumberList, Type::ColorList),
+            ShufflePerm => (Type::U64, Type::Number, Type::NumberList),
+            CombineSeeds => (Type::U64, Type::U64, Type::U64),
             _ => panic!("instruction '{instr:?}' not binary"),
         };
         self.assert_pop(b, b_type);
@@ -343,6 +369,7 @@ impl InstructionBuilder {
             BaseType::Point3 => UncheckedIndex3,
             BaseType::Polygon => UncheckedIndexPolygonList,
             BaseType::Color => UncheckedIndex3,
+            BaseType::U64 => UncheckedIndexU64,
         }(self.position_from_top(list)));
         self.create_and_push_value(Type::single(base))
     }
@@ -358,6 +385,7 @@ impl InstructionBuilder {
             BaseType::Point3 => BuildList(3 * n),
             BaseType::Polygon => BuildPolygonList(n),
             BaseType::Color => BuildList(3 * n),
+            BaseType::U64 => BuildU64List(n),
         });
         self.create_and_push_value(Type::list_of(base))
     }
@@ -394,6 +422,7 @@ impl InstructionBuilder {
             BaseType::Point3 => Append3,
             BaseType::Polygon => AppendPolygonList,
             BaseType::Color => Append3,
+            BaseType::U64 => AppendU64,
         }(self.position_from_top(list)));
     }
 
@@ -562,6 +591,7 @@ impl InstructionBuilder {
             BaseType::Point3 => CountSpecific3,
             BaseType::Polygon => CountSpecificPolygonList,
             BaseType::Color => CountSpecific3,
+            BaseType::U64 => CountSpecificU64,
         }(self.position_from_top(list)));
         self.create_and_push_value(Type::Number)
     }

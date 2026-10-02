@@ -32,6 +32,11 @@ pub enum Expression {
         operation: OpName,
         args: Vec<Expression>,
     },
+    Rng {
+        operation: OpName,
+        seeds: Vec<Id>,
+        args: Vec<Expression>,
+    },
     ChainedComparison {
         operands: Vec<Expression>,
         operators: Vec<ComparisonOperator>,
@@ -51,6 +56,7 @@ pub enum Expression {
     For {
         body: Body,
         lists: Vec<Assignment>,
+        index: Id,
     },
 }
 
@@ -111,6 +117,14 @@ impl OpName {
             "vertices" => Vertices,
             "rgb" => Rgb,
             "hsv" => Hsv,
+            "random" => Random {
+                expression_seed: 0,
+                position: 0,
+            },
+            "shuffle" => Shuffle {
+                expression_seed: 0,
+                position: 0,
+            },
             "join" => Join,
             _ => return None,
         })
@@ -264,11 +278,16 @@ impl<'a> CycleDetector<'a> {
     }
 }
 
+#[derive(Debug, Default, PartialEq)]
+struct LineScope {
+    seeds: Vec<Id>,
+}
+
 struct Resolver<'a> {
     use_v1_9_scoping_rules: bool,
     scopes: Vec<Scope<'a>>,
-    line_count: usize,
-    definitions: HashMap<&'a str, Result<ExpressionListEntry<'a>, NameError>>,
+    line_scopes: Vec<LineScope>,
+    definitions: HashMap<&'a str, Result<&'a SeededExpressionListEntry, NameError>>,
     dependencies_being_tracked: Option<Dependencies<'a>>,
     assignments: TiVec<Level, Vec<Assignment>>,
     freevars: HashMap<&'a str, Id>,
@@ -284,14 +303,14 @@ pub struct PropertyIndex(usize);
 
 impl<'a> Resolver<'a> {
     fn new(
-        list: &[ExpressionListEntry<'a>],
+        list: &'a [SeededExpressionListEntry],
         undefinable_names: &HashSet<&str>,
         use_v1_9_scoping_rules: bool,
     ) -> Self {
         let mut definitions = HashMap::new();
 
         for entry in list {
-            match entry.expression {
+            match &entry.expression {
                 Statement::Assignment { name, .. }
                 | Statement::FunctionDeclaration { name, .. }
                     if !undefinable_names.contains(name.as_str()) =>
@@ -299,7 +318,7 @@ impl<'a> Resolver<'a> {
                     if let Some(result) = definitions.get_mut(name.as_str()) {
                         *result = Err(NameError::MultipleDefinitions(name.into()));
                     } else {
-                        definitions.insert(name.as_str(), Ok(entry.clone()));
+                        definitions.insert(name.as_str(), Ok(entry));
                     }
                 }
                 _ => continue,
@@ -313,7 +332,7 @@ impl<'a> Resolver<'a> {
                 substitutions: HashMap::new(),
                 computed: HashMap::new(),
             }],
-            line_count: 0,
+            line_scopes: vec![LineScope::default()],
             definitions,
             dependencies_being_tracked: None,
             assignments: ti_vec![vec![]],
@@ -424,7 +443,7 @@ impl<'a> Resolver<'a> {
     fn find_substitution(&self, name: &'a str, include_lexical: bool) -> Option<SubstitutionInfo> {
         // Search dynamic scopes, also including the current line's lexical scope
         for scope in self.scopes.iter().rev() {
-            let line_count = self.line_count;
+            let line_count = self.line_scopes.len();
             if (scope.kind == ScopeKind::Dynamic
                 || include_lexical && scope.kind == ScopeKind::Lexical { line_count })
                 && let Some(&i) = scope.substitutions.get(name)
@@ -563,11 +582,11 @@ impl<'a> Resolver<'a> {
         // It hasn't been computed before so we'll have to compute it again
         let (id, slider, deps) = if let Some(statement) = self.definitions.get(name) {
             let (expr, slider) = match statement.as_ref().map_err(Clone::clone)? {
-                ExpressionListEntry {
+                SeededExpressionListEntry {
                     expression: Statement::Assignment { value, .. },
                     slider,
-                } => (value, slider.clone()),
-                ExpressionListEntry {
+                } => (value, slider.as_ref().map(Slider::as_ref)),
+                SeededExpressionListEntry {
                     expression: Statement::FunctionDeclaration { .. },
                     ..
                 } => {
@@ -577,9 +596,9 @@ impl<'a> Resolver<'a> {
             };
 
             self.cycle_detector.push(name)?;
-            self.line_count += 1;
+            self.line_scopes.push(LineScope::default());
             let result = self.resolve_value_slider(name, expr, slider);
-            self.line_count -= 1;
+            self.line_scopes.pop();
             self.cycle_detector.pop();
 
             result
@@ -614,13 +633,15 @@ impl<'a> Resolver<'a> {
         &mut self,
         body: &'a ast::Expression,
         is_lexical: bool,
+        add_to_seed: bool,
         bindings: impl Iterator<Item = (&'a String, &'a ast::Expression)>,
         error: impl FnOnce(String) -> NameError,
     ) -> Result<Expression, NameError> {
         let mut substitutions = HashMap::new();
+        let mut seeds = vec![];
         let kind = if is_lexical {
             ScopeKind::Lexical {
-                line_count: self.line_count + 1,
+                line_count: self.line_scopes.len() + 1,
             }
         } else {
             ScopeKind::Dynamic
@@ -643,17 +664,35 @@ impl<'a> Resolver<'a> {
                     scope_index: self.scopes.len(),
                 },
             );
+
+            if add_to_seed {
+                seeds.push(id);
+            }
         }
 
         if is_lexical {
-            self.line_count += 1;
+            self.line_scopes.push(LineScope::default());
+        }
+
+        if add_to_seed {
+            let scope = self.line_scopes.last_mut().unwrap();
+            for id in &seeds {
+                scope.seeds.push(*id);
+            }
         }
 
         let (body, _) =
             self.resolve_expression_with_dependencies(body, Some((kind, substitutions)));
 
+        if add_to_seed {
+            let scope = self.line_scopes.last_mut().unwrap();
+            for _ in &seeds {
+                scope.seeds.pop();
+            }
+        }
+
         if is_lexical {
-            self.line_count -= 1;
+            self.line_scopes.pop();
         }
 
         body
@@ -680,7 +719,7 @@ impl<'a> Resolver<'a> {
         self.push_dependency(callee, Dependency::Computed);
 
         let (parameters, body) = match self.definitions.get(callee) {
-            Some(Ok(ExpressionListEntry {
+            Some(Ok(SeededExpressionListEntry {
                 expression:
                     Statement::FunctionDeclaration {
                         parameters, body, ..
@@ -704,6 +743,7 @@ impl<'a> Resolver<'a> {
         let value = self.resolve_substitutions(
             body,
             !self.use_v1_9_scoping_rules,
+            true,
             zip(parameters, args),
             NameError::DuplicateFunctionParameter,
         );
@@ -729,7 +769,7 @@ impl<'a> Resolver<'a> {
                 if OpName::from_str(callee).is_some()
                     || matches!(
                         self.definitions.get(callee.as_str()),
-                        Some(Ok(ExpressionListEntry {
+                        Some(Ok(SeededExpressionListEntry {
                             expression: Statement::FunctionDeclaration { .. },
                             ..
                         }))
@@ -787,6 +827,7 @@ impl<'a> Resolver<'a> {
             } => self.resolve_substitutions(
                 body,
                 false,
+                false,
                 substitutions.iter().map(|(n, v)| (n, v)),
                 NameError::DuplicateWithSubstitution,
             ),
@@ -815,18 +856,35 @@ impl<'a> Resolver<'a> {
                 }
 
                 assert_eq!(self.assignments.next_key(), level);
+                let index = self.next_id();
+                self.line_scopes.last_mut().unwrap().seeds.push(index);
                 self.assignments.push(vec![]);
                 let (body, _) = self.resolve_expression_with_dependencies(
                     body,
                     Some((ScopeKind::Dynamic, substitutions)),
                 );
                 let assignments = self.assignments.pop().unwrap();
+                self.line_scopes.last_mut().unwrap().seeds.pop();
                 Ok(Expression::For {
                     body: Body {
                         assignments,
                         value: Box::new(body?),
                     },
                     lists: resolved_lists,
+                    index,
+                })
+            }
+            ast::Expression::Op { operation, args }
+                if matches!(operation, OpName::Random { .. } | OpName::Shuffle { .. }) =>
+            {
+                Ok(Expression::Rng {
+                    operation: *operation,
+                    seeds: self
+                        .line_scopes
+                        .last()
+                        .map(|s| s.seeds.clone())
+                        .unwrap_or_default(),
+                    args: self.resolve_expressions(args)?,
                 })
             }
             ast::Expression::Op { operation, args } => Ok(Expression::Op {
@@ -1002,14 +1060,178 @@ impl<T> Slider<T> {
             .into_iter()
             .flatten()
     }
+
+    pub fn as_ref(&self) -> Slider<&T> {
+        Slider {
+            min: self.min.as_ref(),
+            max: self.max.as_ref(),
+            step: self.step.as_ref(),
+        }
+    }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RandomSeed(pub u64);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExpressionListEntry<'a> {
-    pub expression: &'a Statement,
+    pub expression: (&'a Statement, RandomSeed),
     // TODO design better types so that `slider` can only be
     // provided when `expression` is `Statement::Assignment`
-    pub slider: Option<Slider<&'a ast::Expression>>,
+    pub slider: Option<Slider<(&'a ast::Expression, RandomSeed)>>,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct SeededExpressionListEntry {
+    pub expression: Statement,
+    pub slider: Option<Slider<ast::Expression>>,
+}
+
+fn apply_seed_to_expressions(
+    es: &[ast::Expression],
+    seed: RandomSeed,
+    position: &mut u64,
+) -> Vec<ast::Expression> {
+    es.iter()
+        .map(|e| apply_seed_to_expression(e, seed, position))
+        .collect()
+}
+
+fn apply_seed_to_chained_comparison(
+    c: &ast::ChainedComparison,
+    seed: RandomSeed,
+    position: &mut u64,
+) -> ast::ChainedComparison {
+    ast::ChainedComparison {
+        operands: apply_seed_to_expressions(&c.operands, seed, position),
+        operators: c.operators.clone(),
+    }
+}
+
+fn apply_seed_to_expression(
+    expr: &ast::Expression,
+    seed: RandomSeed,
+    position: &mut u64,
+) -> ast::Expression {
+    use ast::Expression as E;
+    fn apply_seed_to_assignments(
+        es: &[(String, E)],
+        seed: RandomSeed,
+        position: &mut u64,
+    ) -> Vec<(String, E)> {
+        es.iter()
+            .map(|e| (e.0.clone(), apply_seed_to_expression(&e.1, seed, position)))
+            .collect()
+    }
+    match expr {
+        E::Number(x) => E::Number(*x),
+        E::Identifier(id) => E::Identifier(id.clone()),
+        E::List(expressions) => E::List(apply_seed_to_expressions(expressions, seed, position)),
+        E::ListRange {
+            before_ellipsis,
+            after_ellipsis,
+        } => E::ListRange {
+            before_ellipsis: apply_seed_to_expressions(before_ellipsis, seed, position),
+            after_ellipsis: apply_seed_to_expressions(after_ellipsis, seed, position),
+        },
+        E::Op { operation, args } => E::Op {
+            operation: *operation,
+            args: apply_seed_to_expressions(args, seed, position),
+        },
+        E::CallOrMultiply { callee, args } | E::Call { callee, args }
+            if matches!(
+                OpName::from_str(callee),
+                Some(OpName::Random { .. } | OpName::Shuffle { .. })
+            ) =>
+        {
+            let mut operation = OpName::from_str(callee).unwrap();
+            let (OpName::Random {
+                expression_seed,
+                position: p,
+            }
+            | OpName::Shuffle {
+                expression_seed,
+                position: p,
+            }) = &mut operation
+            else {
+                unreachable!()
+            };
+            *expression_seed = seed.0;
+            *p = *position;
+            *position += 1;
+            E::Op {
+                operation,
+                args: apply_seed_to_expressions(args, seed, position),
+            }
+        }
+        E::CallOrMultiply { callee, args } => E::CallOrMultiply {
+            callee: callee.clone(),
+            args: apply_seed_to_expressions(args, seed, position),
+        },
+        E::Call { callee, args } => E::Call {
+            callee: callee.clone(),
+            args: apply_seed_to_expressions(args, seed, position),
+        },
+        E::ChainedComparison(c) => {
+            E::ChainedComparison(apply_seed_to_chained_comparison(c, seed, position))
+        }
+        E::Piecewise {
+            test,
+            consequent,
+            alternate,
+        } => E::Piecewise {
+            test: Box::new(apply_seed_to_expression(test, seed, position)),
+            consequent: Box::new(apply_seed_to_expression(consequent, seed, position)),
+            alternate: alternate
+                .as_ref()
+                .map(|a| Box::new(apply_seed_to_expression(a, seed, position))),
+        },
+        E::SumProd {
+            kind,
+            variable,
+            lower_bound,
+            upper_bound,
+            body,
+        } => E::SumProd {
+            kind: *kind,
+            variable: variable.clone(),
+            lower_bound: Box::new(apply_seed_to_expression(lower_bound, seed, position)),
+            upper_bound: Box::new(apply_seed_to_expression(upper_bound, seed, position)),
+            body: Box::new(apply_seed_to_expression(body, seed, position)),
+        },
+        E::With {
+            body,
+            substitutions,
+        } => E::With {
+            body: Box::new(apply_seed_to_expression(body, seed, position)),
+            substitutions: apply_seed_to_assignments(substitutions, seed, position),
+        },
+        E::For { body, lists } => E::For {
+            body: Box::new(apply_seed_to_expression(body, seed, position)),
+            lists: apply_seed_to_assignments(lists, seed, position),
+        },
+    }
+}
+
+fn apply_seed_to_statement(stmt: &Statement, seed: RandomSeed, mut position: u64) -> Statement {
+    use Statement as S;
+    match stmt {
+        S::Assignment { name, value } => S::Assignment {
+            name: name.clone(),
+            value: apply_seed_to_expression(value, seed, &mut position),
+        },
+        S::FunctionDeclaration {
+            name,
+            parameters,
+            body,
+        } => S::FunctionDeclaration {
+            name: name.clone(),
+            parameters: parameters.clone(),
+            body: apply_seed_to_expression(body, seed, &mut position),
+        },
+        S::Relation(c) => S::Relation(apply_seed_to_chained_comparison(c, seed, &mut position)),
+        S::Expression(expr) => S::Expression(apply_seed_to_expression(expr, seed, &mut position)),
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -1105,9 +1327,20 @@ fn resolve_relation(
 pub fn resolve_names<'a>(
     list: &TiSlice<ExpressionIndex, ExpressionListEntry<'a>>,
     builtin_constants: &[&str],
-    properties: &TiSlice<PropertyIndex, &'a ast::Expression>,
+    properties: &TiSlice<PropertyIndex, (&'a ast::Expression, RandomSeed)>,
     use_v1_9_scoping_rules: bool,
 ) -> Output {
+    let list: TiVec<ExpressionIndex, SeededExpressionListEntry> = list
+        .iter()
+        .map(|e| SeededExpressionListEntry {
+            expression: apply_seed_to_statement(e.expression.0, e.expression.1, 0),
+            slider: e.slider.as_ref().map(|s| {
+                s.as_ref()
+                    .map(|x| apply_seed_to_expression(x.0, x.1, &mut 0))
+            }),
+        })
+        .collect();
+
     let mut undefinable_names = HashSet::new();
     undefinable_names.extend(builtin_constants.iter().cloned().chain(["x", "y"]));
     let mut resolver = Resolver::new(list.as_ref(), &undefinable_names, use_v1_9_scoping_rules);
@@ -1130,14 +1363,14 @@ pub fn resolve_names<'a>(
         .map(|e| {
             // When we start resolving a new expression, there shouldn't be any
             // variables that are in scope from a `for` or `with` clause
-            assert_eq!(resolver.line_count, 0);
             assert_eq!(resolver.assignments.len(), 1);
             assert_eq!(resolver.scopes.len(), 1);
+            assert_eq!(resolver.line_scopes, [LineScope::default()]);
             assert_eq!(resolver.scopes[0].substitutions, HashMap::new());
             assert_eq!(resolver.cycle_detector.stack, Vec::<&str>::new());
             assert!(resolver.cycle_detector.counts.values().all(|&c| c == 0));
 
-            match e.expression {
+            match &e.expression {
                 Statement::Assignment { name, value } => {
                     let (id, slider_id, deps) = if !undefinable_names.contains(name.as_str())
                         && let Some((id, slider_id, deps)) =
@@ -1149,8 +1382,11 @@ pub fn resolve_names<'a>(
                             .cycle_detector
                             .push(name)
                             .expect("can't have a cycle before you even begin");
-                        let (id, slider_id, deps) =
-                            resolver.resolve_value_slider(name, value, e.slider.clone());
+                        let (id, slider_id, deps) = resolver.resolve_value_slider(
+                            name,
+                            value,
+                            e.slider.as_ref().map(Slider::as_ref),
+                        );
                         resolver.cycle_detector.pop();
                         assert_eq!(deps.level(), Level(0));
 
@@ -1290,6 +1526,7 @@ pub fn resolve_names<'a>(
                                 let value = resolver.resolve_substitutions(
                                     body,
                                     !resolver.use_v1_9_scoping_rules,
+                                    true,
                                     zip(
                                         parameters,
                                         [ARG.get_or_init(|| {
@@ -1385,6 +1622,11 @@ pub fn resolve_names<'a>(
                 }
             }
         })
+        .collect();
+
+    let properties: TiVec<PropertyIndex, _> = properties
+        .iter()
+        .map(|p| apply_seed_to_expression(p.0, p.1, &mut 0))
         .collect();
 
     let properties = properties
@@ -1489,6 +1731,12 @@ mod tests {
                     canonicalize_list(after_ellipsis, f);
                 }
                 Expression::Op { args, .. } => canonicalize_list(args, f),
+                Expression::Rng { seeds, args, .. } => {
+                    for s in seeds {
+                        f(s);
+                    }
+                    canonicalize_list(args, f);
+                }
                 Expression::ChainedComparison { operands, .. } => canonicalize_list(operands, f),
                 Expression::Piecewise {
                     test,
@@ -1513,9 +1761,10 @@ mod tests {
                     upper_bound.canonicalize_ids(f);
                     body.canonicalize_ids(f);
                 }
-                Expression::For { body, lists } => {
+                Expression::For { body, lists, index } => {
                     body.canonicalize_ids(f);
                     canonicalize_assignment_ids(lists, f);
+                    f(index);
                 }
             }
         }
@@ -1656,7 +1905,7 @@ mod tests {
         let list = list
             .iter()
             .map(|e| ExpressionListEntry {
-                expression: e,
+                expression: (e, RandomSeed(0)),
                 slider: None,
             })
             .collect::<TiVec<_, _>>();
@@ -1671,7 +1920,7 @@ mod tests {
         let list = list
             .iter()
             .map(|e| ExpressionListEntry {
-                expression: e,
+                expression: (e, RandomSeed(0)),
                 slider: None,
             })
             .collect::<TiVec<_, _>>();
@@ -1688,7 +1937,7 @@ mod tests {
         let list = list
             .iter()
             .map(|e| ExpressionListEntry {
-                expression: e,
+                expression: (e, RandomSeed(0)),
                 slider: None,
             })
             .collect::<TiVec<_, _>>();
@@ -3375,6 +3624,8 @@ mod tests {
 
     #[test]
     fn list_comp() {
+        let mut ids = IdGenerator::default();
+
         assert_eq(
             resolve_names_ti(&[
                 // p for j=c, i=[1]
@@ -3422,99 +3673,100 @@ mod tests {
                 vec![
                     // c = [2]
                     Assignment {
-                        id: Id(0),
+                        id: ids.new_id(0),
                         name: "c".into(),
                         value: Expression::List(vec![Expression::Number(2.0)]),
                     },
                     // k = 3
                     Assignment {
-                        id: Id(4),
+                        id: ids.new_id(4),
                         name: "k".into(),
                         value: Expression::Number(3.0),
                     },
                     // p for j=c, i=[1]
                     Assignment {
-                        id: Id(6),
+                        id: ids.new_id(6),
                         name: "<anonymous>".into(),
                         value: Expression::For {
                             body: Body {
                                 assignments: vec![
                                     // q = jj
                                     Assignment {
-                                        id: Id(3),
+                                        id: ids.new_id(3),
                                         name: "q".into(),
                                         value: Expression::Op {
                                             operation: OpName::Mul,
                                             args: vec![
-                                                Expression::Identifier(Id(1)),
-                                                Expression::Identifier(Id(1)),
+                                                Expression::Identifier(ids.new_id(1)),
+                                                Expression::Identifier(ids[1]),
                                             ],
                                         },
                                     },
                                     // p = (q,i+k)
                                     Assignment {
-                                        id: Id(5),
+                                        id: ids.new_id(5),
                                         name: "p".into(),
                                         value: Expression::Op {
                                             operation: OpName::Point,
                                             args: vec![
-                                                Expression::Identifier(Id(3)),
+                                                Expression::Identifier(ids[3]),
                                                 Expression::Op {
                                                     operation: OpName::Add,
                                                     args: vec![
-                                                        Expression::Identifier(Id(2)),
-                                                        Expression::Identifier(Id(4)),
+                                                        Expression::Identifier(ids.new_id(2)),
+                                                        Expression::Identifier(ids[4]),
                                                     ],
                                                 },
                                             ],
                                         },
                                     },
                                 ],
-                                value: bx(Expression::Identifier(Id(5))),
+                                value: bx(Expression::Identifier(ids[5])),
                             },
                             lists: vec![
                                 // j=c
                                 Assignment {
-                                    id: Id(1),
+                                    id: ids[1],
                                     name: "j".into(),
-                                    value: Expression::Identifier(Id(0)),
+                                    value: Expression::Identifier(ids[0]),
                                 },
                                 // i=[1]
                                 Assignment {
-                                    id: Id(2),
+                                    id: ids[2],
                                     name: "i".into(),
                                     value: Expression::List(vec![Expression::Number(1.0)]),
                                 },
                             ],
+                            index: ids.new_id(11),
                         },
                     },
                     // freevar j: 7,
                     // q = jj
                     Assignment {
-                        id: Id(8),
+                        id: ids.new_id(8),
                         name: "q".into(),
                         value: Expression::Op {
                             operation: OpName::Mul,
                             args: vec![
-                                Expression::Identifier(Id(7)),
-                                Expression::Identifier(Id(7)),
+                                Expression::Identifier(ids.new_id(7)),
+                                Expression::Identifier(ids[7]),
                             ],
                         },
                     },
                     // freevar i: 9,
                     // p = (q,i+k)
                     Assignment {
-                        id: Id(10),
+                        id: ids.new_id(10),
                         name: "p".into(),
                         value: Expression::Op {
                             operation: OpName::Point,
                             args: vec![
-                                Expression::Identifier(Id(8)),
+                                Expression::Identifier(ids[8]),
                                 Expression::Op {
                                     operation: OpName::Add,
                                     args: vec![
-                                        Expression::Identifier(Id(9)),
-                                        Expression::Identifier(Id(4)),
+                                        Expression::Identifier(ids.new_id(9)),
+                                        Expression::Identifier(ids[4]),
                                     ],
                                 },
                             ],
@@ -3522,23 +3774,24 @@ mod tests {
                     },
                 ],
                 vec![
-                    ExpressionResult::Value(Id(6)),
+                    ExpressionResult::Value(ids[6]),
                     ExpressionResult::Err(NameError::undefined(["i", "j"])),
-                    ExpressionResult::Value(Id(0)),
+                    ExpressionResult::Value(ids[0]),
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
-                        value: Id(8),
-                        parameters: vec![Id(7)],
+                        value: ids[8],
+                        parameters: vec![ids[7]],
                     },
-                    ExpressionResult::Value(Id(4)),
+                    ExpressionResult::Value(ids[4]),
                 ],
-                HashMap::from([("j".into(), Id(7)), ("i".into(), Id(9))]),
+                HashMap::from([("j".into(), ids[7]), ("i".into(), ids[9])]),
             ),
         );
     }
 
     #[test]
     fn nested_list_comps() {
+        let mut ids = IdGenerator::default();
         assert_eq(
             resolve_names_ti(&[
                 // E = C.total + D.total for j=[1...4]
@@ -3631,31 +3884,31 @@ mod tests {
                 vec![
                     // C = B for i=[1...5]
                     Assignment {
-                        id: Id(3),
+                        id: ids.new_id(3),
                         name: "C".into(),
                         value: Expression::For {
                             body: Body {
                                 assignments: vec![
                                     // B = i^2
                                     Assignment {
-                                        id: Id(2),
+                                        id: ids.new_id(2),
                                         name: "B".into(),
                                         value: Expression::Op {
                                             operation: OpName::Pow,
                                             args: vec![
-                                                Expression::Identifier(Id(1)),
+                                                Expression::Identifier(ids.new_id(1)),
                                                 Expression::Number(2.0),
                                             ],
                                         },
                                     },
                                 ],
                                 // B
-                                value: bx(Expression::Identifier(Id(2))),
+                                value: bx(Expression::Identifier(ids[2])),
                             },
                             lists: vec![
                                 // i=[1...5]
                                 Assignment {
-                                    id: Id(1),
+                                    id: ids[1],
                                     name: "i".into(),
                                     value: Expression::ListRange {
                                         before_ellipsis: vec![Expression::Number(1.0)],
@@ -3663,49 +3916,54 @@ mod tests {
                                     },
                                 },
                             ],
+                            index: ids.new_id(18),
                         },
                     },
                     // A = 5
                     Assignment {
-                        id: Id(6),
+                        id: ids.new_id(6),
                         name: "A".into(),
                         value: Expression::Number(5.0),
                     },
                     // E = C[i] + D[i] for j=[1...4]
                     Assignment {
-                        id: Id(9),
+                        id: ids.new_id(9),
                         name: "E".into(),
                         value: Expression::For {
                             body: Body {
                                 assignments: vec![
                                     // D = B + A + F for i=[1...3]
                                     Assignment {
-                                        id: Id(8),
+                                        id: ids.new_id(8),
                                         name: "D".into(),
                                         value: Expression::For {
                                             body: Body {
                                                 assignments: vec![
                                                     // B = i^2
                                                     Assignment {
-                                                        id: Id(5),
+                                                        id: ids.new_id(5),
                                                         name: "B".into(),
                                                         value: Expression::Op {
                                                             operation: OpName::Pow,
                                                             args: vec![
-                                                                Expression::Identifier(Id(4)),
+                                                                Expression::Identifier(
+                                                                    ids.new_id(4),
+                                                                ),
                                                                 Expression::Number(2.0),
                                                             ],
                                                         },
                                                     },
                                                     // F = i + j
                                                     Assignment {
-                                                        id: Id(7),
+                                                        id: ids.new_id(7),
                                                         name: "F".into(),
                                                         value: Expression::Op {
                                                             operation: OpName::Add,
                                                             args: vec![
-                                                                Expression::Identifier(Id(4)),
-                                                                Expression::Identifier(Id(0)),
+                                                                Expression::Identifier(ids[4]),
+                                                                Expression::Identifier(
+                                                                    ids.new_id(0),
+                                                                ),
                                                             ],
                                                         },
                                                     },
@@ -3717,18 +3975,18 @@ mod tests {
                                                         Expression::Op {
                                                             operation: OpName::Add,
                                                             args: vec![
-                                                                Expression::Identifier(Id(5)),
-                                                                Expression::Identifier(Id(6)),
+                                                                Expression::Identifier(ids[5]),
+                                                                Expression::Identifier(ids[6]),
                                                             ],
                                                         },
-                                                        Expression::Identifier(Id(7)),
+                                                        Expression::Identifier(ids[7]),
                                                     ],
                                                 }),
                                             },
                                             lists: vec![
                                                 // i=[1...3]
                                                 Assignment {
-                                                    id: Id(4),
+                                                    id: ids[4],
                                                     name: "i".into(),
                                                     value: Expression::ListRange {
                                                         before_ellipsis: vec![Expression::Number(
@@ -3740,6 +3998,7 @@ mod tests {
                                                     },
                                                 },
                                             ],
+                                            index: ids.new_id(19),
                                         },
                                     },
                                 ],
@@ -3749,11 +4008,11 @@ mod tests {
                                     args: vec![
                                         Expression::Op {
                                             operation: OpName::Total,
-                                            args: vec![Expression::Identifier(Id(3))],
+                                            args: vec![Expression::Identifier(ids[3])],
                                         },
                                         Expression::Op {
                                             operation: OpName::Total,
-                                            args: vec![Expression::Identifier(Id(8))],
+                                            args: vec![Expression::Identifier(ids[8])],
                                         },
                                     ],
                                 }),
@@ -3761,7 +4020,7 @@ mod tests {
                             lists: vec![
                                 // j=[1...4]
                                 Assignment {
-                                    id: Id(0),
+                                    id: ids[0],
                                     name: "j".into(),
                                     value: Expression::ListRange {
                                         before_ellipsis: vec![Expression::Number(1.0)],
@@ -3769,37 +4028,38 @@ mod tests {
                                     },
                                 },
                             ],
+                            index: ids.new_id(20),
                         },
                     },
                     // freevar j: 12
                     // D = B + A + F for i=[1...3]
                     Assignment {
-                        id: Id(14),
+                        id: ids.new_id(14),
                         name: "D".into(),
                         value: Expression::For {
                             body: Body {
                                 assignments: vec![
                                     // B = i^2
                                     Assignment {
-                                        id: Id(11),
+                                        id: ids.new_id(11),
                                         name: "B".into(),
                                         value: Expression::Op {
                                             operation: OpName::Pow,
                                             args: vec![
-                                                Expression::Identifier(Id(10)),
+                                                Expression::Identifier(ids.new_id(10)),
                                                 Expression::Number(2.0),
                                             ],
                                         },
                                     },
                                     // F = i + j
                                     Assignment {
-                                        id: Id(13),
+                                        id: ids.new_id(13),
                                         name: "F".into(),
                                         value: Expression::Op {
                                             operation: OpName::Add,
                                             args: vec![
-                                                Expression::Identifier(Id(10)),
-                                                Expression::Identifier(Id(12)),
+                                                Expression::Identifier(ids[10]),
+                                                Expression::Identifier(ids.new_id(12)),
                                             ],
                                         },
                                     },
@@ -3811,18 +4071,18 @@ mod tests {
                                         Expression::Op {
                                             operation: OpName::Add,
                                             args: vec![
-                                                Expression::Identifier(Id(11)),
-                                                Expression::Identifier(Id(6)),
+                                                Expression::Identifier(ids[11]),
+                                                Expression::Identifier(ids[6]),
                                             ],
                                         },
-                                        Expression::Identifier(Id(13)),
+                                        Expression::Identifier(ids[13]),
                                     ],
                                 }),
                             },
                             lists: vec![
                                 // i=[1...3]
                                 Assignment {
-                                    id: Id(10),
+                                    id: ids[10],
                                     name: "i".into(),
                                     value: Expression::ListRange {
                                         before_ellipsis: vec![Expression::Number(1.0)],
@@ -3830,48 +4090,52 @@ mod tests {
                                     },
                                 },
                             ],
+                            index: ids.new_id(21),
                         },
                     },
                     // freevar i: 15
                     // B = i^2
                     Assignment {
-                        id: Id(16),
+                        id: ids.new_id(16),
                         name: "B".into(),
                         value: Expression::Op {
                             operation: OpName::Pow,
-                            args: vec![Expression::Identifier(Id(15)), Expression::Number(2.0)],
+                            args: vec![
+                                Expression::Identifier(ids.new_id(15)),
+                                Expression::Number(2.0),
+                            ],
                         },
                     },
                     // F = i + j
                     Assignment {
-                        id: Id(17),
+                        id: ids.new_id(17),
                         name: "F".into(),
                         value: Expression::Op {
                             operation: OpName::Add,
                             args: vec![
-                                Expression::Identifier(Id(15)),
-                                Expression::Identifier(Id(12)),
+                                Expression::Identifier(ids[15]),
+                                Expression::Identifier(ids[12]),
                             ],
                         },
                     },
                 ],
                 vec![
-                    ExpressionResult::Value(Id(9)),
-                    ExpressionResult::Value(Id(3)),
+                    ExpressionResult::Value(ids[9]),
+                    ExpressionResult::Value(ids[3]),
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
-                        value: Id(14),
-                        parameters: vec![Id(12)],
+                        value: ids[14],
+                        parameters: vec![ids[12]],
                     },
                     ExpressionResult::Plot {
                         allowed_kinds: PlotKinds::NORMAL | PlotKinds::PARAMETRIC,
-                        value: Id(16),
-                        parameters: vec![Id(15)],
+                        value: ids[16],
+                        parameters: vec![ids[15]],
                     },
                     ExpressionResult::Err(NameError::undefined(["i", "j"])),
-                    ExpressionResult::Value(Id(6)),
+                    ExpressionResult::Value(ids[6]),
                 ],
-                HashMap::from([("j".into(), Id(12)), ("i".into(), Id(15))]),
+                HashMap::from([("j".into(), ids[12]), ("i".into(), ids[15])]),
             ),
         );
     }
@@ -4252,12 +4516,14 @@ mod tests {
 
     #[test]
     fn comprehension_existing_variable() {
-        assert_eq!(
+        let mut ids = IdGenerator::default();
+
+        assert_eq(
             resolve_names_ti(&[
                 // b = 1
                 ElAssign {
                     name: "b".into(),
-                    value: ANum(1.0)
+                    value: ANum(1.0),
                 },
                 // a = b + (b for b = [])
                 ElAssign {
@@ -4268,49 +4534,50 @@ mod tests {
                             AId("b".into()),
                             AFor {
                                 body: bx(AId("b".into())),
-                                lists: vec![("b".into(), AList(vec![]))]
-                            }
-                        ]
-                    }
+                                lists: vec![("b".into(), AList(vec![]))],
+                            },
+                        ],
+                    },
                 },
             ]),
             (
                 vec![
                     // b = 1
                     Assignment {
-                        id: Id(0),
+                        id: ids.new_id("b"),
                         name: "b".into(),
                         value: Expression::Number(1.0),
                     },
                     // a = b + (b for b = [])
                     Assignment {
-                        id: Id(2),
+                        id: ids.new_id("a"),
                         name: "a".into(),
                         value: Expression::Op {
                             operation: OpName::Add,
                             args: vec![
-                                Expression::Identifier(Id(0)),
+                                Expression::Identifier(ids["b"]),
                                 Expression::For {
-                                    body: Body {
-                                        assignments: vec![],
-                                        value: bx(Expression::Identifier(Id(1))),
-                                    },
                                     lists: vec![
                                         // b = []
                                         Assignment {
-                                            id: Id(1),
+                                            id: ids.new_id("b1"),
                                             name: "b".into(),
                                             value: Expression::List(vec![]),
                                         },
                                     ],
-                                }
-                            ]
+                                    index: ids.new_id("index"),
+                                    body: Body {
+                                        assignments: vec![],
+                                        value: bx(Expression::Identifier(ids["b1"])),
+                                    },
+                                },
+                            ],
                         },
-                    }
+                    },
                 ],
                 vec![
-                    ExpressionResult::Value(Id(0)),
-                    ExpressionResult::Value(Id(2))
+                    ExpressionResult::Value(ids["b"]),
+                    ExpressionResult::Value(ids["a"]),
                 ],
                 HashMap::from([]),
             ),
@@ -4439,18 +4706,24 @@ mod tests {
             [
                 // (t, t); a < t < a + b
                 ExpressionListEntry {
-                    expression: &Statement::Expression(AOp {
-                        operation: OpName::Point,
-                        args: vec![id("t"), id("t")],
-                    }),
+                    expression: (
+                        &Statement::Expression(AOp {
+                            operation: OpName::Point,
+                            args: vec![id("t"), id("t")],
+                        }),
+                        RandomSeed(0),
+                    ),
                     slider: None,
                 },
                 // a = 5
                 ExpressionListEntry {
-                    expression: &Statement::Assignment {
-                        name: "a".into(),
-                        value: ANum(5.0),
-                    },
+                    expression: (
+                        &Statement::Assignment {
+                            name: "a".into(),
+                            value: ANum(5.0),
+                        },
+                        RandomSeed(0),
+                    ),
                     slider: None,
                 },
             ]
@@ -4459,12 +4732,15 @@ mod tests {
             &[],
             [
                 // min
-                &id("a"),
+                (&id("a"), RandomSeed(0)),
                 // max
-                &AOp {
-                    operation: OpName::Add,
-                    args: vec![id("a"), id("b")],
-                },
+                (
+                    &AOp {
+                        operation: OpName::Add,
+                        args: vec![id("a"), id("b")],
+                    },
+                    RandomSeed(0),
+                ),
             ]
             .as_slice()
             .as_ref(),
@@ -4524,87 +4800,111 @@ mod tests {
             [
                 // a = 4; min = b, max = none, step: 1
                 ExpressionListEntry {
-                    expression: &Statement::Assignment {
-                        name: "a".into(),
-                        value: ANum(4.0),
-                    },
+                    expression: (
+                        &Statement::Assignment {
+                            name: "a".into(),
+                            value: ANum(4.0),
+                        },
+                        RandomSeed(0),
+                    ),
                     slider: Some(Slider {
-                        min: Some(&id("b")),
+                        min: Some((&id("b"), RandomSeed(0))),
                         max: None,
-                        step: Some(&ANum(1.0)),
+                        step: Some((&ANum(1.0), RandomSeed(0))),
                     }),
                 },
                 // b = 3
                 ExpressionListEntry {
-                    expression: &Statement::Assignment {
-                        name: "b".into(),
-                        value: ANum(3.0),
-                    },
+                    expression: (
+                        &Statement::Assignment {
+                            name: "b".into(),
+                            value: ANum(3.0),
+                        },
+                        RandomSeed(0),
+                    ),
                     slider: None,
                 },
                 // a with b = 5
                 ExpressionListEntry {
-                    expression: &Statement::Expression(AWith {
-                        body: bx(id("a")),
-                        substitutions: vec![("b".into(), ANum(5.0))],
-                    }),
+                    expression: (
+                        &Statement::Expression(AWith {
+                            body: bx(id("a")),
+                            substitutions: vec![("b".into(), ANum(5.0))],
+                        }),
+                        RandomSeed(0),
+                    ),
                     slider: None,
                 },
                 // c
                 ExpressionListEntry {
-                    expression: &Statement::Expression(id("c")),
+                    expression: (&Statement::Expression(id("c")), RandomSeed(0)),
                     slider: None,
                 },
                 // c with d = 6
                 ExpressionListEntry {
-                    expression: &Statement::Expression(AWith {
-                        body: bx(id("c")),
-                        substitutions: vec![("d".into(), ANum(6.0))],
-                    }),
+                    expression: (
+                        &Statement::Expression(AWith {
+                            body: bx(id("c")),
+                            substitutions: vec![("d".into(), ANum(6.0))],
+                        }),
+                        RandomSeed(0),
+                    ),
                     slider: None,
                 },
                 // c = 1; min = none, max = d, step = none
                 ExpressionListEntry {
-                    expression: &Statement::Assignment {
-                        name: "c".into(),
-                        value: ANum(1.0),
-                    },
+                    expression: (
+                        &Statement::Assignment {
+                            name: "c".into(),
+                            value: ANum(1.0),
+                        },
+                        RandomSeed(0),
+                    ),
                     slider: Some(Slider {
                         min: None,
-                        max: Some(&id("d")),
+                        max: Some((&id("d"), RandomSeed(0))),
                         step: None,
                     }),
                 },
                 // d = 2; min = none, max = c, step = none
                 ExpressionListEntry {
-                    expression: &Statement::Assignment {
-                        name: "d".into(),
-                        value: ANum(2.0),
-                    },
+                    expression: (
+                        &Statement::Assignment {
+                            name: "d".into(),
+                            value: ANum(2.0),
+                        },
+                        RandomSeed(0),
+                    ),
                     slider: Some(Slider {
                         min: None,
-                        max: Some(&id("c")),
+                        max: Some((&id("c"), RandomSeed(0))),
                         step: None,
                     }),
                 },
                 // e = 6; min = none, max = f, step = none
                 ExpressionListEntry {
-                    expression: &Statement::Assignment {
-                        name: "e".into(),
-                        value: ANum(6.0),
-                    },
+                    expression: (
+                        &Statement::Assignment {
+                            name: "e".into(),
+                            value: ANum(6.0),
+                        },
+                        RandomSeed(0),
+                    ),
                     slider: Some(Slider {
                         min: None,
-                        max: Some(&id("f")),
+                        max: Some((&id("f"), RandomSeed(0))),
                         step: None,
                     }),
                 },
                 // e with f = 5
                 ExpressionListEntry {
-                    expression: &Statement::Expression(AWith {
-                        body: bx(id("e")),
-                        substitutions: vec![("f".into(), ANum(5.0))],
-                    }),
+                    expression: (
+                        &Statement::Expression(AWith {
+                            body: bx(id("e")),
+                            substitutions: vec![("f".into(), ANum(5.0))],
+                        }),
+                        RandomSeed(0),
+                    ),
                     slider: None,
                 },
             ]
@@ -4838,25 +5138,31 @@ mod tests {
             [
                 // a = 4; min = b, max = none, step = None
                 ExpressionListEntry {
-                    expression: &Statement::Assignment {
-                        name: "a".into(),
-                        value: ANum(4.0),
-                    },
+                    expression: (
+                        &Statement::Assignment {
+                            name: "a".into(),
+                            value: ANum(4.0),
+                        },
+                        RandomSeed(0),
+                    ),
                     slider: Some(Slider {
-                        min: Some(&id("b")),
+                        min: Some((&id("b"), RandomSeed(0))),
                         max: None,
                         step: None,
                     }),
                 },
                 // b = a with b = 2
                 ExpressionListEntry {
-                    expression: &Statement::Assignment {
-                        name: "b".into(),
-                        value: AWith {
-                            body: bx(id("a")),
-                            substitutions: vec![("b".into(), ANum(2.0))],
+                    expression: (
+                        &Statement::Assignment {
+                            name: "b".into(),
+                            value: AWith {
+                                body: bx(id("a")),
+                                substitutions: vec![("b".into(), ANum(2.0))],
+                            },
                         },
-                    },
+                        RandomSeed(0),
+                    ),
                     slider: None,
                 },
             ]
@@ -5099,6 +5405,496 @@ mod tests {
                     ),
                 ]),
                 HashMap::from([("pi".into(), ids["pi"]), ("e".into(), ids["e"])]),
+            ),
+        );
+    }
+
+    #[test]
+    fn random() {
+        let id = |s: &str| AId(s.into());
+        let mut ids = IdGenerator::default();
+        let a = resolve_names(
+            [
+                // f(2,3)
+                ExpressionListEntry {
+                    expression: (
+                        &ElExpr(ACallMul {
+                            callee: "f".into(),
+                            args: vec![ANum(2.0), ANum(3.0)],
+                        }),
+                        RandomSeed(0),
+                    ),
+                    slider: None,
+                },
+                // g(x) = random()
+                ExpressionListEntry {
+                    expression: (
+                        &ElFunction {
+                            name: "g".into(),
+                            parameters: vec!["x".into()],
+                            body: ACallMul {
+                                callee: "random".into(),
+                                args: vec![],
+                            },
+                        },
+                        RandomSeed(10),
+                    ),
+                    slider: None,
+                },
+                // f(x,y) = random() + g(a)
+                ExpressionListEntry {
+                    expression: (
+                        &ElFunction {
+                            name: "f".into(),
+                            parameters: vec!["x".into(), "y".into()],
+                            body: AOp {
+                                operation: OpName::Add,
+                                args: vec![
+                                    ACallMul {
+                                        callee: "random".into(),
+                                        args: vec![],
+                                    },
+                                    ACallMul {
+                                        callee: "g".into(),
+                                        args: vec![id("a")],
+                                    },
+                                ],
+                            },
+                        },
+                        RandomSeed(20),
+                    ),
+                    slider: None,
+                },
+                // a with b = 5
+                ExpressionListEntry {
+                    expression: (
+                        &ElExpr(AWith {
+                            body: bx(id("a")),
+                            substitutions: vec![("b".into(), ANum(5.0))],
+                        }),
+                        RandomSeed(30),
+                    ),
+                    slider: None,
+                },
+                // a = random(8,4) + b
+                ExpressionListEntry {
+                    expression: (
+                        &ElAssign {
+                            name: "a".into(),
+                            value: AOp {
+                                operation: OpName::Add,
+                                args: vec![
+                                    ACallMul {
+                                        callee: "random".into(),
+                                        args: vec![ANum(8.0), ANum(4.0)],
+                                    },
+                                    id("b"),
+                                ],
+                            },
+                        },
+                        RandomSeed(40),
+                    ),
+                    slider: None,
+                },
+                // b = random() with c = shuffle([3],2)
+                ExpressionListEntry {
+                    expression: (
+                        &ElAssign {
+                            name: "b".into(),
+                            value: AWith {
+                                body: bx(ACallMul {
+                                    callee: "random".into(),
+                                    args: vec![],
+                                }),
+                                substitutions: vec![(
+                                    "c".into(),
+                                    ACallMul {
+                                        callee: "shuffle".into(),
+                                        args: vec![AList(vec![ANum(3.0)]), ANum(2.0)],
+                                    },
+                                )],
+                            },
+                        },
+                        RandomSeed(50),
+                    ),
+                    slider: None,
+                },
+                // d = random(6).total for i=[1]
+                ExpressionListEntry {
+                    expression: (
+                        &ElAssign {
+                            name: "d".into(),
+                            value: AFor {
+                                body: bx(ACall {
+                                    callee: "total".into(),
+                                    args: vec![ACallMul {
+                                        callee: "random".into(),
+                                        args: vec![ANum(6.0)],
+                                    }],
+                                }),
+                                lists: vec![("i".into(), AList(vec![ANum(1.0)]))],
+                            },
+                        },
+                        RandomSeed(60),
+                    ),
+                    slider: None,
+                },
+                // e = total(random() for i=[random()]) for j=[1]
+                ExpressionListEntry {
+                    expression: (
+                        &ElAssign {
+                            name: "e".into(),
+                            value: AFor {
+                                body: bx(ACall {
+                                    callee: "total".into(),
+                                    args: vec![AFor {
+                                        body: bx(ACallMul {
+                                            callee: "random".into(),
+                                            args: vec![],
+                                        }),
+                                        lists: vec![(
+                                            "i".into(),
+                                            AList(vec![ACallMul {
+                                                callee: "random".into(),
+                                                args: vec![],
+                                            }]),
+                                        )],
+                                    }],
+                                }),
+                                lists: vec![("j".into(), AList(vec![ANum(1.0)]))],
+                            },
+                        },
+                        RandomSeed(70),
+                    ),
+                    slider: None,
+                },
+                // h(x) = [4,5].shuffle(7)[2] for i=[1]
+                ExpressionListEntry {
+                    expression: (
+                        &ElFunction {
+                            name: "h".into(),
+                            parameters: vec!["x".into()],
+                            body: AFor {
+                                body: bx(AOp {
+                                    operation: OpName::Index,
+                                    args: vec![
+                                        ACall {
+                                            callee: "shuffle".into(),
+                                            args: vec![
+                                                AList(vec![ANum(4.0), ANum(5.0)]),
+                                                ANum(7.0),
+                                            ],
+                                        },
+                                        ANum(2.0),
+                                    ],
+                                }),
+                                lists: vec![("i".into(), AList(vec![ANum(1.0)]))],
+                            },
+                        },
+                        RandomSeed(80),
+                    ),
+                    slider: None,
+                },
+            ]
+            .as_slice()
+            .as_ref(),
+            &[],
+            Default::default(),
+            false,
+        );
+        assert_eq(
+            (a.assignments, a.results.into(), a.freevars),
+            (
+                vec![
+                    // x = 2
+                    Assignment {
+                        id: ids.new_id("x0"),
+                        name: "x".into(),
+                        value: Expression::Number(2.0),
+                    },
+                    // y = 3
+                    Assignment {
+                        id: ids.new_id("y0"),
+                        name: "y".into(),
+                        value: Expression::Number(3.0),
+                    },
+                    // with c = shuffle([3],2)
+                    Assignment {
+                        id: ids.new_id("c"),
+                        name: "c".into(),
+                        value: Expression::Rng {
+                            operation: OpName::Shuffle {
+                                expression_seed: 50,
+                                position: 1,
+                            },
+                            seeds: vec![],
+                            args: vec![
+                                Expression::List(vec![Expression::Number(3.0)]),
+                                Expression::Number(2.0),
+                            ],
+                        },
+                    },
+                    // b = random() with c = shuffle([3],2)
+                    Assignment {
+                        id: ids.new_id("b"),
+                        name: "b".into(),
+                        value: Expression::Rng {
+                            operation: OpName::Random {
+                                expression_seed: 50,
+                                position: 0,
+                            },
+                            seeds: vec![],
+                            args: vec![],
+                        },
+                    },
+                    // a = random(8,4) + b
+                    Assignment {
+                        id: ids.new_id("a"),
+                        name: "a".into(),
+                        value: Expression::Op {
+                            operation: OpName::Add,
+                            args: vec![
+                                Expression::Rng {
+                                    operation: OpName::Random {
+                                        expression_seed: 40,
+                                        position: 0,
+                                    },
+                                    seeds: vec![],
+                                    args: vec![Expression::Number(8.0), Expression::Number(4.0)],
+                                },
+                                Expression::Identifier(ids["b"]),
+                            ],
+                        },
+                    },
+                    // x = a
+                    Assignment {
+                        id: ids.new_id("x1"),
+                        name: "x".into(),
+                        value: Expression::Identifier(ids["a"]),
+                    },
+                    // f(2,3)
+                    Assignment {
+                        id: ids.new_id("f(2,3)"),
+                        name: "<anonymous>".into(),
+                        value: Expression::Op {
+                            operation: OpName::Add,
+                            args: vec![
+                                Expression::Rng {
+                                    operation: OpName::Random {
+                                        expression_seed: 20,
+                                        position: 0,
+                                    },
+                                    seeds: vec![ids["x0"], ids["y0"]],
+                                    args: vec![],
+                                },
+                                Expression::Rng {
+                                    operation: OpName::Random {
+                                        expression_seed: 10,
+                                        position: 0,
+                                    },
+                                    seeds: vec![ids["x1"]],
+                                    args: vec![],
+                                },
+                            ],
+                        },
+                    },
+                    // x = <anonymous function argument>
+                    Assignment {
+                        id: ids.new_id("x2"),
+                        name: "x".into(),
+                        value: Expression::Identifier(ids.new_id("<anonymous function argument>")),
+                    },
+                    // g(x) = random()
+                    Assignment {
+                        id: ids.new_id("g(x) plot"),
+                        name: "<anonymous function plot>".into(),
+                        value: Expression::Rng {
+                            operation: OpName::Random {
+                                expression_seed: 10,
+                                position: 0,
+                            },
+                            seeds: vec![ids["x2"]],
+                            args: vec![],
+                        },
+                    },
+                    // with b = 5
+                    Assignment {
+                        id: ids.new_id("b1"),
+                        name: "b".into(),
+                        value: Expression::Number(5.0),
+                    },
+                    // a = random(8,4) + b
+                    Assignment {
+                        id: ids.new_id("a1"),
+                        name: "a".into(),
+                        value: Expression::Op {
+                            operation: OpName::Add,
+                            args: vec![
+                                Expression::Rng {
+                                    operation: OpName::Random {
+                                        expression_seed: 40,
+                                        position: 0,
+                                    },
+                                    seeds: vec![],
+                                    args: vec![Expression::Number(8.0), Expression::Number(4.0)],
+                                },
+                                Expression::Identifier(ids["b1"]),
+                            ],
+                        },
+                    },
+                    // a with b = 5
+                    Assignment {
+                        id: ids.new_id("a with b = 5"),
+                        name: "<anonymous>".into(),
+                        value: Expression::Identifier(ids["a1"]),
+                    },
+                    // d = random(6).total for i=[1]
+                    Assignment {
+                        id: ids.new_id("d"),
+                        name: "d".into(),
+                        value: Expression::For {
+                            index: ids.new_id("index0"),
+                            body: Body {
+                                assignments: vec![],
+                                value: bx(Expression::Op {
+                                    operation: OpName::Total,
+                                    args: vec![Expression::Rng {
+                                        operation: OpName::Random {
+                                            expression_seed: 60,
+                                            position: 0,
+                                        },
+                                        seeds: vec![ids["index0"]],
+                                        args: vec![Expression::Number(6.0)],
+                                    }],
+                                }),
+                            },
+                            lists: vec![Assignment {
+                                id: ids.new_id("i0"),
+                                name: "i".into(),
+                                value: Expression::List(vec![Expression::Number(1.0)]),
+                            }],
+                        },
+                    },
+                    // e = total(random() for i=[random()]) for j=[1]
+                    Assignment {
+                        id: ids.new_id("e"),
+                        name: "e".into(),
+                        value: Expression::For {
+                            index: ids.new_id("index1"),
+                            body: Body {
+                                assignments: vec![],
+                                value: bx(Expression::Op {
+                                    operation: OpName::Total,
+                                    args: vec![Expression::For {
+                                        index: ids.new_id("index2"),
+                                        body: Body {
+                                            assignments: vec![],
+                                            value: bx(Expression::Rng {
+                                                operation: OpName::Random {
+                                                    expression_seed: 70,
+                                                    position: 0,
+                                                },
+                                                seeds: vec![ids["index1"], ids["index2"]],
+                                                args: vec![],
+                                            }),
+                                        },
+                                        lists: vec![Assignment {
+                                            id: ids.new_id("i1"),
+                                            name: "i".into(),
+                                            value: Expression::List(vec![Expression::Rng {
+                                                operation: OpName::Random {
+                                                    expression_seed: 70,
+                                                    position: 1,
+                                                },
+                                                seeds: vec![ids["index1"]],
+                                                args: vec![],
+                                            }]),
+                                        }],
+                                    }],
+                                }),
+                            },
+                            lists: vec![Assignment {
+                                id: ids.new_id("j0"),
+                                name: "j".into(),
+                                value: Expression::List(vec![Expression::Number(1.0)]),
+                            }],
+                        },
+                    },
+                    // x = <anonymous function argument>
+                    Assignment {
+                        id: ids.new_id("x3"),
+                        name: "x".into(),
+                        value: Expression::Identifier(ids["<anonymous function argument>"]),
+                    },
+                    // h(x) = [4,5].shuffle(7)[2] for i=[1]
+                    Assignment {
+                        id: ids.new_id("h(x) plot"),
+                        name: "<anonymous function plot>".into(),
+                        value: Expression::For {
+                            index: ids.new_id("index3"),
+                            body: Body {
+                                assignments: vec![],
+                                value: bx(Expression::Op {
+                                    operation: OpName::Index,
+                                    args: vec![
+                                        Expression::Rng {
+                                            operation: OpName::Shuffle {
+                                                expression_seed: 80,
+                                                position: 0,
+                                            },
+                                            seeds: vec![ids["x3"], ids["index3"]],
+                                            args: vec![
+                                                Expression::List(vec![
+                                                    Expression::Number(4.0),
+                                                    Expression::Number(5.0),
+                                                ]),
+                                                Expression::Number(7.0),
+                                            ],
+                                        },
+                                        Expression::Number(2.0),
+                                    ],
+                                }),
+                            },
+                            lists: vec![Assignment {
+                                id: ids.new_id("i2"),
+                                name: "i".into(),
+                                value: Expression::List(vec![Expression::Number(1.0)]),
+                            }],
+                        },
+                    },
+                ],
+                vec![
+                    // f(2,3)
+                    ExpressionResult::Value(ids["f(2,3)"]),
+                    // g(x) = random()
+                    ExpressionResult::Plot {
+                        allowed_kinds: PlotKinds::NORMAL,
+                        value: ids["g(x) plot"],
+                        parameters: vec![ids["<anonymous function argument>"]],
+                    },
+                    // f(x,y) = random() + g(a)
+                    ExpressionResult::None,
+                    // a with b = 5
+                    ExpressionResult::Value(ids["a with b = 5"]),
+                    // a = random(8,4) + b
+                    ExpressionResult::Value(ids["a"]),
+                    // b = random() with c = shuffle([3],2)
+                    ExpressionResult::Value(ids["b"]),
+                    // d = random(6).total for i=[1]
+                    ExpressionResult::Value(ids["d"]),
+                    // e = total(random() for i=[random()]) for j=[1]
+                    ExpressionResult::Value(ids["e"]),
+                    // h(x) = [4,5].shuffle(7)[2] for i=[1]
+                    ExpressionResult::Plot {
+                        allowed_kinds: PlotKinds::NORMAL,
+                        value: ids["h(x) plot"],
+                        parameters: vec![ids["<anonymous function argument>"]],
+                    },
+                ],
+                HashMap::from([(
+                    "<anonymous function argument>".into(),
+                    ids["<anonymous function argument>"],
+                )]),
             ),
         );
     }

@@ -11,7 +11,7 @@ use crate::{
     ast,
     name_resolver::{
         ExpressionIndex, ExpressionListEntry, ExpressionResult as NrEr, Id, NameError, Output,
-        PlotKinds, PropertyIndex, Slider, resolve_names,
+        PlotKinds, PropertyIndex, RandomSeed, Slider, resolve_names,
     },
     type_checker::{Assignment, Type, TypeError, type_check, walk_assignment_ids},
 };
@@ -85,7 +85,7 @@ pub struct AnalysisResult {
 pub fn analyze_expression_list<'a>(
     list: &TiSlice<ExpressionIndex, ExpressionListEntry<'a>>,
     builtin_constants: &[&str],
-    properties: &TiSlice<PropertyIndex, &'a ast::Expression>,
+    properties: &TiSlice<PropertyIndex, (&'a ast::Expression, RandomSeed)>,
     use_v1_9_scoping_rules: bool,
 ) -> AnalysisResult {
     let Output {
@@ -262,7 +262,9 @@ pub fn analyze_expression_list<'a>(
                             ExpressionResult::None
                         };
                     }
-                    Type::Bool | Type::BoolList => unreachable!(),
+                    Type::Bool | Type::BoolList | Type::RandomSeed | Type::RandomSeedList => {
+                        unreachable!()
+                    }
                     Type::EmptyList => return ExpressionResult::Value(value, ty),
                 };
 

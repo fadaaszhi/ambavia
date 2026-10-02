@@ -21,6 +21,7 @@ pub enum BaseType {
     Polygon,
     Color,
     Bool,
+    RandomSeed,
     Empty,
 }
 
@@ -38,6 +39,8 @@ pub enum Type {
     ColorList,
     Bool,
     BoolList,
+    RandomSeed,
+    RandomSeedList,
     EmptyList,
 }
 
@@ -50,6 +53,7 @@ impl Type {
             Type::Polygon | Type::PolygonList => BaseType::Polygon,
             Type::Color | Type::ColorList => BaseType::Color,
             Type::Bool | Type::BoolList => BaseType::Bool,
+            Type::RandomSeed | Type::RandomSeedList => BaseType::RandomSeed,
             Type::EmptyList => BaseType::Empty,
         }
     }
@@ -78,6 +82,7 @@ impl Type {
             BaseType::Polygon => Type::PolygonList,
             BaseType::Color => Type::ColorList,
             BaseType::Bool => Type::BoolList,
+            BaseType::RandomSeed => Type::RandomSeedList,
             BaseType::Empty => Type::EmptyList,
         }
     }
@@ -90,6 +95,7 @@ impl Type {
             BaseType::Polygon => Type::Polygon,
             BaseType::Color => Type::Color,
             BaseType::Bool => Type::Bool,
+            BaseType::RandomSeed => Type::RandomSeed,
             BaseType::Empty => Type::Number,
         }
     }
@@ -123,6 +129,8 @@ impl std::fmt::Display for Type {
             Type::ColorList => "a list of colors",
             Type::Bool => "a true/false value",
             Type::BoolList => "a list of true/false values",
+            Type::RandomSeed => "a random seed",
+            Type::RandomSeedList => "a list of random seeds",
             Type::EmptyList => "an empty list",
         })
     }
@@ -141,6 +149,7 @@ fn te(ty: Type, e: Expression) -> TypedExpression {
 #[derive(Debug, PartialEq)]
 pub enum Expression {
     Number(f64),
+    RandomSeed(u64),
     Identifier(Id),
     Slider {
         value: Box<TypedExpression>,
@@ -179,7 +188,9 @@ pub enum Expression {
     For {
         body: Body,
         lists: Vec<Assignment>,
+        index: Id,
     },
+    Body(Body),
 }
 
 #[derive(Debug, PartialEq)]
@@ -234,6 +245,7 @@ impl TypedExpression {
         }
         match &self.e {
             Expression::Number(_) => {}
+            Expression::RandomSeed(_) => {}
             Expression::Identifier(id) => f(*id)?,
             Expression::Slider { value, slider } => {
                 value.walk_ids(f)?;
@@ -282,8 +294,13 @@ impl TypedExpression {
                 walk_assignments_ids(&body.assignments, f)?;
                 body.value.walk_ids(f)?;
             }
-            Expression::For { body, lists } => {
+            Expression::For { body, lists, index } => {
                 walk_assignments_ids(lists, f)?;
+                walk_assignments_ids(&body.assignments, f)?;
+                body.value.walk_ids(f)?;
+                f(*index)?;
+            }
+            Expression::Body(body) => {
                 walk_assignments_ids(&body.assignments, f)?;
                 body.value.walk_ids(f)?;
             }
@@ -538,6 +555,7 @@ impl TypeChecker {
                                 operators: vec![ComparisonOperator::Equal],
                             },
                         ),
+                        B::RandomSeed => te(Type::RandomSeed, Expression::RandomSeed(0)),
                         B::Empty => te(Type::EmptyList, Expression::List(vec![])),
                     });
 
@@ -586,7 +604,9 @@ impl TypeChecker {
                 ))
             }
             nr::Expression::SumProd { .. } => todo!(),
-            nr::Expression::For { body, lists } => {
+            nr::Expression::For { body, lists, index } => {
+                self.insert_computed_type(*index, Ok(Type::Number));
+
                 let lists = lists
                     .iter()
                     .map(|l| {
@@ -617,8 +637,370 @@ impl TypeChecker {
 
                 Ok(te(
                     Type::list_of(body.value.ty.base()),
-                    Expression::For { body, lists },
+                    Expression::For {
+                        body,
+                        lists,
+                        index: *index,
+                    },
                 ))
+            }
+            nr::Expression::Rng {
+                operation,
+                seeds,
+                args,
+            } => {
+                use crate::op::OpName;
+
+                let (OpName::Random {
+                    expression_seed,
+                    position,
+                }
+                | OpName::Shuffle {
+                    expression_seed,
+                    position,
+                }) = *operation
+                else {
+                    unreachable!("{operation:?} is not RNG");
+                };
+
+                let args = self.check_expressions(args)?;
+
+                let combine = |a, b| {
+                    te(
+                        Type::RandomSeed,
+                        Expression::Op {
+                            operation: Op::CombineSeeds,
+                            args: vec![a, b],
+                        },
+                    )
+                };
+                let hash = |value| {
+                    te(
+                        Type::RandomSeed,
+                        Expression::Op {
+                            operation: Op::Hash,
+                            args: vec![value],
+                        },
+                    )
+                };
+
+                let expression_seed = te(Type::RandomSeed, Expression::RandomSeed(expression_seed));
+                let position = te(Type::RandomSeed, Expression::RandomSeed(position));
+                let mut combined_seed = combine(expression_seed, position);
+
+                for id in seeds {
+                    let value = te(self.get_type(*id)?, Expression::Identifier(*id));
+                    let seed = hash(value);
+                    combined_seed = combine(combined_seed, seed);
+                }
+
+                let types = args.iter().map(|a| a.ty).collect::<Vec<_>>();
+
+                let no_overload_err = |types: Vec<Type>| {
+                    Err(TypeError::OpError(OpError::NoOverload(*operation, types)))
+                };
+
+                match operation {
+                    OpName::Random { .. } => match &types[..] {
+                        // random() -> number
+                        [] => {
+                            return Ok(te(
+                                Type::Number,
+                                Expression::Op {
+                                    operation: Op::Random,
+                                    args: vec![combined_seed],
+                                },
+                            ));
+                        }
+                        // random(count: number, seed?: number) -> number[]
+                        [Type::Number] | [Type::Number, Type::Number] => {
+                            let mut args = args.into_iter();
+                            let count = args.next().unwrap();
+                            if let Some(seed) = args.next() {
+                                combined_seed = combine(combined_seed, hash(seed));
+                            }
+                            let combined_seed_assignment = self.create_assignment(combined_seed);
+                            let indices_assignment = self.create_assignment(te(
+                                Type::NumberList,
+                                Expression::ListRange {
+                                    before_ellipsis: vec![],
+                                    after_ellipsis: vec![count],
+                                },
+                            ));
+                            let combined_seed = te(
+                                Type::RandomSeed,
+                                Expression::Identifier(combined_seed_assignment.id),
+                            );
+                            let index =
+                                te(Type::Number, Expression::Identifier(indices_assignment.id));
+                            let rand = te(
+                                Type::Number,
+                                Expression::Op {
+                                    operation: Op::Random,
+                                    args: vec![combine(combined_seed, hash(index))],
+                                },
+                            );
+                            return Ok(te(
+                                Type::NumberList,
+                                Expression::Broadcast {
+                                    scalars: vec![combined_seed_assignment],
+                                    vectors: vec![indices_assignment],
+                                    body: Box::new(rand),
+                                },
+                            ));
+                        }
+                        // random(list: T[]) -> T
+                        &[list_ty] if list_ty.is_list() => {
+                            let (count_op, index_op) = match list_ty.base() {
+                                B::Number => (Op::CountNumber, Op::IndexNumberList),
+                                B::Point2 => (Op::CountPoint2, Op::IndexPoint2List),
+                                B::Point3 => (Op::CountPoint3, Op::IndexPoint3List),
+                                B::Polygon => (Op::CountPolygon, Op::IndexPolygonList),
+                                B::Color => (Op::CountColor, Op::IndexColorList),
+                                B::Bool | B::RandomSeed => return no_overload_err(types),
+                                B::Empty => {
+                                    return Ok(te(Type::Number, Expression::Number(f64::NAN)));
+                                }
+                            };
+                            let mut args = args;
+                            let list = args.pop().unwrap();
+                            let list_assignment = self.create_assignment(list);
+                            let list = || te(list_ty, Expression::Identifier(list_assignment.id));
+                            let list_count = te(
+                                Type::Number,
+                                Expression::Op {
+                                    operation: count_op,
+                                    args: vec![list()],
+                                },
+                            );
+                            let rand = te(
+                                Type::Number,
+                                Expression::Op {
+                                    operation: Op::Random,
+                                    args: vec![combined_seed],
+                                },
+                            );
+                            // list_index = floor(list_count * rand) + 1
+                            let list_index = te(
+                                Type::Number,
+                                Expression::Op {
+                                    operation: Op::AddNumber,
+                                    args: vec![
+                                        te(
+                                            Type::Number,
+                                            Expression::Op {
+                                                operation: Op::Floor,
+                                                args: vec![te(
+                                                    Type::Number,
+                                                    Expression::Op {
+                                                        operation: Op::MulNumber,
+                                                        args: vec![list_count, rand],
+                                                    },
+                                                )],
+                                            },
+                                        ),
+                                        te(Type::Number, Expression::Number(1.0)),
+                                    ],
+                                },
+                            );
+                            let element = te(
+                                list_ty.as_single(),
+                                Expression::Op {
+                                    operation: index_op,
+                                    args: vec![list(), list_index],
+                                },
+                            );
+                            return Ok(te(
+                                list_ty.as_single(),
+                                Expression::Body(Body {
+                                    assignments: vec![list_assignment],
+                                    value: Box::new(element),
+                                }),
+                            ));
+                        }
+                        // random(list: T[], count: number, seed?: number) -> T[]
+                        &[list_ty, Type::Number] | &[list_ty, Type::Number, Type::Number]
+                            if list_ty.is_list() =>
+                        {
+                            let mut args = args.into_iter();
+                            let list = args.next().unwrap();
+                            let count = args.next().unwrap();
+                            if let Some(seed) = args.next() {
+                                combined_seed = combine(combined_seed, hash(seed));
+                            }
+
+                            let (count_op, index_op) = match list_ty.base() {
+                                B::Number => (Op::CountNumber, Op::IndexNumberList),
+                                B::Point2 => (Op::CountPoint2, Op::IndexPoint2List),
+                                B::Point3 => (Op::CountPoint3, Op::IndexPoint3List),
+                                B::Polygon => (Op::CountPolygon, Op::IndexPolygonList),
+                                B::Color => (Op::CountColor, Op::IndexColorList),
+                                B::Bool | B::RandomSeed => return no_overload_err(types),
+                                B::Empty => {
+                                    return Ok(te(
+                                        Type::NumberList,
+                                        Expression::Op {
+                                            operation: Op::RepeatNumber,
+                                            args: vec![
+                                                te(Type::Number, Expression::Number(f64::NAN)),
+                                                count,
+                                            ],
+                                        },
+                                    ));
+                                }
+                            };
+                            let list_assignment = self.create_assignment(list);
+                            let list = || te(list_ty, Expression::Identifier(list_assignment.id));
+                            let list_count_assignment = self.create_assignment(te(
+                                Type::Number,
+                                Expression::Op {
+                                    operation: count_op,
+                                    args: vec![list()],
+                                },
+                            ));
+                            let list_count = te(
+                                Type::Number,
+                                Expression::Identifier(list_count_assignment.id),
+                            );
+
+                            let combined_seed_assignment = self.create_assignment(combined_seed);
+                            let indices_assignment = self.create_assignment(te(
+                                Type::NumberList,
+                                Expression::ListRange {
+                                    before_ellipsis: vec![],
+                                    after_ellipsis: vec![count],
+                                },
+                            ));
+                            let combined_seed = te(
+                                Type::RandomSeed,
+                                Expression::Identifier(combined_seed_assignment.id),
+                            );
+                            let index =
+                                te(Type::Number, Expression::Identifier(indices_assignment.id));
+                            let rand = te(
+                                Type::Number,
+                                Expression::Op {
+                                    operation: Op::Random,
+                                    args: vec![combine(combined_seed, hash(index))],
+                                },
+                            );
+
+                            // list_index = floor(list_count * rand) + 1
+                            let list_index = te(
+                                Type::Number,
+                                Expression::Op {
+                                    operation: Op::AddNumber,
+                                    args: vec![
+                                        te(
+                                            Type::Number,
+                                            Expression::Op {
+                                                operation: Op::Floor,
+                                                args: vec![te(
+                                                    Type::Number,
+                                                    Expression::Op {
+                                                        operation: Op::MulNumber,
+                                                        args: vec![list_count, rand],
+                                                    },
+                                                )],
+                                            },
+                                        ),
+                                        te(Type::Number, Expression::Number(1.0)),
+                                    ],
+                                },
+                            );
+                            let element = te(
+                                list_ty.as_single(),
+                                Expression::Op {
+                                    operation: index_op,
+                                    args: vec![list(), list_index],
+                                },
+                            );
+                            return Ok(te(
+                                list_ty,
+                                Expression::Body(Body {
+                                    assignments: vec![list_assignment, combined_seed_assignment],
+                                    value: Box::new(te(
+                                        list_ty,
+                                        Expression::Broadcast {
+                                            scalars: vec![list_count_assignment],
+                                            vectors: vec![indices_assignment],
+                                            body: Box::new(element),
+                                        },
+                                    )),
+                                }),
+                            ));
+                        }
+                        _ => {}
+                    },
+                    // shuffle(list: T[], seed?: number) -> T[]
+                    OpName::Shuffle { .. } => match &types[..] {
+                        &[list_ty] | &[list_ty, Type::Number] if list_ty.is_list() => {
+                            let mut args = args.into_iter();
+                            let list = args.next().unwrap();
+                            if let Some(seed) = args.next() {
+                                combined_seed = combine(combined_seed, hash(seed));
+                            }
+
+                            let (count_op, index_op) = match list_ty.base() {
+                                B::Number => (Op::CountNumber, Op::IndexNumberList),
+                                B::Point2 => (Op::CountPoint2, Op::IndexPoint2List),
+                                B::Point3 => (Op::CountPoint3, Op::IndexPoint3List),
+                                B::Polygon => (Op::CountPolygon, Op::IndexPolygonList),
+                                B::Color => (Op::CountColor, Op::IndexColorList),
+                                B::Bool | B::RandomSeed => return no_overload_err(types),
+                                B::Empty => {
+                                    return Ok(te(Type::EmptyList, Expression::List(vec![])));
+                                }
+                            };
+                            let list_assignment = self.create_assignment(list);
+                            let list = || te(list_ty, Expression::Identifier(list_assignment.id));
+                            let list_count = te(
+                                Type::Number,
+                                Expression::Op {
+                                    operation: count_op,
+                                    args: vec![list()],
+                                },
+                            );
+
+                            let permutation_assignment = self.create_assignment(te(
+                                Type::NumberList,
+                                Expression::Op {
+                                    operation: Op::ShufflePerm,
+                                    args: vec![combined_seed, list_count],
+                                },
+                            ));
+                            let index = te(
+                                Type::Number,
+                                Expression::Identifier(permutation_assignment.id),
+                            );
+                            let element = te(
+                                list_ty.as_single(),
+                                Expression::Op {
+                                    operation: index_op,
+                                    args: vec![list(), index],
+                                },
+                            );
+                            return Ok(te(
+                                list_ty,
+                                Expression::Body(Body {
+                                    assignments: vec![list_assignment],
+                                    value: Box::new(te(
+                                        list_ty,
+                                        Expression::Broadcast {
+                                            scalars: vec![],
+                                            vectors: vec![permutation_assignment],
+                                            body: Box::new(element),
+                                        },
+                                    )),
+                                }),
+                            ));
+                        }
+                        _ => {}
+                    },
+                    _ => unreachable!(),
+                }
+
+                no_overload_err(types)
             }
             nr::Expression::Op { operation, args } => {
                 use crate::op::OpName;
@@ -660,6 +1042,7 @@ impl TypeChecker {
                                     B::Polygon => Op::JoinPolygon,
                                     B::Color => Op::JoinColor,
                                     B::Bool => panic!("can't join() bools"),
+                                    B::RandomSeed => panic!("can't join() seeds"),
                                     B::Empty => unreachable!("empty list join early exit"),
                                 },
                                 args: new_args,
@@ -918,6 +1301,12 @@ fn find_max_id_in_expression(expression: &nr::Expression, max: &mut Option<usize
             find_max_id_in_expressions(after_ellipsis, max);
         }
         nr::Expression::Op { args, .. } => find_max_id_in_expressions(args, max),
+        nr::Expression::Rng { seeds, args, .. } => {
+            for seed in seeds {
+                update_max_id(*seed, max);
+            }
+            find_max_id_in_expressions(args, max);
+        }
         nr::Expression::ChainedComparison { operands, .. } => {
             find_max_id_in_expressions(operands, max)
         }
@@ -945,10 +1334,11 @@ fn find_max_id_in_expression(expression: &nr::Expression, max: &mut Option<usize
             find_max_id(&body.assignments, max);
             find_max_id_in_expression(&body.value, max);
         }
-        nr::Expression::For { body, lists } => {
+        nr::Expression::For { body, lists, index } => {
             find_max_id(lists, max);
             find_max_id(&body.assignments, max);
             find_max_id_in_expression(&body.value, max);
+            update_max_id(*index, max);
         }
     }
 }

@@ -5,6 +5,7 @@ use std::{collections::HashMap, ops::Deref};
 
 use derive_more::{Add, From, Into, Sub};
 use glam::{DVec2, DVec4, dvec2, dvec4};
+use parse::name_resolver::RandomSeed;
 use typed_index_collections::{TiVec, ti_vec};
 use winit::event::KeyEvent;
 use winit::keyboard::{Key, NamedKey};
@@ -3679,6 +3680,7 @@ impl StyleGutter {
 }
 
 struct Expression {
+    id: u64,
     field: MathField,
     slider: Slider,
     parametric_domain: ParametricDomain,
@@ -3707,9 +3709,10 @@ fn create_slider_latex<'a>(name_equal_field: &MathField, value: f64) -> latex_tr
     latex
 }
 
-impl Default for Expression {
-    fn default() -> Expression {
+impl Expression {
+    fn new(id: u64) -> Expression {
         Expression {
+            id,
             field: Default::default(),
             slider: Slider {
                 hard_min: create_with_placeholder(SLIDER_SOFT_MIN_DEFAULT),
@@ -3761,9 +3764,7 @@ impl Default for Expression {
             height: None,
         }
     }
-}
 
-impl Expression {
     const PADDING: f64 = 16.0;
     const COPY_HIGHLIGHT_ANIMATION_DURATION: f64 = 0.5;
 
@@ -4184,7 +4185,7 @@ pub struct ExpressionList {
     expressions_changed: bool,
     redraw_geometry: bool,
     dragged_expression: Option<(ClickDragTracker, ExpressionId, f64)>,
-    next_color: usize,
+    next_id: u64,
     scroll: f64,
     height: f64,
     vm_vars: vm::Vars,
@@ -4200,10 +4201,10 @@ const EXPRESSION_COLORS: [DVec4; N_EXPRESSION_COLORS] = [
     rgb(0, 0, 0),
 ];
 
-fn get_default_expression_color(i: usize) -> DVec4 {
+fn get_default_expression_color(i: u64) -> DVec4 {
     // skip orange
     let p = [0, 1, 2, 4, 5];
-    EXPRESSION_COLORS[p[i % p.len()]]
+    EXPRESSION_COLORS[p[i as usize % p.len()]]
 }
 
 fn convert_from_state_expression(e: state::ExpressionItem) -> Option<Expression> {
@@ -4241,7 +4242,7 @@ fn convert_from_state_expression(e: state::ExpressionItem) -> Option<Expression>
         }
     }
 
-    let mut r = Expression::default();
+    let mut r = Expression::new(0);
 
     let color = parse_hex_color(&e.color).unwrap_or_else(|| {
         println!("failed to parse color {:?}", e.color);
@@ -4423,16 +4424,16 @@ fn convert_to_state_expression(id: String, e: &Expression) -> state::ExpressionI
 impl ExpressionList {
     pub fn new() -> Self {
         let expressions = [];
-        let mut next_color = 0;
+        let mut next_id = 0;
         let expressions = expressions
             .iter()
             .chain(Some(&""))
             .chain(expressions.is_empty().then_some(&""))
             .map(|s| {
-                let mut e = Expression::default();
+                let mut e = Expression::new(next_id);
                 e.set_latex(&parse_latex(s).unwrap());
-                e.style.set_color(get_default_expression_color(next_color));
-                next_color += 1;
+                e.style.set_color(get_default_expression_color(next_id));
+                next_id += 1;
                 e
             })
             .collect();
@@ -4441,7 +4442,7 @@ impl ExpressionList {
             expressions_changed: true,
             redraw_geometry: true,
             dragged_expression: None,
-            next_color,
+            next_id,
             scroll: 0.0,
             height: 0.0,
             vm_vars: Default::default(),
@@ -4511,10 +4512,10 @@ impl ExpressionList {
     }
 
     fn new_expression(&mut self) -> Expression {
-        let mut e = Expression::default();
+        let mut e = Expression::new(self.next_id);
         e.style
-            .set_color(get_default_expression_color(self.next_color));
-        self.next_color += 1;
+            .set_color(get_default_expression_color(self.next_id));
+        self.next_id += 1;
         e
     }
 
@@ -4568,12 +4569,14 @@ impl ExpressionList {
 
         self.expressions.splice(
             index..index + 1.into(),
-            graph
-                .state
-                .expressions
-                .list
-                .into_iter()
-                .filter_map(convert_from_state_expression),
+            graph.state.expressions.list.into_iter().filter_map(|e| {
+                let mut e = convert_from_state_expression(e);
+                if let Some(e) = &mut e {
+                    e.id = self.next_id;
+                    self.next_id += 1;
+                }
+                e
+            }),
         );
 
         println!("graph imported!");
@@ -4597,8 +4600,10 @@ impl ExpressionList {
         self.expressions.splice(
             index + 1.into()..index + 1.into(),
             expressions.into_iter().filter_map(|e| {
-                let e = convert_from_state_expression(e);
-                if e.is_some() {
+                let mut e = convert_from_state_expression(e);
+                if let Some(e) = &mut e {
+                    e.id = self.next_id;
+                    self.next_id += 1;
                     count += 1;
                 }
                 e
@@ -5007,17 +5012,25 @@ impl ExpressionList {
 
                     for (i, e) in self.expressions.iter_mut_enumerated() {
                         e.style.kind = ExpressionStyleKind::None;
+                        let expression_seed = math::hash_mix(math::hash_str("expression id"), e.id);
+                        let pseed = |name: &str| {
+                            RandomSeed(math::hash_mix(expression_seed, math::hash_str(name)))
+                        };
 
                         fn push<'a>(
-                            properties: &mut TiVec<PropertyIndex, &'a ast::Expression>,
+                            properties: &mut TiVec<
+                                PropertyIndex,
+                                (&'a ast::Expression, RandomSeed),
+                            >,
                             property: &'a mut (InlineField, Result<ast::Expression, String>),
+                            seed: RandomSeed,
                         ) -> Option<PropertyIndex> {
                             property.0.underline.error = false;
                             if property.0.is_empty() {
                                 None
                             } else {
                                 match property.1.as_ref() {
-                                    Ok(p) => Some(properties.push_and_get_key(p)),
+                                    Ok(p) => Some(properties.push_and_get_key((p, seed))),
                                     Err(_) => {
                                         property.0.underline.error = true;
                                         None
@@ -5026,14 +5039,46 @@ impl ExpressionList {
                             }
                         }
                         oi_to_pi.push(ExpressionProperties {
-                            parametric_min: push(&mut properties, &mut e.parametric_domain.min),
-                            parametric_max: push(&mut properties, &mut e.parametric_domain.max),
-                            line_width: push(&mut properties, &mut e.style.line.width),
-                            line_opacity: push(&mut properties, &mut e.style.line.opacity),
-                            point_size: push(&mut properties, &mut e.style.point.size),
-                            point_opacity: push(&mut properties, &mut e.style.point.opacity),
-                            fill_opacity: push(&mut properties, &mut e.style.fill.opacity),
-                            color: push(&mut properties, &mut e.style.color_latex),
+                            parametric_min: push(
+                                &mut properties,
+                                &mut e.parametric_domain.min,
+                                pseed("parametric min"),
+                            ),
+                            parametric_max: push(
+                                &mut properties,
+                                &mut e.parametric_domain.max,
+                                pseed("parametric max"),
+                            ),
+                            line_width: push(
+                                &mut properties,
+                                &mut e.style.line.width,
+                                pseed("line width"),
+                            ),
+                            line_opacity: push(
+                                &mut properties,
+                                &mut e.style.line.opacity,
+                                pseed("line opacity"),
+                            ),
+                            point_size: push(
+                                &mut properties,
+                                &mut e.style.point.size,
+                                pseed("point size"),
+                            ),
+                            point_opacity: push(
+                                &mut properties,
+                                &mut e.style.point.opacity,
+                                pseed("point opacity"),
+                            ),
+                            fill_opacity: push(
+                                &mut properties,
+                                &mut e.style.fill.opacity,
+                                pseed("fill opacity"),
+                            ),
+                            color: push(
+                                &mut properties,
+                                &mut e.style.color_latex,
+                                pseed("color latex"),
+                            ),
                         });
                         let ast = match &e.ast {
                             Some(Ok(ast)) => ast,
@@ -5050,10 +5095,16 @@ impl ExpressionList {
                         if let parse::ast::Statement::Assignment { value, .. } = ast {
                             if get_numeric_literal(value).is_some() {
                                 e.output.data = OutputData::None;
-                                let [min, max, step] =
-                                    [&e.slider.hard_min, &e.slider.hard_max, &e.slider.step].map(
-                                        |f| (!f.0.is_empty()).then(|| f.1.as_ref().ok()).flatten(),
-                                    );
+                                let [min, max, step] = [
+                                    (&e.slider.hard_min, "slider min"),
+                                    (&e.slider.hard_max, "slider max"),
+                                    (&e.slider.step, "slider step"),
+                                ]
+                                .map(|(f, n)| {
+                                    (!f.0.is_empty())
+                                        .then(|| f.1.as_ref().ok().map(|x| (x, pseed(n))))
+                                        .flatten()
+                                });
                                 slider = Some(NrSlider { min, max, step });
                             } else if let parse::ast::Expression::Op {
                                 operation: parse::op::OpName::Point,
@@ -5086,7 +5137,7 @@ impl ExpressionList {
                             e.output.data = OutputData::None;
                         }
                         list.push(ExpressionListEntry {
-                            expression: ast,
+                            expression: (ast, RandomSeed(expression_seed)),
                             slider,
                         });
                         ei_to_oi.push(i);
@@ -5713,7 +5764,10 @@ impl ExpressionList {
                                                 inner,
                                             });
                                         }
-                                        Type::Bool | Type::BoolList => unreachable!(),
+                                        Type::Bool
+                                        | Type::BoolList
+                                        | Type::RandomSeed
+                                        | Type::RandomSeedList => unreachable!(),
                                         Type::EmptyList => nodes.push(Node::DelimitedGroup {
                                             left: Bracket::Square,
                                             right: Bracket::Square,

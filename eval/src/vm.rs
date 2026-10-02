@@ -23,6 +23,7 @@ pub enum Instruction {
     Unreachable,
 
     LoadConst(f64),
+    LoadConstU64(u64),
     Load(VarIndex),
     Load2(VarIndex),
     Load3(VarIndex),
@@ -163,6 +164,12 @@ pub enum Instruction {
     Vertices,
     Rgb,
     Hsv,
+    Random,
+    ShufflePerm,
+    CombineSeeds,
+    Hash {
+        initial: u64,
+    },
     Push,
     Push2,
     Push3,
@@ -185,8 +192,10 @@ pub enum Instruction {
     UncheckedIndex2(usize),
     UncheckedIndex3(usize),
     UncheckedIndexPolygonList(usize),
+    UncheckedIndexU64(usize),
     BuildList(usize),
     BuildPolygonList(usize),
+    BuildU64List(usize),
     BuildListRange {
         n_before_ellipsis: u32,
         n_after_ellipsis: u32,
@@ -195,10 +204,12 @@ pub enum Instruction {
     Append2(usize),
     Append3(usize),
     AppendPolygonList(usize),
+    AppendU64(usize),
     CountSpecific(usize),
     CountSpecific2(usize),
     CountSpecific3(usize),
     CountSpecificPolygonList(usize),
+    CountSpecificU64(usize),
     Slider,
 
     StartArgs,
@@ -216,6 +227,8 @@ pub enum Value {
     Number(f64),
     List(RcVec<f64>),
     PolygonList(RcVec<RcVec<f64>>),
+    U64(u64),
+    U64List(RcVec<u64>),
 }
 
 impl Value {
@@ -239,6 +252,20 @@ impl Value {
             _ => panic!("value is not a polygon list: {self:?}"),
         }
     }
+
+    pub fn u64(self) -> u64 {
+        match self {
+            Value::U64(v) => v,
+            _ => panic!("value is not a u64: {self:?}"),
+        }
+    }
+
+    pub fn u64_list(self) -> RcVec<u64> {
+        match self {
+            Value::U64List(v) => v,
+            _ => panic!("value is not a u64: {self:?}"),
+        }
+    }
 }
 
 impl From<f64> for Value {
@@ -256,6 +283,18 @@ impl From<Rc<RefCell<Vec<f64>>>> for Value {
 impl From<Rc<RefCell<Vec<Rc<RefCell<Vec<f64>>>>>>> for Value {
     fn from(value: Rc<RefCell<Vec<Rc<RefCell<Vec<f64>>>>>>) -> Self {
         Value::PolygonList(value)
+    }
+}
+
+impl From<u64> for Value {
+    fn from(value: u64) -> Self {
+        Value::U64(value)
+    }
+}
+
+impl From<Rc<RefCell<Vec<u64>>>> for Value {
+    fn from(value: Rc<RefCell<Vec<u64>>>) -> Self {
+        Value::U64List(value)
     }
 }
 
@@ -288,6 +327,18 @@ impl std::fmt::Display for Value {
                                 .collect::<Vec<_>>()
                                 .join(",")
                         ))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )
+            }
+            Value::U64(x) => write!(f, "{x}u64"),
+            Value::U64List(list) => {
+                write!(
+                    f,
+                    "[{}]",
+                    list.borrow()
+                        .iter()
+                        .map(|x| format!("{x}u64"))
                         .collect::<Vec<_>>()
                         .join(",")
                 )
@@ -425,6 +476,7 @@ impl<'a, 'i> Vm<'a, 'i> {
                 Instruction::Unreachable => unreachable!(),
 
                 Instruction::LoadConst(value) => self.push(value),
+                Instruction::LoadConstU64(value) => self.push(value),
                 Instruction::Load(index) => {
                     let value = self.load(index);
                     self.push(value);
@@ -1351,6 +1403,67 @@ impl<'a, 'i> Vm<'a, 'i> {
                         self.push(f(1.0));
                     }
                 }
+                Instruction::Random => {
+                    let seed = self.pop().u64();
+                    let x = math::hash_finish(seed);
+                    let y = (x as f64 / 64f64.exp2()).min(1.0f64.next_down());
+                    self.push(y);
+                }
+                Instruction::ShufflePerm => {
+                    let count = self.pop().number();
+                    let seed = self.pop().u64();
+                    self.push(Rc::new(RefCell::new(math::shuffle_perm(
+                        seed,
+                        count as usize,
+                    ))));
+                }
+                Instruction::CombineSeeds => {
+                    let b = self.pop().u64();
+                    let a = self.pop().u64();
+                    self.push(math::hash_mix(a, b))
+                }
+                Instruction::Hash { initial } => {
+                    let a = self.pop();
+                    let mut h = initial;
+                    let bits = |x: f64| {
+                        if x.is_nan() {
+                            f64::NAN.to_bits()
+                        } else {
+                            // convert -0.0 to +0.0
+                            (x + 0.0).to_bits()
+                        }
+                    };
+                    match a {
+                        Value::Number(x) => h = math::hash_mix(h, bits(x)),
+                        Value::List(list) => {
+                            let list = list.borrow();
+                            h = math::hash_mix(h, list.len() as u64);
+                            for x in list.iter() {
+                                h = math::hash_mix(h, bits(*x));
+                            }
+                        }
+                        Value::PolygonList(list) => {
+                            let list = list.borrow();
+                            h = math::hash_mix(h, list.len() as u64);
+                            for list in list.iter() {
+                                let list = list.borrow();
+                                h = math::hash_mix(h, list.len() as u64);
+                                for x in list.iter() {
+                                    h = math::hash_mix(h, bits(*x));
+                                }
+                            }
+                        }
+                        Value::U64(x) => h = math::hash_mix(h, x),
+                        Value::U64List(list) => {
+                            let list = list.borrow();
+                            h = math::hash_mix(h, list.len() as u64);
+                            for x in list.iter() {
+                                h = math::hash_mix(h, *x);
+                            }
+                        }
+                    };
+                    self.push(h);
+                }
                 Instruction::Push => {
                     let b = self.pop().number();
                     let a = Rc::unwrap_or_clone(self.pop().list());
@@ -1479,6 +1592,11 @@ impl<'a, 'i> Vm<'a, 'i> {
                     let a = self.peek(index).polygon_list();
                     self.push(Rc::clone(&a.borrow()[b]));
                 }
+                Instruction::UncheckedIndexU64(index) => {
+                    let b = self.pop().number() as usize;
+                    let a = self.peek(index).u64_list();
+                    self.push(a.borrow()[b]);
+                }
                 Instruction::BuildList(count) => {
                     let mut list = vec![0.0; count];
 
@@ -1496,6 +1614,15 @@ impl<'a, 'i> Vm<'a, 'i> {
                     }
 
                     list.reverse();
+                    self.push(Rc::new(RefCell::new(list)));
+                }
+                Instruction::BuildU64List(count) => {
+                    let mut list = vec![0; count];
+
+                    for v in list.iter_mut().rev() {
+                        *v = self.pop().u64();
+                    }
+
                     self.push(Rc::new(RefCell::new(list)));
                 }
                 Instruction::BuildListRange {
@@ -1541,6 +1668,10 @@ impl<'a, 'i> Vm<'a, 'i> {
                     let a = self.pop().list();
                     self.peek(index).clone().polygon_list().borrow_mut().push(a);
                 }
+                Instruction::AppendU64(index) => {
+                    let a = self.pop().u64();
+                    self.peek(index).clone().u64_list().borrow_mut().push(a);
+                }
                 Instruction::CountSpecific(index) => {
                     let a = self.peek(index).list();
                     self.push(a.borrow().len() as f64);
@@ -1555,6 +1686,10 @@ impl<'a, 'i> Vm<'a, 'i> {
                 }
                 Instruction::CountSpecificPolygonList(index) => {
                     let a = self.peek(index).polygon_list();
+                    self.push(a.borrow().len() as f64);
+                }
+                Instruction::CountSpecificU64(index) => {
+                    let a = self.peek(index).u64_list();
                     self.push(a.borrow().len() as f64);
                 }
                 Instruction::Slider => {

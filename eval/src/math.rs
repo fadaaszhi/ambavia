@@ -275,6 +275,42 @@ pub fn build_list_range(before_ellipsis: &[f64], after_ellipsis: &[f64]) -> Opti
     })
 }
 
+pub const fn hash_mix(x: u64, y: u64) -> u64 {
+    // https://github.com/rust-lang/rustc-hash/blob/cbf0baf6f900674cf88f266f96a4fa223895186b/src/lib.rs#L98
+    x.wrapping_add(y).wrapping_mul(0xf1357aea2e62a9c5)
+}
+
+pub const fn hash_finish(mut x: u64) -> u64 {
+    // splitmix64
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d049bb133111eb);
+    x ^ (x >> 31)
+}
+
+/// world's most efficient string hasher
+pub const fn hash_str(s: &str) -> u64 {
+    let b = s.as_bytes();
+    let mut h = b.len() as u64;
+    let mut i = 0;
+    while i < b.len() {
+        h = hash_mix(h, b[i] as u64);
+        i += 1;
+    }
+    h
+}
+
+pub fn shuffle_perm(mut seed: u64, n: usize) -> Vec<f64> {
+    let mut permutation = (1..=n).map(|i| i as f64).collect::<Vec<_>>();
+    // https://en.wikipedia.org/wiki/Fisher%E2%80%93Yates_shuffle#JavaScript_implementation
+    for i in (1..n).rev() {
+        seed = seed.wrapping_add(0x9e3779b97f4a7c15);
+        let x = hash_finish(seed);
+        let j = x.carrying_mul(i as u64 + 1, 0).1 as usize;
+        permutation.swap(i, j);
+    }
+    permutation
+}
+
 #[cfg(test)]
 mod tests {
     use rstest::rstest;

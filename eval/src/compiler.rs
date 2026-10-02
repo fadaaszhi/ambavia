@@ -2,6 +2,7 @@ use std::{collections::HashMap, iter::zip};
 
 use crate::{
     instruction_builder::{BaseType as IbBaseType, InstructionBuilder, Type as IbType, Value},
+    math,
     vm::{
         Instruction::{self, *},
         VarIndex,
@@ -22,22 +23,34 @@ fn tc_list_to_ib_base(ty: TcType) -> IbBaseType {
         TcType::PolygonList => IbBaseType::Polygon,
         TcType::ColorList => IbBaseType::Color,
         TcType::BoolList => IbBaseType::Bool,
+        TcType::RandomSeedList => IbBaseType::U64,
         TcType::EmptyList => IbBaseType::Number,
         TcType::Number
         | TcType::Bool
         | TcType::Point2
         | TcType::Point3
         | TcType::Polygon
-        | TcType::Color => {
+        | TcType::Color
+        | TcType::RandomSeed => {
             unreachable!()
         }
     }
+}
+
+fn compile_body(body: &Body, builder: &mut InstructionBuilder) -> Value {
+    for Assignment { id, value, .. } in &body.assignments {
+        let value = compile_expression(value, builder);
+        builder.store(*id, value);
+    }
+
+    compile_expression(&body.value, builder)
 }
 
 fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBuilder) -> Value {
     let TypedExpression { ty, e: expression } = expression;
     match expression {
         Expression::Number(x) => builder.load_const(*x),
+        Expression::RandomSeed(x) => builder.load_const_u64(*x),
         Expression::Identifier(name) => builder.load(*name),
         Expression::Slider { value, slider } => {
             let value = compile_expression(value, builder);
@@ -179,10 +192,7 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
             result
         }
         Expression::SumProd { .. } => todo!(),
-        Expression::For {
-            body: Body { assignments, value },
-            lists,
-        } => {
+        Expression::For { body, lists, index } => {
             let list_values = lists
                 .iter()
                 .rev()
@@ -190,6 +200,8 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
                 .collect::<Vec<_>>();
 
             let mut result = builder.build_list(tc_list_to_ib_base(*ty), vec![]);
+            let zero = builder.load_const(0.0);
+            builder.store(*index, zero);
             let mut variables = vec![];
 
             for (Assignment { id, .. }, value) in zip(lists.iter().rev(), &list_values) {
@@ -206,13 +218,13 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
                 variables.push((count, i, loop_start, loop_jump_if_false));
             }
 
-            for Assignment { id, value, .. } in assignments {
-                let value = compile_expression(value, builder);
-                builder.store(*id, value);
-            }
-
-            let value = compile_expression(value, builder);
+            let value = compile_body(body, builder);
             builder.append(&result, value);
+
+            let old_index_value = builder.load(*index);
+            let one = builder.load_const(1.0);
+            let new_index_value = builder.instr2(Add, old_index_value, one);
+            builder.store(*index, new_index_value);
 
             for (count, i, loop_start, loop_jump_if_false) in variables.into_iter().rev() {
                 let one = builder.load_const(1.0);
@@ -228,6 +240,7 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
             builder.swap_pop(&mut result, list_values);
             result
         }
+        Expression::Body(body) => compile_body(body, builder),
         Expression::Op { operation, args } => {
             use parse::op::Op;
             match operation {
@@ -258,6 +271,7 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
                     list
                 }
                 _ => {
+                    let mut types = args.iter().map(|e| e.ty);
                     let args = args
                         .iter()
                         .map(|e| compile_expression(e, builder))
@@ -394,26 +408,7 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
                         | Op::FilterPoint3List
                         | Op::FilterPolygonList
                         | Op::FilterColorList => {
-                            let mut result = builder.build_list(
-                                match ty {
-                                    TcType::NumberList => IbBaseType::Number,
-                                    TcType::Point2List => IbBaseType::Point2,
-                                    TcType::Point3List => IbBaseType::Point3,
-                                    TcType::PolygonList => IbBaseType::Polygon,
-                                    TcType::ColorList => IbBaseType::Color,
-                                    TcType::BoolList => IbBaseType::Bool,
-                                    TcType::EmptyList => IbBaseType::Number,
-                                    TcType::Number
-                                    | TcType::Point2
-                                    | TcType::Point3
-                                    | TcType::Polygon
-                                    | TcType::Color
-                                    | TcType::Bool => {
-                                        unreachable!()
-                                    }
-                                },
-                                vec![],
-                            );
+                            let mut result = builder.build_list(tc_list_to_ib_base(*ty), vec![]);
                             let (left, right) = (arg(), arg());
                             let left_count = builder.count_specific(&left);
                             let right_count = builder.count_specific(&right);
@@ -448,6 +443,29 @@ fn compile_expression(expression: &TypedExpression, builder: &mut InstructionBui
 
                             result
                         }
+                        Op::Random => builder.instr1(Random, arg()),
+                        Op::ShufflePerm => builder.instr2(ShufflePerm, arg(), arg()),
+                        Op::CombineSeeds => builder.instr2(CombineSeeds, arg(), arg()),
+                        Op::Hash => builder.hash(
+                            arg(),
+                            match types.next().unwrap() {
+                                TcType::Number => math::hash_str("Number"),
+                                TcType::NumberList => math::hash_str("NumberList"),
+                                TcType::Point2 => math::hash_str("Point2"),
+                                TcType::Point2List => math::hash_str("Point2List"),
+                                TcType::Point3 => math::hash_str("Point3"),
+                                TcType::Point3List => math::hash_str("Point3List"),
+                                TcType::Polygon => math::hash_str("Polygon"),
+                                TcType::PolygonList => math::hash_str("PolygonList"),
+                                TcType::Color => math::hash_str("Color"),
+                                TcType::ColorList => math::hash_str("ColorList"),
+                                TcType::Bool => math::hash_str("Bool"),
+                                TcType::BoolList => math::hash_str("BoolList"),
+                                TcType::RandomSeed => math::hash_str("RandomSeed"),
+                                TcType::RandomSeedList => math::hash_str("RandomSeedList"),
+                                TcType::EmptyList => math::hash_str("EmptyList"),
+                            },
+                        ),
                         Op::JoinNumber
                         | Op::JoinPoint2
                         | Op::JoinPoint3
@@ -493,6 +511,8 @@ pub fn compile_assignments<
                 TcType::ColorList => IbType::ColorList,
                 TcType::Bool => IbType::Bool,
                 TcType::BoolList => IbType::BoolList,
+                TcType::RandomSeed => IbType::U64,
+                TcType::RandomSeedList => IbType::U64List,
                 TcType::EmptyList => panic!(),
             },
         );
@@ -595,6 +615,8 @@ mod tests {
                 builder.instr3(Rgb, r, g, b)
             }
             TcType::ColorList => builder.build_list(IbBaseType::Color, vec![]),
+            TcType::RandomSeed => builder.load_const_u64(0),
+            TcType::RandomSeedList => builder.build_list(IbBaseType::U64, vec![]),
             TcType::EmptyList => panic!("why"),
             TcType::Bool | TcType::BoolList => panic!("bruh"),
         };

@@ -5,7 +5,7 @@ use parse::{
     analyze_expression_list::{AnalysisError, ExpressionResult, analyze_expression_list},
     ast_parser::parse_statement,
     latex_parser::parse_latex,
-    name_resolver::ExpressionListEntry,
+    name_resolver::{ExpressionListEntry, RandomSeed},
     op::{OpError, OpName},
     type_checker::{Type, TypeError},
 };
@@ -141,7 +141,7 @@ fn assert_expression_eq(source: &str, value: Value) {
     let statement = parse_statement(&tree).unwrap();
     let analysis = analyze_expression_list(
         [ExpressionListEntry {
-            expression: &statement,
+            expression: (&statement, RandomSeed(0)),
             slider: None,
         }]
         .as_slice()
@@ -235,7 +235,7 @@ fn assert_expression_eq(source: &str, value: Value) {
                 Value::PolygonList(list)
             }
 
-            Type::Bool | Type::BoolList => unreachable!(),
+            Type::Bool | Type::BoolList | Type::RandomSeed | Type::RandomSeedList => unreachable!(),
             Type::EmptyList => Value::EmptyList,
         },
         value
@@ -248,7 +248,7 @@ fn assert_type_error(source: &str, error: TypeError) {
     let statement = parse_statement(&tree).unwrap();
     let analysis = analyze_expression_list(
         [ExpressionListEntry {
-            expression: &statement,
+            expression: (&statement, RandomSeed(0)),
             slider: None,
         }]
         .as_slice()
@@ -331,6 +331,7 @@ const NAN: f64 = f64::NAN;
 #[case(r"[0.2,0.3...1]", &[0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0])]
 #[case(r"\{1=2:a,(3,4)\}\with a=[]", [(0, 0); 0])]
 #[case(r"(1,2)([])", [(0, 0); 0])]
+#[case(r"i+1\for i=[1...3]", [2, 3, 4])]
 fn expression_eq(#[case] expression: &str, #[case] expected: impl Into<Value>) {
     assert_expression_eq(expression, expected.into());
 }

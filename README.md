@@ -34,7 +34,6 @@ Ambavia's ultimate goal is to implement a superset of Desmos's features, but it'
 - Actions and ticker
 - Inequalities
 - Lists of function plots
-- `random()` and other RNG functions
 - Optimizing compiler and incremental evaluation
 - ...lots more
 

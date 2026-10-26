@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fmt::Write;
 use std::iter::zip;
 use std::ops::DerefMut;
@@ -4554,11 +4555,34 @@ impl ExpressionList {
         )
     }
 
+    fn hide_folders(list: &mut [state::ExpressionItem]) {
+        let mut hidden_folders = HashSet::new();
+        for e in &*list {
+            if matches!(
+                e.kind,
+                state::ExpressionItemKind::Folder { hidden: true, .. }
+            ) {
+                hidden_folders.insert(e.id.clone());
+            }
+        }
+        for e in list {
+            if let Some(folder_id) = &e.folder_id
+                && let state::ExpressionItemKind::Expression(state::Expression { hidden, .. }) =
+                    &mut e.kind
+            {
+                *hidden |= hidden_folders.contains(folder_id);
+            }
+        }
+    }
+
     fn paste_link(&mut self, index: ExpressionId, link: &str) -> Option<state::Graph> {
         println!("importing graph {link:?}...");
         let response = ureq::get(link).header("Accept", "application/json").call();
         let graph = match response.and_then(|mut r| r.body_mut().read_json::<state::GraphState>()) {
-            Ok(graph) => graph,
+            Ok(mut graph) => {
+                Self::hide_folders(&mut graph.state.expressions.list);
+                graph
+            }
             Err(e) => {
                 println!("failed to load {link:?} ({e})");
                 return None;
@@ -4589,13 +4613,14 @@ impl ExpressionList {
         index: ExpressionId,
         payload: &str,
     ) -> Option<ExpressionId> {
-        let expressions = match serde_json::from_str::<Vec<state::ExpressionItem>>(payload) {
+        let mut expressions = match serde_json::from_str::<Vec<state::ExpressionItem>>(payload) {
             Ok(list) => list,
             Err(e) => {
                 println!("failed to paste ({e})");
                 return None;
             }
         };
+        Self::hide_folders(&mut expressions);
         let mut count = 0;
         self.expressions.splice(
             index + 1.into()..index + 1.into(),

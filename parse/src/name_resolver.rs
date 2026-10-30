@@ -278,15 +278,16 @@ impl<'a> CycleDetector<'a> {
     }
 }
 
-#[derive(Debug, Default, PartialEq)]
-struct LineScope {
-    seeds: Vec<Id>,
+#[derive(Debug, Default, PartialEq, Clone)]
+struct LineScope<'a> {
+    seed_ids: Vec<Id>,
+    seed_dependencies: Vec<(&'a str, SubstitutionInfo)>,
 }
 
 struct Resolver<'a> {
     use_v1_9_scoping_rules: bool,
     scopes: Vec<Scope<'a>>,
-    line_scopes: Vec<LineScope>,
+    line_scopes: Vec<LineScope<'a>>,
     definitions: HashMap<&'a str, Result<&'a SeededExpressionListEntry, NameError>>,
     dependencies_being_tracked: Option<Dependencies<'a>>,
     assignments: TiVec<Level, Vec<Assignment>>,
@@ -638,7 +639,7 @@ impl<'a> Resolver<'a> {
         error: impl FnOnce(String) -> NameError,
     ) -> Result<Expression, NameError> {
         let mut substitutions = HashMap::new();
-        let mut seeds = vec![];
+        let mut names = vec![];
         let kind = if is_lexical {
             ScopeKind::Lexical {
                 line_count: self.line_scopes.len() + 1,
@@ -655,18 +656,16 @@ impl<'a> Resolver<'a> {
             let (value, deps) = self.resolve_expression_with_dependencies(value, None);
             let level = deps.level();
             let id = self.push_assignment(name, level, value?);
-            substitutions.insert(
-                name.as_str(),
-                SubstitutionInfo {
-                    id,
-                    level,
-                    kind,
-                    scope_index: self.scopes.len(),
-                },
-            );
+            let info = SubstitutionInfo {
+                id,
+                level,
+                kind,
+                scope_index: self.scopes.len(),
+            };
+            substitutions.insert(name.as_str(), info);
 
             if add_to_seed {
-                seeds.push(id);
+                names.push(name.as_str());
             }
         }
 
@@ -676,8 +675,10 @@ impl<'a> Resolver<'a> {
 
         if add_to_seed {
             let scope = self.line_scopes.last_mut().unwrap();
-            for id in &seeds {
-                scope.seeds.push(*id);
+            for &name in &names {
+                let info = substitutions[name];
+                scope.seed_ids.push(info.id);
+                scope.seed_dependencies.push((name, info));
             }
         }
 
@@ -686,9 +687,10 @@ impl<'a> Resolver<'a> {
 
         if add_to_seed {
             let scope = self.line_scopes.last_mut().unwrap();
-            for _ in &seeds {
-                scope.seeds.pop();
-            }
+            scope.seed_ids.truncate(scope.seed_ids.len() - names.len());
+            scope
+                .seed_dependencies
+                .truncate(scope.seed_dependencies.len() - names.len());
         }
 
         if is_lexical {
@@ -857,14 +859,24 @@ impl<'a> Resolver<'a> {
 
                 assert_eq!(self.assignments.next_key(), level);
                 let index = self.next_id();
-                self.line_scopes.last_mut().unwrap().seeds.push(index);
+                let line_scope = self.line_scopes.last_mut().unwrap();
+                line_scope.seed_ids.push(index);
+                for (name, _) in lists {
+                    line_scope
+                        .seed_dependencies
+                        .push((name.as_str(), substitutions[name.as_str()]));
+                }
                 self.assignments.push(vec![]);
                 let (body, _) = self.resolve_expression_with_dependencies(
                     body,
                     Some((ScopeKind::Dynamic, substitutions)),
                 );
                 let assignments = self.assignments.pop().unwrap();
-                self.line_scopes.last_mut().unwrap().seeds.pop();
+                let line_scope = self.line_scopes.last_mut().unwrap();
+                line_scope.seed_ids.pop();
+                line_scope
+                    .seed_dependencies
+                    .truncate(line_scope.seed_dependencies.len() - lists.len());
                 Ok(Expression::For {
                     body: Body {
                         assignments,
@@ -877,13 +889,13 @@ impl<'a> Resolver<'a> {
             ast::Expression::Op { operation, args }
                 if matches!(operation, OpName::Random { .. } | OpName::Shuffle { .. }) =>
             {
+                let scope = self.line_scopes.last().cloned().unwrap_or_default();
+                for (name, info) in scope.seed_dependencies {
+                    self.push_dependency(name, Dependency::Substitution(info));
+                }
                 Ok(Expression::Rng {
                     operation: *operation,
-                    seeds: self
-                        .line_scopes
-                        .last()
-                        .map(|s| s.seeds.clone())
-                        .unwrap_or_default(),
+                    seeds: scope.seed_ids,
                     args: self.resolve_expressions(args)?,
                 })
             }
@@ -5895,6 +5907,81 @@ mod tests {
                     "<anonymous function argument>".into(),
                     ids["<anonymous function argument>"],
                 )]),
+            ),
+        );
+    }
+
+    #[test]
+    fn random_dependencies() {
+        let id = |s: &str| AId(s.into());
+        let mut ids = IdGenerator::default();
+        let a = resolve_names(
+            [
+                // (a with a=random()) for b=[1]
+                ExpressionListEntry {
+                    expression: (
+                        &ElExpr(AFor {
+                            body: bx(AWith {
+                                body: bx(id("a")),
+                                substitutions: vec![(
+                                    "a".into(),
+                                    ACall {
+                                        callee: "random".into(),
+                                        args: vec![],
+                                    },
+                                )],
+                            }),
+                            lists: vec![("b".into(), AList(vec![ANum(1.0)]))],
+                        }),
+                        RandomSeed(60),
+                    ),
+                    slider: None,
+                },
+            ]
+            .as_slice()
+            .as_ref(),
+            &[],
+            Default::default(),
+            false,
+        );
+        assert_eq(
+            (a.assignments, a.results.into(), a.freevars),
+            (
+                vec![
+                    // (a with a=random()) for b=[1]
+                    Assignment {
+                        id: ids.new_id("for"),
+                        name: "<anonymous>".into(),
+                        value: Expression::For {
+                            index: ids.new_id("index"),
+                            body: Body {
+                                assignments: vec![Assignment {
+                                    id: ids.new_id("a"),
+                                    name: "a".into(),
+                                    value: Expression::Rng {
+                                        operation: OpName::Random {
+                                            expression_seed: 60,
+                                            position: 0,
+                                        },
+                                        seeds: vec![ids["index"]],
+                                        args: vec![],
+                                    },
+                                }],
+                                value: bx(Expression::Identifier(ids["a"])),
+                            },
+                            lists: vec![Assignment {
+                                id: ids.new_id("b"),
+                                name: "b".into(),
+                                value: Expression::List(vec![Expression::Number(1.0)]),
+                            }],
+                        },
+                    },
+                ],
+                vec![
+                    // (a with a=random()) for b=[1]
+                    ExpressionResult::Value(ids["for"]),
+                ],
+                HashMap::new(),
             ),
         );
     }

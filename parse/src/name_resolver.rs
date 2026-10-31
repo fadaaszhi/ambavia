@@ -633,6 +633,7 @@ impl<'a> Resolver<'a> {
     fn resolve_substitutions(
         &mut self,
         body: &'a ast::Expression,
+        body_name: Option<&'a str>,
         is_lexical: bool,
         add_to_seed: bool,
         bindings: impl Iterator<Item = (&'a String, &'a ast::Expression)>,
@@ -669,6 +670,10 @@ impl<'a> Resolver<'a> {
             }
         }
 
+        if let Some(body_name) = body_name {
+            self.cycle_detector.push(body_name)?;
+        }
+
         if is_lexical {
             self.line_scopes.push(LineScope::default());
         }
@@ -695,6 +700,10 @@ impl<'a> Resolver<'a> {
 
         if is_lexical {
             self.line_scopes.pop();
+        }
+
+        if body_name.is_some() {
+            self.cycle_detector.pop();
         }
 
         body
@@ -741,16 +750,14 @@ impl<'a> Resolver<'a> {
             });
         }
 
-        self.cycle_detector.push(callee)?;
-        let value = self.resolve_substitutions(
+        self.resolve_substitutions(
             body,
+            Some(callee),
             !self.use_v1_9_scoping_rules,
             true,
             zip(parameters, args),
             NameError::DuplicateFunctionParameter,
-        );
-        self.cycle_detector.pop();
-        value
+        )
     }
 
     fn resolve_expression(&mut self, e: &'a ast::Expression) -> Result<Expression, NameError> {
@@ -828,6 +835,7 @@ impl<'a> Resolver<'a> {
                 substitutions,
             } => self.resolve_substitutions(
                 body,
+                None,
                 false,
                 false,
                 substitutions.iter().map(|(n, v)| (n, v)),
@@ -1534,9 +1542,9 @@ pub fn resolve_names<'a>(
                         let (value, deps) = resolver.resolve_with_dependencies(
                             |resolver| {
                                 static ARG: OnceLock<ast::Expression> = OnceLock::new();
-                                resolver.cycle_detector.push(name).unwrap();
-                                let value = resolver.resolve_substitutions(
+                                resolver.resolve_substitutions(
                                     body,
+                                    Some(name),
                                     !resolver.use_v1_9_scoping_rules,
                                     true,
                                     zip(
@@ -1546,9 +1554,7 @@ pub fn resolve_names<'a>(
                                         })],
                                     ),
                                     NameError::DuplicateFunctionParameter,
-                                );
-                                resolver.cycle_detector.pop();
-                                value
+                                )
                             },
                             None,
                         );
@@ -2300,9 +2306,15 @@ mod tests {
                         name: "x".into(),
                         value: Expression::Identifier(Id(3))
                     },
-                    // x = <anonymous function argument>
+                    // x = 3
                     Assignment {
                         id: Id(5),
+                        name: "x".into(),
+                        value: Expression::Number(3.0)
+                    },
+                    // x = <anonymous function argument>
+                    Assignment {
+                        id: Id(6),
                         name: "x".into(),
                         value: Expression::Identifier(Id(0))
                     },
@@ -5986,9 +5998,126 @@ mod tests {
         );
     }
 
-    // TODO add tests for plot types
+    #[test]
+    fn nested_function_calls() {
+        let id = |s: &str| AId(s.into());
+        let mut ids = IdGenerator::default();
+        assert_eq(
+            resolve_names_ti(&[
+                // f(a) = a^2
+                ElFunction {
+                    name: "f".into(),
+                    parameters: vec!["a".into()],
+                    body: AOp {
+                        operation: OpName::Pow,
+                        args: vec![id("a"), ANum(2.0)],
+                    },
+                },
+                // f(f(f(f(f(3)))))
+                ElExpr(ACallMul {
+                    callee: "f".into(),
+                    args: vec![ACallMul {
+                        callee: "f".into(),
+                        args: vec![ACallMul {
+                            callee: "f".into(),
+                            args: vec![ACallMul {
+                                callee: "f".into(),
+                                args: vec![ACallMul {
+                                    callee: "f".into(),
+                                    args: vec![ANum(3.0)],
+                                }],
+                            }],
+                        }],
+                    }],
+                }),
+            ]),
+            (
+                vec![
+                    // freevar <anonymous function argument>: 0
+                    // a = <anonymous function argument>
+                    Assignment {
+                        id: ids.new_id("a"),
+                        name: "a".into(),
+                        value: Expression::Identifier(ids.new_id("<anonymous function argument>")),
+                    },
+                    // f(<anonymous function argument>)
+                    Assignment {
+                        id: ids.new_id("f plot"),
+                        name: "<anonymous function plot>".into(),
+                        value: Expression::Op {
+                            operation: OpName::Pow,
+                            args: vec![Expression::Identifier(ids["a"]), Expression::Number(2.0)],
+                        },
+                    },
+                    // a0 = 3
+                    Assignment {
+                        id: ids.new_id("a0"),
+                        name: "a".into(),
+                        value: Expression::Number(3.0),
+                    },
+                    // a1 = f(a0)
+                    Assignment {
+                        id: ids.new_id("a1"),
+                        name: "a".into(),
+                        value: Expression::Op {
+                            operation: OpName::Pow,
+                            args: vec![Expression::Identifier(ids["a0"]), Expression::Number(2.0)],
+                        },
+                    },
+                    // a2 = f(a1)
+                    Assignment {
+                        id: ids.new_id("a2"),
+                        name: "a".into(),
+                        value: Expression::Op {
+                            operation: OpName::Pow,
+                            args: vec![Expression::Identifier(ids["a1"]), Expression::Number(2.0)],
+                        },
+                    },
+                    // a3 = f(a2)
+                    Assignment {
+                        id: ids.new_id("a3"),
+                        name: "a".into(),
+                        value: Expression::Op {
+                            operation: OpName::Pow,
+                            args: vec![Expression::Identifier(ids["a2"]), Expression::Number(2.0)],
+                        },
+                    },
+                    // a4 = f(a3)
+                    Assignment {
+                        id: ids.new_id("a4"),
+                        name: "a".into(),
+                        value: Expression::Op {
+                            operation: OpName::Pow,
+                            args: vec![Expression::Identifier(ids["a3"]), Expression::Number(2.0)],
+                        },
+                    },
+                    // f(a4) = f(f(f(f(f(3)))))
+                    Assignment {
+                        id: ids.new_id("nested"),
+                        name: "<anonymous>".into(),
+                        value: Expression::Op {
+                            operation: OpName::Pow,
+                            args: vec![Expression::Identifier(ids["a4"]), Expression::Number(2.0)],
+                        },
+                    },
+                ],
+                vec![
+                    ExpressionResult::Plot {
+                        allowed_kinds: PlotKinds::NORMAL,
+                        value: ids["f plot"],
+                        parameters: vec![ids["<anonymous function argument>"]],
+                    },
+                    ExpressionResult::Value(ids["nested"]),
+                ],
+                HashMap::from([(
+                    "<anonymous function argument>".into(),
+                    ids["<anonymous function argument>"],
+                )]),
+            ),
+        );
+    }
 
-    // TODO add test for f(f(f(f(f(x)))))
+    // TODO add tests for plot types
 
     // TODO add tests for substituting for name of function
     // 1. a(x) = 3x
